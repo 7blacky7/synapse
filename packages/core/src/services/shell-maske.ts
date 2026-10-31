@@ -134,7 +134,7 @@ function antwortObjekt(v:unknown):Record<string,unknown>|undefined{
 function demaskierBindung(args:Record<string,unknown>,project:string|undefined,actor:string,action:string):ShellRueckfrageBindung{
   return action==='exec'
     ?{art:'demaskieren',agent_id:actor,project:project??'',befehl_hash:befehlHash(project??'',String(args.command??''))}
-    :{art:'demaskieren',agent_id:actor,project:project??'',ziel:action+':'+String(args.id??'')};
+    :{art:'demaskieren',agent_id:actor,project:project??'',ziel:action+':'+String(args.id??args.log_strom??'')};
 }
 /** Anzeige-Override mit vorhandener Namenstreue, Speicherung bleibt unabhaengig davon geschuetzt. */
 export async function mitShellAusgabe<T>(args:Record<string,unknown>,lauf:()=>Promise<T>,form:(o:Record<string,unknown>)=>T=(o=>o as T)):Promise<T> {

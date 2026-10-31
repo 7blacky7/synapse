@@ -26,6 +26,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { getPool } from '../db/client.js';
+import {leseLogStromEnde} from './shell-log-strom.js';
 import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
 import { ARTEFAKT_HTML_MAX } from './artefakt.js';
 import { renderVorlage, pruefeVorlage } from './artefakt-vorlage.js';
@@ -33,6 +34,8 @@ import { listPlans, getPlan, listPlansDetail, getAllePlaene, filtereWiedervorlag
 import { planNummer, taskNummer } from './plan-kurz-ids.js';
 import { getChannelMessages } from './channels.js';
 import { leseVerlaufSchalter } from './hauptagent-verlauf.js';
+import { envSicht } from './env-maske.js';
+import { ladeShellWerte, maskiereShellDaten } from './shell-maske.js';
 
 export const ARTEFAKT_VORLAGEN_FUNKTION = 'artefakt_vorlagen' as const;
 export const ARTEFAKT_VORLAGEN_LIVE_FUNKTION = 'artefakt_vorlagen_live' as const;
@@ -76,6 +79,8 @@ export const ARTEFAKT_VORLAGEN_EINSTELLUNGEN = {
   max_quellen: { standard: 8, min: 1, max: 20 },
   /** Renderzeit der Vorlage. */
   render_max_ms: { standard: 500, min: 50, max: 5000 },
+  /** P22-T227: Alter eines unveraenderten Log-Stroms fuer den Koordinatorhinweis. */
+  log_strom_veraltet_tage: { standard: 30, min: 1, max: 3650 },
 } as const;
 export type ArtefaktVorlagenEinstellung = keyof typeof ARTEFAKT_VORLAGEN_EINSTELLUNGEN;
 export type ArtefaktVorlagenWerte = Record<ArtefaktVorlagenEinstellung, number>;
@@ -218,6 +223,54 @@ registriereArtefaktQuelle({
       return { id: r.id, sender: r.sender, content: kurz(r.content, 2000), createdAt: iso(r.createdAt ?? r.created_at) };
     });
   },
+});
+// P22-T226: Dateiinhalt kommt aus demselben Projekt und bleibt vor jeder persistenten Renderung maskiert.
+async function ladeDateiQuelle(project: string, args: Record<string, unknown>, maxBytes: number, ende: boolean): Promise<unknown> {
+  const produkt = await leseProfilProduktSchalter('datei_vertrag', project);
+  let schalter: { aktiv: boolean; quelle: string; letzter_fehler: string | null } = produkt;
+  const { internToolAktiv } = await import('./intern-tool-aktiv.js');
+  if (internToolAktiv()) {
+    try {
+      const r = await getPool().query<{ aktiv: boolean; bis: Date }>("SELECT aktiv, bis FROM intern_schalter WHERE name = $1 AND modus = 'freigegeben' AND bis > NOW()", ['datei_vertrag']);
+      if (r.rows[0]) schalter = { aktiv: r.rows[0].aktiv, quelle: 'intern bis ' + new Date(r.rows[0].bis).toISOString(), letzter_fehler: null };
+    } catch { /* Lesefehler: Produktionswert bleibt wirksam. */ }
+  }
+  if (!schalter.aktiv || schalter.letzter_fehler) throw new Error('funktion_aus: Produkt-Schalter datei_vertrag');
+  const pfad = String(args.pfad ?? '');
+  if (!pfad || pfad.startsWith('/') || pfad.includes('\\') || pfad.split('/').some((s) => !s || s === '.' || s === '..')) {
+    throw new Error('pfad muss ein relativer Projektpfad ohne . oder .. sein');
+  }
+  const result = await getPool().query<{ content: string; updated_at: Date }>(
+    'SELECT content, updated_at FROM code_files WHERE project = $1 AND file_path = $2 AND deleted_at IS NULL', [project, pfad]);
+  const row = result.rows[0];
+  if (!row) throw new Error('Datei nicht gefunden: ' + pfad);
+  const sicht = envSicht(pfad, row.content ?? '');
+  const maskiert = maskiereShellDaten(sicht, await ladeShellWerte(project, { projektFs: false }));
+  const text = maskiert.daten;
+  const alle = text.split('\n');
+  if (alle.length > 1 && alle[alle.length - 1] === '') alle.pop();
+  const limit = Math.min(1000, Math.max(1, Math.trunc(Number(args.limit) || 100)));
+  let zeilen = ende ? alle.slice(-limit) : alle;
+  const budget = Math.max(0, maxBytes - 2048);
+  if (!ende && Buffer.byteLength(JSON.stringify(text), 'utf8') > budget) throw new Error('Datei groesser als Quellenlimit; datei.ende verwenden');
+  while (ende && zeilen.length && Buffer.byteLength(JSON.stringify(zeilen), 'utf8') > budget) zeilen = zeilen.slice(1);
+  const inhalt = ende ? zeilen.join('\n') : text;
+  const stand = row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at);
+  return { pfad, ...(ende ? { zeilen } : { inhalt }), stand, hash: createHash('sha256').update(inhalt).digest('hex'),
+    gekappt: ende && zeilen.length < alle.length, maskiert: maskiert.maskiert, schalter_quelle: schalter.quelle };
+}
+for (const ende of [true, false]) registriereArtefaktQuelle({
+  vertrag: ende ? 'datei.ende' : 'datei.inhalt',
+  beschreibung: ende ? 'Letzte Zeilen einer Projektdatei aus PG, maskiert' : 'Kleine Projektdatei aus PG, maskiert',
+  args: { pfad: { typ: 'string', pflicht: true }, ...(ende ? { limit: { typ: 'number' as const, max: 1000 } } : {}) },
+  kanaele: ['synapse_code_file_change'],
+  lade: ({ project, args, max_bytes }) => ladeDateiQuelle(project, args, max_bytes ?? ARTEFAKT_VORLAGEN_EINSTELLUNGEN.quelle_max_bytes.standard, ende),
+});
+
+registriereArtefaktQuelle({
+  vertrag: 'log.ende', beschreibung: 'Letzte Zeilen eines benannten Shell-Log-Stroms im Projekt',
+  args: { strom: {typ:'string',pflicht:true}, limit: {typ:'number',max:1000} }, kanaele: ['synapse_log_strom'],
+  lade: async ({project,args,max_bytes}) => leseLogStromEnde(project,String(args.strom),typeof args.limit==='number'?args.limit:100,max_bytes),
 });
 registriereArtefaktQuelle({
   vertrag: 'deploy.stand', beschreibung: 'Deploy-Stand (live Commit, Web-UI-Version) - GEPLANT, noch kein lesender Vertrag (P22-T154 R1)',

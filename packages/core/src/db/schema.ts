@@ -38,6 +38,7 @@ import {REVERSE_CODE_STUECKE_SCHEMA_SQL} from './reverse-code-stuecke-schema.js'
 import {REVERSE_VERKNUEPFUNGEN_SCHEMA_SQL} from './reverse-verknuepfungen-schema.js';
 import { AGENTENNETZWERK_SCHEMA_SQL } from './agentennetzwerk-schema.js';
 import {SHELL_ALT_SCHEMA_SQL} from './shell-altbestand-schema.js';
+import {SHELL_LOG_STROM_SCHEMA_SQL} from './shell-log-strom-schema.js';
 import { getPool } from './client.js';
 import {HEX_EXE_FORMATE_SCHEMA_SQL} from './hex-exe-formate-schema.js';
 import {HEX_FORMATE_SCHEMA_SQL} from './hex-formate-schema.js';
@@ -1369,6 +1370,7 @@ CREATE INDEX IF NOT EXISTS idx_shell_sicherungs_audit_objekt
 
 -- P10-T42 (sol-1): eigener additiver Shell-Altbestand-Markerabschnitt.
 ${SHELL_ALT_SCHEMA_SQL}
+${SHELL_LOG_STROM_SCHEMA_SQL}
 
 CREATE TABLE IF NOT EXISTS shell_jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1397,6 +1399,7 @@ CREATE TABLE IF NOT EXISTS shell_jobs (
 --   zur Projekt-Maschine den Log lesen.
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS message TEXT;
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS output TEXT;
+ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS log_strom TEXT;
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS output_truncated BOOLEAN DEFAULT false;
 -- agent_id: echte Attribution des dispatchenden Agenten (Multi-Agenten-Aufsicht).
 --   Cloud: aus Header abgeleitet (deriveAgentIdFromHeaders); Spezialist: SYNAPSE_AGENT_NAME;

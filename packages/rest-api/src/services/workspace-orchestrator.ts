@@ -18,6 +18,8 @@
 
 import Docker from 'dockerode';
 import { PassThrough } from 'node:stream';
+import {StringDecoder} from 'node:string_decoder';
+import {ShellAusgabePuffer,ladeShellWerte,haengeLogStromTeilAn,gleicheLogStromAbschlussAn,beginneWorkspaceLogStrom,beendeWorkspaceLogStrom} from '@synapse/core';
 import * as tar from 'tar-stream';
 import { minimatch } from 'minimatch';
 import { createHash, randomUUID } from 'node:crypto';
@@ -504,8 +506,8 @@ export class WorkspaceOrchestrator {
   async exec(
     project: string,
     command: string,
-    opts: { timeoutMs?: number; workingDir?: string; exposePorts?: number[]; workspace?: string; role?: string; agent_id?:string|null; bestaetigt?:ShellBestaetigung|null; bestaetigung?:{id:string;grund:string;frist_stunden?:number}; shell?:SicherungsShell; onLage?: (lage: ShellLage) => Promise<void> | void } = {}
-  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number; internal_urls?: Record<number, string> } & Partial<ShellSicherungsAntwort> & {status?:string;id?:string;quellen_wiederhergestellt?:string[];quellen_pruefung_ausstehend?:boolean}> {
+    opts: { log_strom?:string; timeoutMs?: number; workingDir?: string; exposePorts?: number[]; workspace?: string; role?: string; agent_id?:string|null; bestaetigt?:ShellBestaetigung|null; bestaetigung?:{id:string;grund:string;frist_stunden?:number}; shell?:SicherungsShell; onLage?: (lage: ShellLage) => Promise<void> | void } = {}
+  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number; internal_urls?: Record<number, string> } & Partial<ShellSicherungsAntwort> & {status?:string;id?:string;quellen_wiederhergestellt?:string[];quellen_pruefung_ausstehend?:boolean;log_strom_unvollstaendig?:boolean}> {
     if (!this.dockerAvailable) {
       throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
     }
@@ -576,6 +578,8 @@ export class WorkspaceOrchestrator {
       if(testdatei&&!endeBelegt)throw Error('quellen_pruefung_ausstehend');
       return testdatei?this.stelleWorkspaceQuellenWiederHer(project,container):[];
     };
+    const stromJob=opts.log_strom?randomUUID():null;
+    if(stromJob && opts.log_strom)await beginneWorkspaceLogStrom(project,opts.log_strom,stromJob,command,opts.agent_id??null);
     try {
     const exec = await container.exec({
       Cmd: ['/usr/bin/env','-i',...Object.entries(jobUmgebung.env).filter((e):e is [string,string]=>e[1]!==undefined).map(([k,v])=>k+'='+v),
@@ -590,14 +594,26 @@ export class WorkspaceOrchestrator {
     });
 
     gestarteterExec=exec;
+    let stromFolge=0,stromFehler=false;
+    let stromSenden:Promise<void>=Promise.resolve();
+    const stromTeile:string[]=[];
+    const stromPuffer=opts.log_strom?new ShellAusgabePuffer(await ladeShellWerte(project),(text)=>{
+      stromTeile.push(text);
+      const zeichen=Array.from(text);
+      for(let i=0;i<zeichen.length;i+=8192){
+        const teil=zeichen.slice(i,i+8192).join(''),folge=stromFolge++;
+        stromSenden=stromSenden.then(()=>stromFehler ? undefined : haengeLogStromTeilAn(project,opts.log_strom!,stromJob!,folge,teil)).then(()=>undefined).catch(()=>{stromFehler=true;});
+      }
+    }):null;
+    const decoderOut=new StringDecoder('utf8'),decoderErr=new StringDecoder('utf8');
     const stream = await exec.start({ hijack: true, stdin: false });
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     const stdoutPass = new PassThrough();
     const stderrPass = new PassThrough();
-    stdoutPass.on('data', (c: Buffer) => stdoutChunks.push(c));
-    stderrPass.on('data', (c: Buffer) => stderrChunks.push(c));
+    stdoutPass.on('data', (c: Buffer) => {stdoutChunks.push(c);stromPuffer?.empfange(decoderOut.write(c));});
+    stderrPass.on('data', (c: Buffer) => {stderrChunks.push(c);stromPuffer?.empfange(decoderErr.write(c));});
     // Multiplexed-Stream (Header pro Frame fuer stdout/stderr) demuxen.
     this.docker.modem.demuxStream(stream, stdoutPass, stderrPass);
 
@@ -622,6 +638,11 @@ export class WorkspaceOrchestrator {
       if (timeoutHandle) clearTimeout(timeoutHandle);
     }
 
+    if(stromPuffer){stromPuffer.empfange(decoderOut.end());stromPuffer.empfange(decoderErr.end());stromPuffer.ende();await stromSenden;}
+    if(stromFehler && opts.log_strom){
+      try{await gleicheLogStromAbschlussAn(project,opts.log_strom,stromJob!,stromTeile.join(''),false);stromFehler=false;}
+      catch{console.error('[Workspaces] Log-Strom-Abschlussabgleich fehlgeschlagen:',stromJob);}
+    }
     let stdout = Buffer.concat(stdoutChunks).toString('utf8');
     let stderr = Buffer.concat(stderrChunks).toString('utf8') + timeoutMsg;
 
@@ -652,7 +673,7 @@ export class WorkspaceOrchestrator {
     const internal_urls: Record<number, string> = {};
     if (opts.exposePorts) for (const p of opts.exposePorts) internal_urls[p] = this.internalUrl(project, p, wsName);
 
-    const result={stdout,stderr,exitCode,timedOut,durationMs:dt,...(quellen_wiederhergestellt.length?{quellen_wiederhergestellt}:{}),...(opts.exposePorts?{internal_urls}:{}),
+    const result={stdout,stderr,exitCode,timedOut,durationMs:dt,...(stromFehler?{log_strom_unvollstaendig:true}:{}),...(quellen_wiederhergestellt.length?{quellen_wiederhergestellt}:{}),...(opts.exposePorts?{internal_urls}:{}),
       ...(pruefung.antwort?pruefung.antwort:{}),...(pruefung.hinweis?{sicherung_hinweis:pruefung.hinweis}:{}),...(sicherungsJob?{id:sicherungsJob}:{})};
     if(sicherungsJob)await beendeShellSicherungsJob(sicherungsJob,project,{
       status:timedOut?'hard_limit':exitCode===0?'done':'failed',exit_code:exitCode,tail:(stdout+stderr).split('\n').slice(-5)});
@@ -669,6 +690,12 @@ export class WorkspaceOrchestrator {
       if(!wiederherstellungVersucht)await wiederherstellen();
       if(sicherungsJob)await beendeShellSicherungsJob(sicherungsJob,project,{status:'failed',error:'workspace_quellen_exec_fehlgeschlagen',message:String(error)});
       throw error;
+    } finally {
+      if(stromJob){
+        let beendet=!gestarteterExec, erfolgreich=false;
+        if(gestarteterExec)try{const info=await gestarteterExec.inspect();beendet=info.Running===false;erfolgreich=info.ExitCode===0;}catch{/* ungepruefter Lauf bleibt geschuetzt */}
+        if(beendet)await beendeWorkspaceLogStrom(project,stromJob,erfolgreich);
+      }
     }
   }
 

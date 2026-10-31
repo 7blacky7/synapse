@@ -69,6 +69,7 @@ import {
   reapOrphanedRunningJobs,
   schliesseDaemonJobWecker,
   schliesseShellJobFuerDaemon,
+  haengeLogStromTeilAn,
   schliesseSpecialistJobFuerDaemon,
   wrapperReapKandidaten,
 } from '@synapse/core';
@@ -285,6 +286,21 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
       return { success: true, ...r };
     },
   );
+
+  fastify.post<{ Body: { host?:string; daemon_id?:string; id?:string; folge?:number; inhalt?:string } }>(
+    '/api/daemon/shell/log-strom', async (request,reply) => {
+      const b=request.body??{};
+      const d=await pruefeDaemon(request,reply,b.host,b.daemon_id);
+      if(!d)return reply;
+      if(typeof b.id!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(b.id)||!Number.isInteger(b.folge)||typeof b.inhalt!=='string')
+        return reply.code(400).send({success:false,error:'log_strom_teil_ungueltig'});
+      const r=await getPool().query<{project:string;log_strom:string|null;claimed_by:string|null;status:string}>('SELECT project,log_strom,claimed_by,status FROM shell_jobs WHERE id=$1::uuid',[b.id]);
+      const job=r.rows[0];
+      if(!job||job.claimed_by!==d.daemonId||job.status!=='running'||!job.log_strom)
+        return reply.code(403).send({success:false,error:'log_strom_job_nicht_berechtigt'});
+      try {const gespeichert=await haengeLogStromTeilAn(job.project,job.log_strom,b.id,b.folge!,b.inhalt);return {success:true,gespeichert};}
+      catch(e){return reply.code(400).send({success:false,error:e instanceof Error?e.message:'log_strom_fehler'});}
+    });
 
   fastify.post<{ Body: { host?: string; daemon_id?: string; aktion?: string } }>(
     '/api/daemon/shell/wartung',

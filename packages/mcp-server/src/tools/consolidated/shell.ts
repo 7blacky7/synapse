@@ -12,6 +12,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
+import {rufeArtefaktApi} from './artefakt.js';
 import {mitShellAufrufPerId,mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus,completeShellJob,shellRohAusgabe,maskiereFaelligeShellJobs,schlankeShellRueckfrageWennAktiv,fremderLaufFeld} from '@synapse/core';
 import { str, num, reqStr, strArray, bool } from './types.js';
 import os from 'node:os';
@@ -150,11 +151,12 @@ export const shellTool: ConsolidatedTool = {
         grund: {type:'string',description:'bestaetigen: Grund der Bestaetigung (mind. 10 Zeichen). Altweg Koordinator/User: Audit-Grund fuer maskierung:false ohne Rueckfrage (mind. 10 Zeichen, nur Anzeige)'},
         action: {
           type: 'string',
-          enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'maskieren', 'bestaetigen'],
+          enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'maskieren', 'bestaetigen', 'log_loeschen'],
           description: 'Default: exec. bestaetigen + id (bestaetigung_id) + grund fuehrt den zur Rueckfrage gespeicherten Aufruf aus (command nicht erneut senden). history = Shell-Job-Metadaten mit kurzer Vorschau; get/log = Details und voller Output. activity = Multi-Agenten-Aufsicht ueber ALLE Tool-Aufrufe (Shell + jedes andere Tool), interleaved nach Zeit.',
         },
         project: { type: 'string', description: 'Projekt-Name (Pflicht fuer exec; optional fuer history Filter)' },
         command: { type: 'string', description: 'Shell-Kommando (Pflicht fuer exec)' },
+        log_strom: {type:'string',description:'exec/log/log_loeschen: benannter Projektstrom ueber die Synapse-API'},
         stream_id: { type: 'string', description: 'Pflicht fuer get_stream' },
         id: { type: 'string', description: 'Job-UUID (Pflicht fuer get und log); bei bestaetigen die bestaetigung_id. NICHT die stream_id aus der exec-Antwort — die Job-UUID liefert shell(history).' },
         limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200); activity: max Eintraege (Default 50, Max 500)' },
@@ -194,7 +196,9 @@ export const shellTool: ConsolidatedTool = {
     },
   },
   // P23-T9: Rueckfrage-Aufruf zur bestaetigung_id merken; bestaetigen fuehrt ihn ohne erneuten Befehl aus.
-  handler: async (eingang) => mitShellAufrufPerId(eingang,(args)=>mitShellAusgabe(args,async()=>{
+  handler: async (eingang) => mitShellAufrufPerId(eingang,(args)=>typeof args.log_strom==='string'
+    ? rufeArtefaktApi({...args,agent_kennung:args.agent_kennung??args.token??process.env.SYNAPSE_AGENT_TOKEN},{werkzeug:'shell'}) as Promise<{content:Array<{type:'text';text:string}>}>
+    : mitShellAusgabe(args,async()=>{
     const action = str(args, 'action') ?? 'exec';
 
     if (action === 'maskieren') {

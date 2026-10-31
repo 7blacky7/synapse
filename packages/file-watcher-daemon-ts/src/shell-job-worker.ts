@@ -39,6 +39,7 @@ import {
   pruefeApiWeg,
   holeShellJobsApi,
   meldeShellAbschlussApi,
+  meldeShellLogStromTeilApi,
   shellWartungApi,
   schlafe,
   DAEMON_JOBS_POLL_S,
@@ -305,6 +306,19 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
   console.error(`[shell-worker] Job ${job.id} (${project}) gestartet: ${job.command}`);
 
   let result: Record<string, unknown>;
+  let logFolge=0, logFehler=false;
+  let logSendung:Promise<void>=Promise.resolve();
+  const sendeMaskiert=(text:string):void=>{
+    if(!job.log_strom)return;
+    const chars=Array.from(text);
+    for(let i=0;i<chars.length;i+=8192){
+      const teil=chars.slice(i,i+8192).join(''), folge=logFolge++;
+      logSendung=logSendung.then(()=>logFehler ? undefined : meldeShellLogStromTeilApi(job.id,DAEMON_ID,folge,teil)).catch((error:unknown)=>{
+        logFehler=true;
+        console.error('[shell-worker] Log-Strom-Uebertragung fehlgeschlagen:',job.id,folge,maskiereShellText(String(error)).text);
+      });
+    }
+  };
   try {
     // P9-T27 Welle 2: im API-Weg liefert die API Projektpfad, Projekt-DB, Katalog und Freigabe; das Audit
     // geht per POST. execShellInProject braucht dann keine eigene PG-Verbindung.
@@ -331,6 +345,7 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
         ? job.sicherung.anfrage.demaskierung : undefined,
       shell: job.sicherung?.anfrage?.shell,
       sicherungs_job_id: job.id,
+      ...(job.log_strom ? {onMaskierteAusgabe:sendeMaskiert} : {}),
       queued_stream_id: job.stream_id??undefined,
       sicherungs_ursprung: 'daemon',
       datenbank_freigabe: job.sicherung?.anfrage?.datenbank_freigabe,
@@ -422,6 +437,7 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
   const jobEnv = result['job_env'] as { database_url?: string } | undefined;
   const jobEnvText = jobEnv?.database_url ? `job_env: database_url=${maskiereShellText(jobEnv.database_url).text}` : undefined;
 
+  await logSendung;
   await abschluesse.complete(job.id, {
     status,
     exit_code: exitCode,
@@ -438,6 +454,7 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
             'Job wurde abgebrochen. Angehaengte Wartende muessen neu starten.',
         }
       : result['message'] ? { message: String(result['message']) } : jobEnvText ? { message: jobEnvText } : {}),
+    ...(logFehler ? {message:[result['message'],jobEnvText,'Live-Log-Uebertragung unterbrochen; Abschluss gleicht die Ausgabe ab.'].filter(Boolean).join('; ')} : {}),
   });
   console.error(`[shell-worker] Job ${job.id} ${abschluesse.has(job.id)?'lokal beendet; Abschluss ausstehend':'abgeschlossen'} mit status=${status} (output ${output ? output.length + ' bytes' : 'kein file'})`);
 }

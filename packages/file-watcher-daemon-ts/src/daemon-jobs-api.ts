@@ -118,6 +118,11 @@ export async function holeShellJobsApi(o: { daemonId: string; projekte: string[]
   return { jobs: Array.isArray(a.jobs) ? a.jobs : [], abbrueche: Array.isArray(a.abbrueche) ? a.abbrueche : [] };
 }
 
+/** P22-T227: maskierter Teil eines vom Daemon geclaimten Jobs. */
+export async function meldeShellLogStromTeilApi(id:string,daemonId:string,folge:number,inhalt:string):Promise<void> {
+  await anfrage('/api/daemon/shell/log-strom', {method:'POST',body:{host:DAEMON_HOST,daemon_id:daemonId,id,folge,inhalt}}, 60_000);
+}
+
 /** Die HTTP-JSON-Huelle muss unter Fastifys Bodylimit bleiben (auch Escape-/UTF-8-Bytes). */
 const ABSCHLUSS_BODY_MAX = 900_000;
 

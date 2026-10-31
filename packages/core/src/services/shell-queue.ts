@@ -33,7 +33,10 @@ import {
   type ChannelUnterbrechung,
 } from './shell-channel-unterbrechung.js';
 
+import {logStromSchalter,pruefeLogStromName,gleicheLogStromAbschlussAn} from './shell-log-strom.js';
+
 export interface EnqueueArgs {
+  log_strom?: string;
   bestaetigt?:ShellBestaetigung|null;
   /** P10-T73: Rueckfrage-Bestaetigung des aufrufenden Agenten (Pruefung beim Daemon). */
   bestaetigung?:ShellBestaetigungEingabe;
@@ -53,6 +56,7 @@ export interface EnqueueArgs {
 }
 
 export interface ShellJobRow {
+  log_strom?: string | null;
   sicherung?:ShellJobSicherung|null;
   id: string;
   project: string;
@@ -198,6 +202,8 @@ export async function enqueueShellJob(
 ): Promise<{ id: string; stream_id: string; attached?: boolean; attached_to?: string | null; reused?: boolean; message?: string }> {
   const pool = getPool();
   const streamId = randomUUID().replace(/-/g, '').slice(0, 16);
+  const logStrom=args.log_strom === undefined ? null : pruefeLogStromName(args.log_strom);
+  if(logStrom && !(await logStromSchalter(args.project)).aktiv) throw new Error('log_strom_funktion_aus');
 
   // SH-4: Laeuft derselbe Befehl schon, haengen wir uns an statt ihn ein zweites
   // Mal zu starten. Der Grund ist NICHT Sparsamkeit, sondern Selbstzerstoerung:
@@ -212,7 +218,7 @@ export async function enqueueShellJob(
   const demaskierung=demaskRoh ? {...demaskRoh,...(aktuelleAgentIdentityId(args.project,args.agent_id) ? {actor_identity_id:aktuelleAgentIdentityId(args.project,args.agent_id)} : {})} : undefined;
   const sicherung=await pruefeShellEinreihung({...args,...(demaskierung?{demaskierung}:{})});
   const anfrage=sicherung.sicherung?await maskiereShellVorSpeichern(args.project,sicherung.sicherung):null;
-  const teilbar = sicherung.wiederverwendbar && args.force !== true && istTeilbar(args.command);
+  const teilbar = !logStrom && sicherung.wiederverwendbar && args.force !== true && istTeilbar(args.command);
   const execKey = teilbar
     ? execKeyFuer({
         project: args.project,
@@ -339,8 +345,8 @@ export async function enqueueShellJob(
   }
 
   const res = await pool.query<{ id: string }>(
-    `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id, agent_id, sicherung, owner_identity_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+    `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id, agent_id, sicherung, owner_identity_id, log_strom)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
      RETURNING id`,
     [
       args.project,
@@ -352,7 +358,7 @@ export async function enqueueShellJob(
       args.tail_lines ?? 5,
       streamId,
       args.agent_id ?? null,
-      anfrage?JSON.stringify(anfrage):null, aktuelleAgentIdentityId(args.project, args.agent_id),
+      anfrage?JSON.stringify(anfrage):null, aktuelleAgentIdentityId(args.project, args.agent_id), logStrom,
     ],
   );
   return { id: res.rows[0].id, stream_id: streamId };
@@ -424,10 +430,12 @@ export async function completeShellJob(
   result: ShellJobCompletion,
 ): Promise<void> {
   const pool = getPool();
-  const project=(await pool.query<{project:string}>('SELECT project FROM shell_jobs WHERE id=$1',[id])).rows[0]?.project;
+  const logJob=(await pool.query<{project:string;log_strom:string|null}>('SELECT project,log_strom FROM shell_jobs WHERE id=$1',[id])).rows[0];
+  const project=logJob?.project;
   // P10-T73: bestaetigt demaskierte Ausgabe bleibt bis zur Frist unmaskiert (Liste + Worker maskieren nach).
   const roh=result.demaskierung&&project?{output:result.output,tail:result.tail,demaskierung:result.demaskierung}:undefined;
   result=await maskiereShellVorSpeichern(project,result);
+  const sichereStromAusgabe=result.output;
   if(roh){result.output=roh.output;result.tail=roh.tail;delete result.demaskierung;}
   if(result.maskiert)result.message=[result.message,`maskiert: ${result.maskiert} Werte`].filter(Boolean).join('; ');
   // Output cappen — sehr grosse Logs sprengen die JSON-Response der KI-Tools.
@@ -439,6 +447,10 @@ export async function completeShellJob(
       output.slice(0, MAX_OUTPUT_BYTES) +
       `\n\n[... output truncated at ${MAX_OUTPUT_BYTES} bytes — full log via stream_id ...]`;
     truncated = true;
+  }
+  if(project && logJob?.log_strom){
+    const text=sichereStromAusgabe===undefined?undefined:sichereStromAusgabe.slice(0,MAX_OUTPUT_BYTES);
+    await gleicheLogStromAbschlussAn(project,logJob.log_strom,id,text,truncated);
   }
   // SH-2: Ein abgebrochener Job darf NIE als 'done' enden. Der Kill kann daneben
   // gehen — ein Prozess, der SIGTERM ignoriert und vor dem SIGKILL fertig wird,

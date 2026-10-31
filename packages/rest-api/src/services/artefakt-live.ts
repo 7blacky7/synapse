@@ -27,7 +27,7 @@ interface Abo { id: number; artefakt_id: string; project: string; betrachter: Ar
 interface Anlass { kanal: string; op: string | null; id: string | null; um: string }
 type RenderErgebnisArt = 'neu' | 'gleiche_daten' | 'gedrosselt' | 'fehler' | 'aus';
 
-export const ARTEFAKT_LIVE_KANAELE = ['synapse_plan', 'synapse_channel', 'synapse_event', 'synapse_tool_activity'] as const;
+export const ARTEFAKT_LIVE_KANAELE = ['synapse_plan', 'synapse_channel', 'synapse_event', 'synapse_tool_activity', 'synapse_code_file_change', 'synapse_log_strom'] as const;
 /** Zeitplan und gerendert_am liegen ein paar ms auseinander; so viel spaeter zeichnen, damit core nicht 'gedrosselt' meldet. */
 const DROSSEL_RESERVE_MS = 50;
 /** Anlaesse je Schluessel bis zur naechsten Renderung (die aeltesten fallen weg, gezaehlt wird weiter). */
@@ -50,6 +50,7 @@ const schluessel = (a: { artefakt_id: string; project: string }) => a.artefakt_i
 /** Fuer SSE und Verlauf: die Renderung ohne Debug-Ballast. */
 export function liveDaten(r: ArtefaktRenderErgebnis): Record<string, unknown> {
   return { artefakt_id: r.artefakt_id, project: r.project, revision: r.revision, html: r.html, gerendert_am: r.gerendert_am, modus: r.modus,
+    ...(typeof r.debug?.daten_hash === 'string' ? {daten_hash:r.debug.daten_hash} : {}),
     ...(r.titel ? { titel: r.titel } : {}), ...(r.fehler.length ? { fehler: r.fehler } : {}) };
 }
 

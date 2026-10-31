@@ -227,6 +227,11 @@ import {
   getShellJobs,
   getShellJobById,
   getShellJobLogLines,
+  leseLogStromEnde,
+  logStromSchalter,
+  pruefeLogStromName,
+  entferneLogStrom,
+  initialisiereLogStromHinweise,
   searchShellJobLog,
   // Daemon-Heartbeat (Auto-Routing shell ↔ workspace)
   isDaemonAliveForProject,
@@ -1355,7 +1360,7 @@ export const MCP_TOOLS = [
         ...SHELL_SICHERUNGS_PARAMETER,
         maskierung: {type:'boolean',description:'Anzeige maskieren (Default true). false (exec|get|log, jeder Agent): erst Rueckfrage mit bestaetigung_id, dann shell(action:"bestaetigen", id, grund) (gespeicherter Aufruf; alter Weg: derselbe Aufruf mit bestaetigung:{id,grund}). Bestaetigt demaskierte exec-Ausgabe wird bis zur Frist (Standard 3 Tage, frist_stunden kuerzer) unmaskiert gespeichert und danach automatisch nachmaskiert. tool_calls, Embeddings und Logs bleiben maskiert.'},
         grund: {type:'string',description:'bestaetigen: Grund der Bestaetigung (mind. 10 Zeichen). Altweg Koordinator/User: Audit-Grund fuer maskierung:false ohne Rueckfrage (mind. 10 Zeichen, nur Anzeige)'},
-        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'hide', 'maskieren', 'bestaetigen'], description: 'Default: exec. Gefaehrliche Befehle (Katalog-Kennzeichen gefaehrlich) laufen nicht sofort: Antwort stufe "rueckfrage" mit bestaetigung_id; der Aufruf ist gespeichert, bestaetigen + id (bestaetigung_id) + grund fuehrt ihn aus, ohne command erneut zu senden (nur der aufrufende Agent, Frist 60 s; alter Weg: derselbe Aufruf mit bestaetigung:{id,grund}). maskieren + id maskiert einen bestaetigt demaskierten Job sofort wieder. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern. cancel + id bricht einen laufenden Job ab — in den ersten 10 Minuten nur durch den Agenten, der ihn gestartet hat, danach durch jeden. hide + id blendet die shell_activity-Hinweise zu einem Job aus — in den ersten 3 Minuten NACH DEM ABSCHLUSS nur durch den Starter, danach durch jeden; der Starter bleibt dabei immer Empfaenger.' },
+        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'hide', 'maskieren', 'bestaetigen', 'log_loeschen'], description: 'Default: exec. Gefaehrliche Befehle (Katalog-Kennzeichen gefaehrlich) laufen nicht sofort: Antwort stufe "rueckfrage" mit bestaetigung_id; der Aufruf ist gespeichert, bestaetigen + id (bestaetigung_id) + grund fuehrt ihn aus, ohne command erneut zu senden (nur der aufrufende Agent, Frist 60 s; alter Weg: derselbe Aufruf mit bestaetigung:{id,grund}). maskieren + id maskiert einen bestaetigt demaskierten Job sofort wieder. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern. cancel + id bricht einen laufenden Job ab — in den ersten 10 Minuten nur durch den Agenten, der ihn gestartet hat, danach durch jeden. hide + id blendet die shell_activity-Hinweise zu einem Job aus — in den ersten 3 Minuten NACH DEM ABSCHLUSS nur durch den Starter, danach durch jeden; der Starter bleibt dabei immer Empfaenger.' },
         id: { type: 'string', description: 'Job-UUID (Pflicht fuer get/log); bei bestaetigen die bestaetigung_id. NICHT die stream_id aus der exec-Antwort — die Job-UUID liefert shell(history).' },
         limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200); activity: max Eintraege (Default 50, Max 500)' },
         offset: { type: 'number', description: 'history: Skip N (Default 0)' },
@@ -1368,6 +1373,7 @@ export const MCP_TOOLS = [
         max_matches: { type: 'number', description: 'log: max Treffer (Default 200, Max 2000)' },
         project: { type: 'string', description: 'Projekt-Name (Pflicht fuer exec)' },
         command: { type: 'string', description: 'Shell-Kommando (Pflicht fuer exec)' },
+        log_strom: { type:'string', description:'exec: Ausgabe in benannten Projektstrom; log: letzte Zeilen des Stroms (Produkt-Schalter log_strom).' },
         stream_id: { type: 'string', description: 'Pflicht fuer get_stream (noch nicht implementiert via REST)' },
         // timeout_ms wurde mit SH-1 ENTFERNT. Es existierte nur, damit Agenten
         // laengere Laeufe erlauben konnten — und genau das taten sie reflexhaft,
@@ -5741,7 +5747,18 @@ async function handleToolCallKern(
         return { success: true, job };
       }
 
+      if (shellAction === 'log_loeschen') {
+        return {success:true,...await entferneLogStrom(reqStr(args,'project'),reqStr(args,'log_strom'),resolveAgentId(effectiveAgentId??str(args,'agent_id'))??'')};
+      }
+
       if (shellAction === 'log') {
+        const strom=str(args,'log_strom');
+        if(strom) {
+          const project=reqStr(args,'project');
+          const schalter=await logStromSchalter(project);
+          if(!schalter.aktiv)return {success:false,error:'log_strom_funktion_aus',schalter};
+          return {success:true,...await leseLogStromEnde(project,strom,num(args,'tail_lines'))};
+        }
         const id = reqStr(args, 'id');
         if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
           return { success: false, error: 'invalid_job_id', message: `"${id}" ist keine Job-UUID${/^[0-9a-f]{16}$/i.test(id) ? ' (das ist eine stream_id)' : ''} — nutze das id-Feld der exec-Antwort oder shell(history).` };
@@ -5824,6 +5841,12 @@ async function handleToolCallKern(
 
       const project = reqStr(args, 'project');
       const command = reqStr(args, 'command');
+      const strom = str(args, 'log_strom');
+      if(strom !== undefined){
+        try{pruefeLogStromName(strom);}catch{return {success:false,error:'log_strom_name_ungueltig'};}
+        const s=await logStromSchalter(project);
+        if(!s.aktiv)return {success:false,error:'log_strom_funktion_aus',schalter:s};
+      }
       const cwdRel = str(args, 'cwd_relative');
       const tailLines = num(args, 'tail_lines');
       // SH-1: timeout_ms ist kein Tool-Parameter mehr. Es wurde von Agenten
@@ -5870,13 +5893,15 @@ async function handleToolCallKern(
             ...shellSicherungsParameter(args),
             workingDir: cwdRel ? `/workspace/${cwdRel.replace(/^\/+/, '')}` : undefined,
             workspace: str(args, 'workspace'),
+            log_strom: strom,
           });
           const tail = tailLines && r.stdout
             ? r.stdout.split('\n').slice(-tailLines)
             : r.stdout.split('\n');
           // P23-T3: stufe rueckfrage ohne Lage-Baum (Schalter tool_antworten_schlank).
           return await schlankeShellRueckfrageWennAktiv(project, {
-            success: r.exitCode === 0 && !r.timedOut,
+            success: r.exitCode === 0 && !r.timedOut && !r.log_strom_unvollstaendig,
+            ...(r.log_strom_unvollstaendig ? {log_strom_unvollstaendig:true,message:'Log-Strom-Uebertragung unvollstaendig.'} : {}),
             executed_via: 'workspace',
             status: r.status??(r.timedOut ? 'timeout' : (r.exitCode === 0 ? 'done' : 'failed')),
             ...shellSicherungsAntwortAus(r as unknown as Record<string,unknown>),
@@ -5921,6 +5946,7 @@ async function handleToolCallKern(
         target,
         workspace: str(args, 'workspace'),
         force: bool(args, 'force') === true,
+        log_strom: str(args, 'log_strom'),
         // Attribution: args.agent_id ist im Cloud-Pfad bereits aus dem Header
         // befuellt (deriveAgentIdFromHeaders) bzw. vom Caller gesetzt; Spezialist
         // faellt ueber resolveAgentId auf SYNAPSE_AGENT_NAME zurueck.
@@ -6635,6 +6661,7 @@ export async function apiLaufWerkzeugAufruf(name: string, args: Record<string, u
 export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
   initialisiereAssetKonfliktHinweise();
   initialisiereW1bAnmeldungHinweise();
+  initialisiereLogStromHinweise();
   /**
    * GET /mcp/sse - SSE Endpoint für MCP
    */

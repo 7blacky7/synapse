@@ -68,6 +68,8 @@ function formatDauer(ms: number): string {
 }
 
 export type ShellExecArgs = {
+  /** Nur bereits maskierte Ausgabe; keine Rohausgabe. */
+  onMaskierteAusgabe?: (text:string) => void;
   /** Interne API/Queue-Metadaten, kein MCP-/REST-Nutzerparameter. */
   datenbank_freigabe?:ShellDbFreigabe;
   /**
@@ -342,6 +344,7 @@ export async function execShellInProject(
     };
     const schreibeAusgabe = (text: string): void => {
       try { fs.writeSync(log, text); } catch (error) { protokolliereAusgabeFehler('log', error); }
+      try { args.onMaskierteAusgabe?.(text); } catch (error) { protokolliereAusgabeFehler('log_strom', error); }
     };
     speichereMeta();
 
