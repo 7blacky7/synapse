@@ -101,6 +101,8 @@ import { ASSET_UPLOAD_SCHEMA_SQL } from './asset-upload-schema.js';
 import { ASSET_MANIFEST_SCHEMA_SQL } from './asset-manifest-schema.js';
 import { ASSET_INSPEKTIONS_SCHEMA_SQL } from './asset-inspektions-schema.js';
 import {ASSET_KONFLIKT_SCHEMA_SQL} from './asset-konflikt-schema.js';
+// P22-T237: Zustellung Share -> Projektordner (asset_host_checkpoints-Spalten, daemon_heartbeats.asset_sync_aktiv).
+import { ASSET_PC_ZUSTELLUNG_SCHEMA_SQL } from './asset-pc-zustellung-schema.js';
 import { BUILD_PRUEFUNG_SCHEMA_SQL } from './build-pruefung-schema.js';
 import { LOESCH_TOKEN_SCHEMA_SQL } from './loesch-token-schema.js';
 import { ASSET_ANSICHT_LINK_SCHEMA_SQL } from './asset-ansicht-link-schema.js';
@@ -2823,6 +2825,7 @@ ${ASSET_UPLOAD_SCHEMA_SQL}
 ${ASSET_MANIFEST_SCHEMA_SQL}
 ${ASSET_INSPEKTIONS_SCHEMA_SQL}
 ${ASSET_KONFLIKT_SCHEMA_SQL}
+${ASSET_PC_ZUSTELLUNG_SCHEMA_SQL}
 -- P16-T16 E1: Spiegel schema-sql/101_build_pruefung.sql
 ${BUILD_PRUEFUNG_SCHEMA_SQL}
 -- P9-T31: Spiegel schema-sql/103_loesch_token.sql

@@ -7,7 +7,9 @@
 
 import { getPool } from '../db/client.js';
 
-const ALIVE_WINDOW_SEC = 30;
+/** P22-T237: dasselbe Fenster nutzt die Asset-Zustellung (asset-pc-zustellung.ts) - eine Lesestelle. */
+export const DAEMON_HEARTBEAT_ALIVE_SEC = 30;
+const ALIVE_WINDOW_SEC = DAEMON_HEARTBEAT_ALIVE_SEC;
 
 export interface DaemonHeartbeatRow {
   project: string;

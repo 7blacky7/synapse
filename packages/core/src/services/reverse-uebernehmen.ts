@@ -7,6 +7,7 @@ import {getAssetKonfiguration,type AssetKonfiguration} from '../config/asset-kon
 import {AssetUploadKern,AssetUploadFehler,type AssetUploadDb} from './asset-upload.js';
 import {normalisiereSpeicherPfad} from './asset-speicher.js';
 import {holeReverseAnsichtDatei,reverseAnsichtAdapter} from './reverse-ansicht-adapter.js';
+import {pcZustellungFuerAsset} from './asset-pc-zustellung.js';
 import {reverseEintragSichtbar} from './reverse-sichtbarkeit.js';
 type Row=Record<string,unknown>;
 export class ReverseUebernahmeFehler extends Error {
@@ -69,7 +70,10 @@ export async function uebernehmeReverseAsset(a:Row,o:{db?:AssetUploadDb|Pool;kon
    if(chunk.length)await kern.teil(ctx,session.id,offset,chunk.length,[chunk]);
   }finally{stream.destroy();}
   const r=await kern.finalisieren(ctx,session.id);
-  return {status:'fertig',datei:quelle,ziel_pfad:ziel,asset_id:r.asset_id,revision:r.revision,sha256:q.sha256,reverse_id:rid};
+  // P22-T237: Uebernehmen legt ein PROJEKT-Asset in den Projekt-Share (ohne Daemon) -> Zustellstand Share->Projektordner
+  // mitgeben, damit 'Daemon offline' bzw. 'Asset-Sync AUS' sichtbar ist. Nur mit Schalter asset_pc_zustellung, sonst unveraendert.
+  const pc=r.asset_id?await pcZustellungFuerAsset(project,String(r.asset_id),{db}):null;
+  return {status:'fertig',datei:quelle,ziel_pfad:ziel,asset_id:r.asset_id,revision:r.revision,sha256:q.sha256,reverse_id:rid,...(pc?{pc_zustellung:pc}:{})};
  }catch(e){
   if(e instanceof AssetUploadFehler&&['revision_konflikt','konflikt','finalisierung_laeuft'].includes(e.code)){
    const row=(await db.query('SELECT transport_revision FROM asset_files WHERE project=$1 AND file_path=$2',[project,ziel])).rows[0];
