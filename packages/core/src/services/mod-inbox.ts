@@ -19,6 +19,12 @@
  *   Quittungs-IDs zu (Absender system, kein Inhalt). Nach einem API-Neustart (Identitaet noch unbekannt) keine Erinnerung.
  * SCHALTER: Produkt-Schalter mod_inbox (je Projekt/global, Standard AUS, nur ausdruecklich). AUS = Meldungen werden mit
  *   aktiv:false beantwortet und nicht gemerkt, keine Zustellung.
+ * P22-T212 (User 31.10.2026: quittierte Nachrichten kamen trotzdem als Turns): $.prompt.submit loest schon beim Einreihen in die
+ *   Eingabewarteschlange von Claude Code auf, die CLI reicht eingereihte Prompts nach jedem Tool-Aufruf in den laufenden Turn nach.
+ *   Mit Schalter mod_inbox_vorpruefung (je Projekt/global, Standard AUS, nur ausdruecklich) reicht die Mod erst bei freier Sitzung
+ *   ein und fragt direkt davor ueber den Daemon (POST /api/daemon/mod-inbox/offen) nach: pruefeModInboxErledigt nennt die schon
+ *   quittierten Schluessel (agent_zustellungen.quittiert_am), die Mod verwirft sie. Ruhezeit und Verfallsfrist sind Einstellwerte
+ *   (mod_inbox_ruhe_ms, mod_inbox_verfall_minuten in runtime_ueberwachung) und kommen mit der Meldung an den Daemon (vorpruefung).
  * EINSTELLUNGEN: Takt und Menge je Takt wie die Startort-Zustellung (leseStartOrtZustellWerte, PG runtime_ueberwachung).
  * DEBUG: modInboxStand() zeigt gemeldete Identitaeten (Host, Daemon, Sitzungen, Alter; nie den Ausweis), offene Quittungen,
  *   Erinnerung und Daemon-Wechsel sowie den letzten Takt.
@@ -31,6 +37,12 @@ import { gibVerwaisteZustellJobsFrei } from './specialist-queue.js';
 import { inboxQuittungAktiv, offeneQuittungen, stelleErinnerungZu, type ErinnerungErgebnis } from './inbox-quittung.js';
 
 export const MOD_INBOX_FUNKTION = 'mod_inbox' as const;
+export const MOD_INBOX_VORPRUEFUNG_FUNKTION = 'mod_inbox_vorpruefung' as const;
+/** P22-T212: Code-Standards der Einstellwerte (eine Lesestelle: leseModInboxVorpruefung). */
+const RUHE_MS_STANDARD = 1500;
+const VERFALL_MINUTEN_STANDARD = 30;
+/** Hoechstens so viele Schluessel je Pruefung (die Mod fragt alle wartenden auf einmal). */
+export const MOD_INBOX_PRUEF_MAX = 100;
 /** Ohne neue Meldung gilt eine Identitaet nach dieser Zeit als nicht mehr erreichbar (der Daemon meldet alle 15 s). */
 const LEBENSZEICHEN_MS = 60_000;
 /** P22-T144: Wartezeit je Zustell-Job auf diesem Weg (Daemon-Frist 20 s plus Luft), statt der Turnfrist des Wrappers. */
@@ -57,6 +69,42 @@ let letzter: ModInboxTakt | null = null;
 
 export async function modInboxSchalterAktiv(project: string): Promise<boolean> {
   try { return (await leseProfilProduktSchalter(MOD_INBOX_FUNKTION, project)).aktiv; } catch { return false; }
+}
+
+export interface ModInboxVorpruefung { aktiv: boolean; ruhe_ms: number; verfall_ms: number; quelle: string; letzter_fehler: string | null }
+
+/** P22-T212: Schalter mod_inbox_vorpruefung und Einstellwerte; Lesefehler -> AUS (Altverhalten der Mod), Werte vom Code-Standard. */
+export async function leseModInboxVorpruefung(project: string): Promise<ModInboxVorpruefung> {
+  let aktiv = false;
+  let quelle = 'standard';
+  let letzter_fehler: string | null = null;
+  try { const p = await leseProfilProduktSchalter(MOD_INBOX_VORPRUEFUNG_FUNKTION, project); aktiv = p.aktiv; quelle = p.quelle; }
+  catch { letzter_fehler = 'schalter_nicht_lesbar'; }
+  let ruhe = RUHE_MS_STANDARD;
+  let verfall = VERFALL_MINUTEN_STANDARD;
+  try {
+    const { leseRuntimeUeberwachungWerte } = await import('./runtime-ueberwachung.js');
+    const w = await leseRuntimeUeberwachungWerte() as unknown as Record<string, unknown>;
+    ruhe = Number(w.mod_inbox_ruhe_ms ?? ruhe);
+    verfall = Number(w.mod_inbox_verfall_minuten ?? verfall);
+  } catch { letzter_fehler ??= 'einstellungen_nicht_lesbar'; }
+  return { aktiv, ruhe_ms: ruhe, verfall_ms: verfall * 60_000, quelle, letzter_fehler };
+}
+
+/**
+ * P22-T212: Welche Uebergabe-Schluessel (weg:message_id) dieser Identitaet sind schon quittiert (agent_zustellungen.quittiert_am)?
+ * Nur eigene Zeilen; andere Schluessel (Erinnerungen, unbekannte, fremde) gelten als offen. Ohne Quittung (Schalter inbox_quittung
+ * AUS) bleibt quittiert_am leer: alles offen, die Mod reicht wie bisher ein.
+ */
+export async function pruefeModInboxErledigt(identityId: string, schluessel: string[]): Promise<{ erledigt: string[]; offen: string[] }> {
+  const gueltig = schluessel.filter((s) => /^(inbox|chat|channel|event):\d{1,18}$/.test(s));
+  if (gueltig.length === 0) return { erledigt: [], offen: schluessel };
+  const r = await getPool().query<{ schluessel: string }>(
+    `SELECT weg || ':' || message_id::text AS schluessel FROM agent_zustellungen
+      WHERE identity_id = $1 AND quittiert_am IS NOT NULL AND (weg || ':' || message_id::text) = ANY($2::text[])`,
+    [identityId, gueltig]);
+  const erledigt = new Set(r.rows.map((z) => z.schluessel));
+  return { erledigt: schluessel.filter((s) => erledigt.has(s)), offen: schluessel.filter((s) => !erledigt.has(s)) };
 }
 
 /** Entfernt abgelaufene Sitzungen; true = mindestens eine Sitzung lebt noch. */
@@ -92,7 +140,8 @@ async function raeumeDaemonWechsel(m: Meldung, daemonId: string, von: string | n
  * inbox_quittung (Debug im Daemon-Status).
  */
 export async function meldeModSitzung(e: { host: string; sitzung: string; identity_id: string; daemon_id?: string | null; jetzt?: number }):
-  Promise<{ aktiv: boolean; identity_id: string; agent_id: string | null; grund: string | null; offene_quittungen?: { anzahl: number; aelteste_s: number | null } }> {
+  Promise<{ aktiv: boolean; identity_id: string; agent_id: string | null; grund: string | null; offene_quittungen?: { anzahl: number; aelteste_s: number | null };
+    vorpruefung?: { aktiv: boolean; ruhe_ms: number; verfall_ms: number } }> {
   const r = await getPool().query<{ project: string; agent_id: string; status: string }>(
     'SELECT project, agent_id, status FROM agent_identitaeten WHERE id::text = $1', [e.identity_id]);
   const z = r.rows[0];
@@ -127,7 +176,10 @@ export async function meldeModSitzung(e: { host: string; sitzung: string; identi
       m.offene_quittungen = { anzahl: o.anzahl, aelteste_s: o.aelteste_s };
     } catch { m.offene_quittungen = null; }
   } else m.offene_quittungen = null;
-  return { aktiv: true, identity_id: e.identity_id, agent_id: z.agent_id, grund: null, ...(m.offene_quittungen ? { offene_quittungen: m.offene_quittungen } : {}) };
+  // P22-T212: Stand der Vorpruefung geht ueber den Daemon an die Mod (/mod-inbox/warte).
+  const v = await leseModInboxVorpruefung(z.project);
+  return { aktiv: true, identity_id: e.identity_id, agent_id: z.agent_id, grund: null, ...(m.offene_quittungen ? { offene_quittungen: m.offene_quittungen } : {}),
+    vorpruefung: { aktiv: v.aktiv, ruhe_ms: v.ruhe_ms, verfall_ms: v.verfall_ms } };
 }
 
 /** Ein Takt (manager.ts zustellTakt, ohne await). Wirft nie; je Identitaet nie parallel. */

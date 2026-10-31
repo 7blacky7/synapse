@@ -23,7 +23,7 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
-  pruefeAgentToken, importiereSitzungsEintraege, meldeModSitzung,
+  pruefeAgentToken, importiereSitzungsEintraege, meldeModSitzung, leseModInboxVorpruefung, pruefeModInboxErledigt, MOD_INBOX_PRUEF_MAX,
   projekteDesHosts,
   loeseAgentZiel, leseAgentBezugModus, mitAgentAufrufKontext, type AgentZiel,
   istSyncPfad,
@@ -325,6 +325,26 @@ export async function daemonSyncRoutes(fastify: FastifyInstance, pruefeDaemon: D
       sitzungen.push({ sitzung, ...(await meldeModSitzung({ host: d.host, sitzung, identity_id: identityId, daemon_id: d.daemonId })) });
     }
     return { success: true, sitzungen };
+  });
+
+  // ── P22-T212: Vorpruefung der Mod-Inbox – welche wartenden Nachrichten sind schon quittiert? ──
+  // Body { host, daemon_id, ausweis, schluessel[1..100] } (mod-inbox.ts im Daemon, Route /mod-inbox/pruefe). Identitaet nur aus
+  // dem Ausweis. Schalter mod_inbox_vorpruefung AUS -> aktiv:false, alles offen (die Mod reicht wie bisher ein).
+  fastify.post<{ Body: Body }>('/api/daemon/mod-inbox/offen', async (request, reply) => {
+    const body = (request.body ?? {}) as Body & { ausweis?: unknown; schluessel?: unknown };
+    const d = await pruefeDaemon(request, reply, body.host, body.daemon_id);
+    if (!d) return reply;
+    const schluessel = Array.isArray(body.schluessel) ? body.schluessel.filter((s): s is string => istText(s, 200)) : null;
+    if (!istText(body.ausweis, 200) || !schluessel || schluessel.length === 0 || schluessel.length > MOD_INBOX_PRUEF_MAX) {
+      return reply.code(400).send({ success: false, error: 'mod_inbox_pruefung_ungueltig' });
+    }
+    let identityId: string;
+    let project: string;
+    try { const a = await pruefeAgentToken(body.ausweis); identityId = a.identitaet.id; project = a.identitaet.project; }
+    catch { return reply.code(403).send({ success: false, error: 'ausweis_ungueltig' }); }
+    const v = await leseModInboxVorpruefung(project);
+    if (!v.aktiv) return { success: true, aktiv: false, erledigt: [], offen: schluessel };
+    return { success: true, aktiv: true, ...(await pruefeModInboxErledigt(identityId, schluessel)) };
   });
 
   // ── Tray (lokale Daemon-API, api.ts) ───────────────────────────────────────────────────────

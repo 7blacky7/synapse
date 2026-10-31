@@ -9,6 +9,12 @@
  *   POST /mod-inbox/quittung               { sitzung, id, gestartet, grund? } nach $.prompt.submit
  *   GET  /mod-inbox/status                 Debug: Sitzungen (ohne Ausweis; P22-T144 mit offenen Quittungen laut API), offene
  *                                          Uebergaben, letzte Abweisungen der Mod (drop-Grund von $.prompt.submit), letzter Fehler
+ *   POST /mod-inbox/pruefe                 P22-T212 { sitzung, ids[] } -> { aktiv, erledigt[], offen[] }: schon quittierte
+ *                                          Nachrichten laut API (POST /api/daemon/mod-inbox/offen mit dem Ausweis der Sitzung)
+ * P22-T212 (Schalter mod_inbox_vorpruefung der API): $.prompt.submit loest schon beim Einreihen in die Eingabewarteschlange von
+ *   Claude Code auf. Die Mod haelt Nachrichten deshalb selbst, bis die Sitzung frei ist, fragt direkt davor /mod-inbox/pruefe und
+ *   verwirft quittierte (Quittung gestartet:true, verworfen:'quittiert') bzw. verfallene. Den Stand (aktiv, Ruhezeit, Verfallsfrist)
+ *   bekommt sie mit jeder /warte-Antwort (vorpruefung); sie meldet dort ihre Zahl wartender Nachrichten (wartend=).
  * ZUORDNUNG: Sitzung -> Ausweis aus dem Transcript ~/.claude/projects/<ordner>/<sitzung>.jsonl (letzte chat(anmelden)-Zeile,
  *   ausweisAusZeile wie cli-verlauf). Der Ausweis geht nur an die API (POST /api/daemon/mod-inbox), nie an die Mod.
  * ZUSTELLUNG: zustelleAnMod (specialist-job-worker, Fall 'zustellen' ohne Wrapper) reiht ein und wartet hoechstens
@@ -44,6 +50,7 @@ const STUECK = 16 * 1024 * 1024;
 const SITZUNG_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export interface ModNachricht { id: string; text: string }
+export interface ModVorpruefung { aktiv: boolean; ruhe_ms: number; verfall_ms: number }
 interface Sitzung {
   id: string;
   zuletzt: number;
@@ -55,6 +62,11 @@ interface Sitzung {
   grund: string | null;
   /** P22-T144: offene Quittungen dieser Identitaet laut letzter API-Antwort (nur Schalter inbox_quittung). */
   offene_quittungen: { anzahl: number; aelteste_s: number | null } | null;
+  /** P22-T212: Stand der Vorpruefung laut API (null = noch nicht gemeldet bzw. API vor P22-T212 -> Mod wie bisher). */
+  vorpruefung?: ModVorpruefung | null;
+  /** P22-T212: Zahl der Nachrichten, die in der Mod auf eine freie Sitzung warten (aus dem letzten Abruf). */
+  wartend_in_mod?: number | null;
+  pruefung_letzte?: { am: string; erledigt: number; offen: number; fehler: string | null } | null;
   schlange: ModNachricht[];
   /** Offener Abruf; false = der Abruf war schon abgebrochen, die Nachricht bleibt in der Schlange. */
   warter: ((n: ModNachricht | null) => boolean) | null;
@@ -73,6 +85,16 @@ let doppeltAbgefangen = 0;
 /** P22-T144: letzte Abweisungen der Mod (Grund aus $.prompt.submit drop), neueste zuletzt. */
 const abweisungen: Array<{ id: string; sitzung: string; grund: string; am: string }> = [];
 const ABWEISUNGEN_MAX = 20;
+/** P22-T212: letzte von der Mod verworfene Nachrichten (quittiert bzw. verfallen), neueste zuletzt. */
+const verworfen: Array<{ id: string; sitzung: string; grund: string; am: string }> = [];
+
+/** P22-T212: vorpruefung aus der API-Antwort; unlesbar -> null (Mod wie bisher). */
+function leseVorpruefung(v: unknown): ModVorpruefung | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as { aktiv?: unknown; ruhe_ms?: unknown; verfall_ms?: unknown };
+  if (typeof o.aktiv !== 'boolean' || typeof o.ruhe_ms !== 'number' || typeof o.verfall_ms !== 'number') return null;
+  return { aktiv: o.aktiv, ruhe_ms: o.ruhe_ms, verfall_ms: o.verfall_ms };
+}
 
 function sitzungFuer(id: string, jetzt = Date.now()): Sitzung {
   let s = sitzungen.get(id);
@@ -127,11 +149,18 @@ export function warte(id: string, ms = WARTE_MS): { ergebnis: Promise<ModNachric
   return { ergebnis, abbrechen: () => { abgebrochen = true; ende(null); } };
 }
 
-/** Quittung der Mod nach $.prompt.submit. false = unbekannte Uebergabe oder fremde Sitzung. */
-export function quittiere(sitzung: string, id: string, gestartet: boolean, grund: string | null): boolean {
+/**
+ * Quittung der Mod nach $.prompt.submit. false = unbekannte Uebergabe oder fremde Sitzung. P22-T212: verworfen = die Mod hat die
+ * Nachricht nicht eingereicht ('quittiert': vom Agenten schon quittiert, gilt als zugestellt; 'verfallen': nicht gestartet).
+ */
+export function quittiere(sitzung: string, id: string, gestartet: boolean, grund: string | null, weg: string | null = null): boolean {
   const u = uebergaben.get(id);
   if (!u || u.sitzung !== sitzung) return false;
   sitzungFuer(sitzung);
+  if (weg) {
+    verworfen.push({ id, sitzung, grund: weg.slice(0, 40), am: new Date().toISOString() });
+    if (verworfen.length > ABWEISUNGEN_MAX) verworfen.splice(0, verworfen.length - ABWEISUNGEN_MAX);
+  }
   markiere(id, gestartet ? 'gestartet' : 'abgewiesen', gestartet ? null : (grund ?? 'abgewiesen').slice(0, 200));
   if (!gestartet) {
     abweisungen.push({ id, sitzung, grund: (grund ?? 'abgewiesen').slice(0, 200), am: new Date().toISOString() });
@@ -279,6 +308,7 @@ export async function modInboxTakt(): Promise<void> {
       s.identity_id = typeof e.identity_id === 'string' ? e.identity_id : null;
       s.grund = typeof e.grund === 'string' ? e.grund : null;
       s.offene_quittungen = leseOffeneQuittungen(e.offene_quittungen);
+      s.vorpruefung = leseVorpruefung((e as { vorpruefung?: unknown }).vorpruefung);
     }
     letzteMeldung = new Date().toISOString();
     letzterFehler = null;
@@ -297,6 +327,31 @@ async function takt(): Promise<void> {
   finally { taktLaeuft = false; }
 }
 
+/**
+ * P22-T212: Welche der wartenden Nachrichten (ids = Uebergabe-Schluessel) hat der Agent schon quittiert? Fragt die API mit dem
+ * Ausweis der Sitzung. Wirft bei unbekannter Sitzung, fehlendem Ausweis oder API-Fehler (die Mod reicht dann wie bisher ein).
+ */
+export async function pruefeErledigt(sitzung: string, ids: string[]): Promise<{ aktiv: boolean; erledigt: string[]; offen: string[] }> {
+  const s = sitzungen.get(sitzung);
+  if (!s) throw new Error('sitzung_unbekannt');
+  sitzungFuer(sitzung);
+  try {
+    leseAusweis(s);
+    if (!s.ausweis) throw new Error('kein_ausweis');
+    const r = await anfrage<{ aktiv?: unknown; erledigt?: unknown; offen?: unknown }>('/api/daemon/mod-inbox/offen',
+      { method: 'POST', body: { host: DAEMON_HOST, daemon_id: DAEMON_API_ID, ausweis: s.ausweis, schluessel: ids } }, 10_000);
+    const erledigtRoh = Array.isArray(r.erledigt) ? r.erledigt.filter((x): x is string => typeof x === 'string') : [];
+    const erledigt = ids.filter((id) => erledigtRoh.includes(id));
+    const offen = ids.filter((id) => !erledigt.includes(id));
+    s.pruefung_letzte = { am: new Date().toISOString(), erledigt: erledigt.length, offen: offen.length, fehler: null };
+    return { aktiv: r.aktiv === true, erledigt, offen };
+  } catch (err) {
+    const fehler = (err as Error).message.slice(0, 200);
+    s.pruefung_letzte = { am: new Date().toISOString(), erledigt: 0, offen: ids.length, fehler };
+    throw err;
+  }
+}
+
 export interface ModInboxHandle { stop(): void }
 
 export function startModInbox(): ModInboxHandle {
@@ -312,25 +367,41 @@ function nurLokal(req: FastifyRequest, reply: FastifyReply): boolean {
 }
 
 export function registriereModInbox(app: FastifyInstance): void {
-  app.get<{ Querystring: { sitzung?: string } }>('/mod-inbox/warte', async (req, reply) => {
+  app.get<{ Querystring: { sitzung?: string; wartend?: string } }>('/mod-inbox/warte', async (req, reply) => {
     if (!nurLokal(req, reply)) return reply;
     const id = String(req.query.sitzung ?? '');
     if (!SITZUNG_ID.test(id)) return reply.code(400).send({ success: false, error: 'sitzung_ungueltig' });
     const neu = !sitzungen.has(id);
     const w = warte(id);
+    // P22-T212: Zahl der in der Mod wartenden Nachrichten (nur Debug im Status).
+    const wartend = Number(req.query.wartend);
+    const sw = sitzungen.get(id);
+    if (sw) sw.wartend_in_mod = Number.isInteger(wartend) && wartend >= 0 ? wartend : null;
     // Bricht die Mod den Abruf ab (Sitzung beendet, Neuladen), bleibt eine noch nicht gelieferte Nachricht in der Schlange.
     reply.raw.on('close', () => { if (!reply.raw.writableEnded) w.abbrechen(); });
     if (neu) void takt();
     const nachricht = await w.ergebnis;
     const s = sitzungen.get(id);
-    return { success: true, nachricht, aktiv: s?.aktiv ?? false, grund: s?.grund ?? null };
+    return { success: true, nachricht, aktiv: s?.aktiv ?? false, grund: s?.grund ?? null,
+      vorpruefung: s?.vorpruefung ?? null };
   });
 
-  app.post<{ Body: { sitzung?: unknown; id?: unknown; gestartet?: unknown; grund?: unknown } }>('/mod-inbox/quittung', async (req, reply) => {
+  // P22-T212: Vorpruefung der Mod direkt vor dem Einreichen. Fehler -> 503, die Mod reicht dann wie bisher ein.
+  app.post<{ Body: { sitzung?: unknown; ids?: unknown } }>('/mod-inbox/pruefe', async (req, reply) => {
+    if (!nurLokal(req, reply)) return reply;
+    const b = req.body ?? {};
+    const ids = Array.isArray(b.ids) ? b.ids.filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length <= 200) : null;
+    if (typeof b.sitzung !== 'string' || !ids || ids.length === 0 || ids.length > 100) return reply.code(400).send({ success: false, error: 'pruefung_ungueltig' });
+    try { return { success: true, ...(await pruefeErledigt(b.sitzung, ids)) }; }
+    catch (err) { return reply.code(503).send({ success: false, error: (err as Error).message.slice(0, 200) }); }
+  });
+
+  app.post<{ Body: { sitzung?: unknown; id?: unknown; gestartet?: unknown; grund?: unknown; verworfen?: unknown } }>('/mod-inbox/quittung', async (req, reply) => {
     if (!nurLokal(req, reply)) return reply;
     const b = req.body ?? {};
     if (typeof b.sitzung !== 'string' || typeof b.id !== 'string') return reply.code(400).send({ success: false, error: 'quittung_ungueltig' });
-    const bekannt = quittiere(b.sitzung, b.id, b.gestartet === true, typeof b.grund === 'string' ? b.grund : null);
+    const bekannt = quittiere(b.sitzung, b.id, b.gestartet === true, typeof b.grund === 'string' ? b.grund : null,
+      typeof b.verworfen === 'string' ? b.verworfen : null);
     return { success: true, bekannt };
   });
 
@@ -349,9 +420,11 @@ export function registriereModInbox(app: FastifyInstance): void {
       success: true,
       sitzungen: [...sitzungen.values()].map((s) => ({ sitzung: s.id, aktiv: s.aktiv, grund: s.grund, identity_id: s.identity_id,
         ausweis_bekannt: s.ausweis !== null, wartet: s.warter !== null, schlange: s.schlange.length, zuletzt_vor_s: Math.round((jetzt - s.zuletzt) / 1000),
-        offene_quittungen: s.offene_quittungen })),
+        offene_quittungen: s.offene_quittungen,
+        vorpruefung: s.vorpruefung ?? null, wartend_in_mod: s.wartend_in_mod ?? null, pruefung_letzte: s.pruefung_letzte ?? null })),
       uebergaben: [...uebergaben].map(([id, u]) => ({ id, sitzung: u.sitzung, stand: u.stand, grund: u.grund, vor_s: Math.round((jetzt - u.am) / 1000) })),
       abweisungen,
+      verworfen,
       doppelt_abgefangen: doppeltAbgefangen,
       letzte_meldung: letzteMeldung,
       letzter_fehler: letzterFehler,

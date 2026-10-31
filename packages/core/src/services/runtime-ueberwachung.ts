@@ -145,6 +145,10 @@ export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
   // P22-T113 (Abnahme R6): Takt und Menge der Zustellung ueber den Startort-Daemon (agent-startort-zustellung.ts).
   startort_zustell_takt_sekunden: { art: 'zahl', standard: 5, min: 1, max: 300 },
   startort_zustell_je_takt: { art: 'zahl', standard: 3, min: 1, max: 20 },
+  // P22-T212: Vorpruefung der Mod-Inbox (Schalter mod_inbox_vorpruefung, mod-inbox.ts): Ruhezeit nach dem Turnende, bevor die Mod
+  // einreicht, und Verfallsfrist fuer Nachrichten, die in der Mod auf eine freie Sitzung warten.
+  mod_inbox_ruhe_ms: { art: 'zahl', standard: 1500, min: 200, max: 30000 },
+  mod_inbox_verfall_minuten: { art: 'zahl', standard: 30, min: 1, max: 1440 },
   // Muss ueber dem status.json-Takt (30 s) und dem Long-Poll des Daemons (~25 s) liegen.
   daemon_frisch_sekunden: { art: 'zahl', standard: 90, min: 45, max: 900 },
   probe_timeout_sekunden: { art: 'zahl', standard: 10, min: 2, max: 60 },
