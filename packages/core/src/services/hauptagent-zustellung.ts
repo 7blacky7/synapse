@@ -89,15 +89,18 @@ const ABFRAGEN: Record<ZustellWeg, { max: string; neu: (modus: ZustellOptionen['
          AND NOT EXISTS (SELECT 1 FROM agent_identitaet_event_acks a WHERE a.event_id=e.id AND a.identity_id=$1)
        ORDER BY e.id LIMIT ${JE_WEG}`,
   },
+  // P22-T223: nur Nachrichten ab dem Beitritt (k.joined_at). Der Wasserstand gilt ueber alle Channels der Identitaet; ohne
+  // diese Grenze holte ein (Neu-)Beitritt alles ab dem alten Stand nach. Aeltere liest der Agent selbst (channel feed).
   channel: {
     max: `SELECT COALESCE(MAX(m.id),0)::bigint AS m FROM specialist_channel_messages m
-            JOIN agent_identitaet_channel_mitglieder k ON k.channel_id=m.channel_id AND k.identity_id=$1`,
+            JOIN agent_identitaet_channel_mitglieder k ON k.channel_id=m.channel_id AND k.identity_id=$1
+           WHERE m.created_at >= k.joined_at`,
     neu: (modus) => `SELECT m.id, m.sender AS agent_id, m.sender_identity_id AS identity_id, s.rolle, c.project, m.content AS inhalt,
         m.created_at AS gesendet, c.name AS channel
        FROM specialist_channel_messages m JOIN specialist_channels c ON c.id=m.channel_id
        JOIN agent_identitaet_channel_mitglieder k ON k.channel_id=m.channel_id AND k.identity_id=$1
        LEFT JOIN agent_identitaeten s ON s.id=m.sender_identity_id
-       WHERE m.id>$2 AND m.sender_identity_id IS DISTINCT FROM $1
+       WHERE m.id>$2 AND m.created_at >= k.joined_at AND m.sender_identity_id IS DISTINCT FROM $1
          ${modus === 'erwaehnung' ? `AND m.content ILIKE '%@${HAUPTAGENT_AGENT_ID}%'` : ''}
        ORDER BY m.id LIMIT ${JE_WEG}`,
   },
@@ -126,9 +129,24 @@ async function wasserstand(identityId: string, weg: ZustellWeg, verlustfrei = fa
   return Number((await getPool().query<{ bis_id: string }>('SELECT bis_id FROM agent_zustell_wasserstaende WHERE identity_id=$1 AND weg=$2', [identityId, weg])).rows[0].bis_id);
 }
 
+/**
+ * P22-T223: offene Channel-Zustellungen, deren Nachricht vor dem Beitritt liegt bzw. deren Mitgliedschaft fehlt, nicht mehr
+ * zustellen (status 'fehler', letzter_grund 'vor_beitritt'; nichts geloescht). Raeumt den Altbestand vor dem Fix ab.
+ */
+export async function raeumeChannelVorBeitritt(identityId: string): Promise<number> {
+  const r = await getPool().query(
+    `UPDATE agent_zustellungen z SET status='fehler', letzter_grund='vor_beitritt'
+      WHERE z.identity_id=$1 AND z.weg='channel' AND z.status='pending'
+        AND NOT EXISTS (SELECT 1 FROM specialist_channel_messages m
+          JOIN agent_identitaet_channel_mitglieder k ON k.channel_id=m.channel_id AND k.identity_id=$1
+         WHERE m.id=z.message_id AND m.created_at >= k.joined_at)`, [identityId]);
+  return r.rowCount ?? 0;
+}
+
 /** Neue Nachrichten an die Identitaet in den Ledger uebernehmen. Rueckgabe: neu aufgenommene Zustellungen. */
 export async function sammleZustellungen(identityId: string, opt: ZustellOptionen = leseZustellOptionen(), empfaengerAgentId: string = HAUPTAGENT_AGENT_ID, verlustfrei = false): Promise<number> {
   let neu = 0;
+  await raeumeChannelVorBeitritt(identityId);
   for (const weg of ZUSTELL_WEGE) {
     const bis = await wasserstand(identityId, weg, verlustfrei);
     const r = await getPool().query<Roh>(ABFRAGEN[weg].neu(opt.channel_modus), [identityId, bis]);
