@@ -56,6 +56,7 @@ import {
   speicherePlanBefunde,
   ladePlanBefunde,
   commitSperre,
+  opGateBefunde,
   quittiereBefunde,
   befundUebersicht,
   type PlanBefund,
@@ -73,6 +74,13 @@ import {
   type ForeignActiveReservationPrimary,
 } from './file-reservations.js';
 import { lesePlanloseReservierungen, type PlanloseReservierung } from './file-reservation-intents.js';
+// P22-T199: Co-Edit ohne Gate (Schalter, Op-Zustaende), Gate-Frist und Pruefwerte als PG-Einstellung.
+import { coeditOhneGate } from './coedit-methode.js';
+import { bewerteOps, kommitKandidaten, leseOpZustaende, type CoeditZustandWerkzeuge, type OpZustand, type OpZustandArt } from './file-coedit-zustand.js';
+import { coeditAktivFrist } from './agent-ausweis-fristen.js';
+import { lesePlanPruefEinstellungen } from './plan-pruef-einstellungen.js';
+// P22-T201: Schattenstand-Puffer je Plan und Datei (Co-Edit ohne Gate).
+import { holePuffer, legePufferAb, verwerfeSchattenPuffer, zaehleSchattenPuffer, schattenPufferStatus, type SchattenPufferArt } from './coedit-schatten-puffer.js';
 // P22-T217: veraltete Zeilen-Ops mit eindeutigem Anker umrechnen (Schalter anker_umrechnung, Standard AUS).
 import { ankerUmrechnungVorbereiten, ankerUmrechnungImPlan, ankerFundstellenText, ergaenzeAnkerVorschau, type AnkerUmrechnung } from './anker-umrechnung.js';
 
@@ -222,6 +230,12 @@ export interface FileBatchOp {
    */
   anchor_text?: string;
   anchor_contains?: string;
+  /**
+   * P22-T199 (SOLL 5, nur Schalter coedit_ohne_gate EIN): optionale Gruppe zusammengehoeriger Ops desselben Autors.
+   * Eine Gruppe wird nur vollstaendig und gueltig committet und haelt nur sich selbst zurueck; ohne gruppe ist jede
+   * Op eigenstaendig. Bei Schalter AUS gespeichert, aber ohne Wirkung.
+   */
+  gruppe?: string;
   /**
    * Nur fuer action='create': wenn true und die Datei existiert bereits,
    * wird die Op als 'update' (Komplett-Ersetzung) behandelt statt zu failen.
@@ -428,6 +442,15 @@ export interface FileBatchPlanRow {
   created_at: string;
   committed_at: string | null;
   reason: string | null;
+  /** P22-T199 (Schema 168): Zustand je Op bei Schalter coedit_ohne_gate EIN (file-coedit-zustand.ts); sonst NULL. */
+  op_zustaende?: unknown;
+  /** P22-T199: Teilcommit-Zeile - der offen gebliebene Plan, aus dem sie abgespalten wurde (id = batch_id). */
+  aus_plan_id?: string | null;
+  /** Nur von getBatchPlan gefuellt (P22-T199, Schalter coedit_ohne_gate EIN): Methode und Zustand je Op. */
+  coedit_methode?: 'ohne_gate';
+  offen?: OffeneOp[];
+  /** Nur von getBatchPlan gefuellt (P22-T199): Teilcommits dieses Plans, je mit eigener batch_id. */
+  teilcommits?: Array<{ batch_id: string; committed_at: string; ops: number; committed_by: string | null }>;
   /** Nur von getBatchPlan gefuellt: zurueckgezogene Ops (Rueckzugsprotokolle). */
   withdrawn?: WithdrawalRecord[];
   /** Nur von getBatchPlan gefuellt: Wait-/Ready-Status je Beitragendem (Befund 693bbf48 a). */
@@ -701,7 +724,36 @@ function mitVerweis<T extends { left_op_index: number; right_op_index: number }>
   }));
 }
 
-export type CommitBatchResult = {fs_pruefung?:FsPruefung; /** P16-T23: Plan zur grossen Pruefung vorgemerkt, fertiger Aufruf build_pruefen (Nachlauf). */ build_pruefen?: Record<string, unknown>} & (
+/** P22-T199: eine im offenen Plan verbliebene Op mit ihrem Zustand (Antwort des commits ohne Gate). */
+export interface OffeneOp {
+  op_index: number;
+  /** Index vor dem Teilcommit (die verbleibenden Ops werden neu durchnummeriert). */
+  alter_op_index?: number;
+  agent_id: string | null;
+  file_path: string;
+  action: FileBatchOpAction;
+  zustand: OpZustandArt | 'unbewertet';
+  grund?: string;
+  befund_ids?: string[];
+  mit?: OpZustand['mit'];
+  gruppe?: string;
+}
+
+/** P22-T199: Zusatzfelder des commits ohne Gate (Schalter coedit_ohne_gate EIN); bei AUS nie gesetzt. */
+export type CommitOhneGateFelder = {
+  coedit_methode?: 'ohne_gate';
+  /** true: der Plan bleibt mit derselben plan_id offen (es gibt noch Ops). */
+  plan_offen?: boolean;
+  /** Op-Indizes (vor dem Teilcommit), die geschrieben wurden. */
+  geschriebene_op_indices?: number[];
+  offen?: OffeneOp[];
+  zurueckgehalten?: Array<{ op_index: number; grund: string }>;
+  /** SOLL 7: ein gleichzeitiger commit hat schon geschrieben; dieser Aufruf hat nichts erneut geschrieben. */
+  bereits_committet?: { batch_id: string; committed_at: string; grund: string | null };
+  message?: string;
+};
+
+export type CommitBatchResult = {fs_pruefung?:FsPruefung; /** P16-T23: Plan zur grossen Pruefung vorgemerkt, fertiger Aufruf build_pruefen (Nachlauf). */ build_pruefen?: Record<string, unknown>} & CommitOhneGateFelder & (
   | {
       success: true;
       plan_id: string;
@@ -1774,13 +1826,14 @@ function buildCombinedCoeditPreview(
 }
 
 /**
- * E1 READY-GATE (Entscheidung 29.09.2026, Variante b): wie viele Minuten echte Tool-Aktivitaet
- * (tool_calls) einen noch nicht bereiten Beitragenden/Wartenden "aktiv" halten. Env
- * SYNAPSE_COEDIT_AKTIV_MIN, Default 5, je Aufruf gelesen.
+ * E1 READY-GATE (Entscheidung 29.09.2026, Variante b): wie viele Sekunden echte Tool-Aktivitaet
+ * (tool_calls) einen noch nicht bereiten Beitragenden/Wartenden "aktiv" halten. P22-T199 (Freigabe bf31526a E5):
+ * Einstellung coedit_aktiv_sekunden (admin ausweis_fristen, projekt > global); ohne PG-Wert wie live die Env
+ * SYNAPSE_COEDIT_AKTIV_MIN (Minuten, je Aufruf) bzw. 300 s (t223-Nachbesserung: kein stiller Wechsel, der E5-Wert 60 s
+ * wird ausdruecklich gesetzt). Nur bei Schalter coedit_ohne_gate AUS wirksam (bei EIN gibt es kein Gate).
  */
-function coeditAktivMinuten(): number {
-  const wert = Number(process.env.SYNAPSE_COEDIT_AKTIV_MIN);
-  return Number.isFinite(wert) && wert > 0 ? wert : 5;
+async function coeditAktivSekunden(project: string | null): Promise<number> {
+  return (await coeditAktivFrist(project)).sekunden;
 }
 
 /**
@@ -1823,14 +1876,14 @@ async function readyGateBlockers(
     wait.shared_files.length > 0 && (!['ready', 'no_changes'].includes(wait.status)
       || wait.shared_files.some(pfad => !wait.contributed_files.includes(pfad) && !wait.no_change_files.includes(pfad))));
   if (relevant.length === 0) return [];
-  const minuten = coeditAktivMinuten();
+  const sekunden = await coeditAktivSekunden(plan.project);
   const aktiv = await queryable.query<{ agent_id: string; ts: Date | string }>(
     `SELECT CASE WHEN identity_id IS NOT NULL THEN 'identity:'||identity_id ELSE 'legacy:'||to_json(agent_id)::text END AS agent_id, MAX(ts) AS ts
        FROM tool_calls
       WHERE (CASE WHEN identity_id IS NOT NULL THEN 'identity:'||identity_id ELSE 'legacy:'||to_json(agent_id)::text END) = ANY($1::text[]) AND (project = $2 OR project IS NULL)
         AND ts > NOW() - make_interval(secs => $3::double precision)
       GROUP BY 1`,
-    [uniqueStrings(relevant.map(waitAgentKey)), plan.project, minuten * 60],
+    [uniqueStrings(relevant.map(waitAgentKey)), plan.project, sekunden],
   );
   const letzte = new Map(aktiv.rows.map((row) => [row.agent_id, new Date(row.ts)] as const));
   const proAgent = new Map<string, CommitWaitingFor>();
@@ -1844,7 +1897,7 @@ async function readyGateBlockers(
       ...(wait.waiting_identity_id ? {identity_id:wait.waiting_identity_id} : {}),
       wait_status: wait.status,
       letzte_aktivitaet: ts.toISOString(),
-      inaktiv_ab: new Date(ts.getTime() + minuten * 60000).toISOString(),
+      inaktiv_ab: new Date(ts.getTime() + sekunden * 1000).toISOString(),
       dateien: [],
     };
     eintrag.wait_status = gesamtWaitStatus([eintrag.wait_status, wait.status]);
@@ -1871,7 +1924,7 @@ function planIdentityIds(plan:{owner_identity_id?:string|null;ops:FileBatchOp[]}
   return uniqueStrings([plan.owner_identity_id??'',...plan.ops.map(op=>op.author_identity_id??''),
     ...waits.flatMap(w=>[w.waiting_identity_id??'',w.primary_identity_id??''])].filter(Boolean));
 }
-function waitingForContributorsResult(planId: string, blockers: CommitWaitingFor[]): CommitBatchResult {
+function waitingForContributorsResult(planId: string, blockers: CommitWaitingFor[], aktivSekunden: number): CommitBatchResult {
   const wer = blockers.map((b) => `${b.agent_id} (${b.wait_status}: ${b.dateien.join(', ')})`).join('; ');
   return {
     success: false,
@@ -1883,7 +1936,7 @@ function waitingForContributorsResult(planId: string, blockers: CommitWaitingFor
       `Kein Fehler, nichts geschrieben, Plan ${planId} bleibt offen: ${blockers.length} aktive(r) Beitragende(r) noch nicht ready — ${wer}. ` +
       'Laut Tool-Aktivitaet arbeiten sie noch daran; ihr Beitrag soll nicht verloren gehen. ' +
       `Warten ohne Schleife: files(action:"commit", plan_id:"${planId}", wait_seconds:50) schreibt, sobald alle ready/no_changes ` +
-      `melden oder ${coeditAktivMinuten()} Min ohne Tool-Aktivitaet sind (inaktiv_ab). Inzwischen an anderen Dateien weiterarbeiten.`,
+      `melden oder ${aktivSekunden} s ohne Tool-Aktivitaet sind (inaktiv_ab, Einstellung coedit_aktiv_sekunden). Inzwischen an anderen Dateien weiterarbeiten.`,
   };
 }
 
@@ -1964,6 +2017,8 @@ async function rebaseCommitAuthorReservations(
   client: PoolClient,
   plan: { id: string; project: string; owner_agent_id: string | null; owner_identity_id?: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string> },
   caller: string | null,
+  /** P22-T199: Teilcommit ohne Gate - Versionen stehen unter der eigenen batch_id, nicht unter plan.id. */
+  batchId: string = plan.id,
 ): Promise<Map<string, CommitAuthorReservationTransfer>> {
   const config = getReservationTtlConfig();
   const dateien = Object.keys(plan.expected_hashes ?? {});
@@ -1996,7 +2051,7 @@ async function rebaseCommitAuthorReservations(
       `SELECT id::text AS id FROM file_versions
         WHERE project = $1 AND batch_id = $2::bigint
         ORDER BY id`,
-      [plan.project, plan.id],
+      [plan.project, batchId],
     );
     const hashes = Object.fromEntries(rows.rows.map((row) => [row.file_path, row.hash]));
     transfers.set(agent, {
@@ -2127,7 +2182,7 @@ async function commitCoeditBatch(args: {
     );
     // E1 READY-GATE (Entscheidung 29.09.2026, Variante b — sichtbar, ohne tote Blocker): commit
     // wartet nur auf gebundene Wartende/Beitragende, die noch nicht ready/no_changes sind UND in
-    // den letzten SYNAPSE_COEDIT_AKTIV_MIN Minuten echte Tool-Aktivitaet hatten (readyGateBlockers).
+    // den letzten coedit_aktiv_sekunden (ohne PG-Wert Env SYNAPSE_COEDIT_AKTIV_MIN) echte Tool-Aktivitaet hatten (readyGateBlockers).
     // Inaktive blockieren nie, ihre schon beigetragenen Ops werden mitgeschrieben. Blockiert ist
     // kein Endzustand: Antwort waiting_for_contributors, Plan bleibt offen (commit mit wait_seconds
     // wartet serverseitig). Wer committet, ist mit seinem eigenen Beitrag fertig: seine Waits gelten
@@ -2148,10 +2203,11 @@ async function commitCoeditBatch(args: {
       eigeneFertig = true;
     }
     const blockers = await readyGateBlockers(client, plan, commitCaller);
+    const aktivSekunden = await coeditAktivSekunden(plan.project);
     if (blockers.length > 0) {
       await client.query('COMMIT');
       if (eigeneFertig) notifyPlanChange();
-      return waitingForContributorsResult(args.plan_id, blockers);
+      return waitingForContributorsResult(args.plan_id, blockers, aktivSekunden);
     }
     const unfinishedWaits = linkedWaits.rows.filter(
       (wait) => wait.status !== 'ready' && wait.status !== 'no_changes' && wait.status !== 'closed'
@@ -2403,7 +2459,7 @@ async function commitCoeditBatch(args: {
       ...(releasedReservations.length > 0 ? { released_reservations: releasedReservations } : {}),
       ...(unfinishedWaits > 0
         ? {
-            coedit_note: `${unfinishedWaits} Wait(s) waren noch nicht ready, aber seit ueber ${coeditAktivMinuten()} Min ohne Tool-Aktivitaet — kein Blocker: ihre schon beigetragenen Ops sind mitgeschrieben, sie sind per PLAN_COMMITTED informiert. ` +
+            coedit_note: `${unfinishedWaits} Wait(s) waren noch nicht ready, aber seit ueber ${aktivSekunden} s ohne Tool-Aktivitaet — kein Blocker: ihre schon beigetragenen Ops sind mitgeschrieben, sie sind per PLAN_COMMITTED informiert. ` +
               'Spaetere Beitraege landen per coedit_add automatisch in einem Folgeplan.',
           }
         : {}),
@@ -2424,6 +2480,670 @@ async function commitCoeditBatch(args: {
   }
 }
 
+
+// ─── P22-T199: Co-Edit ohne Gate (Produkt-Schalter coedit_ohne_gate EIN, coedit-methode.ts) ──────────────────────────
+
+const ZEILEN_OPS_OHNE_GATE = new Set<FileBatchOpAction>(['replace_lines', 'insert_after', 'delete_lines']);
+
+/** Puffer fuer genau die Pfade der Ops aus den Basen (fehlende Datei = ''). */
+function basenPuffer(ops: FileBatchOp[], basen: Map<string, string>): Map<string, PreparedFile> {
+  return new Map(uniqueStrings(ops.flatMap(touchedPaths)).map((filePath) => [filePath, new PreparedFile(basen.get(filePath) ?? '')] as const));
+}
+
+/**
+ * P22-T199: Werkzeuge fuer file-coedit-zustand.ts aus DERSELBEN Logik wie Trockenlauf und commit (prepareOpsForApply,
+ * wendeOpsAn, detectCrossAgentConflicts) und der kleinen Pruefung - nur Syntax und Fehlermuster, ohne Typen/Build
+ * (Freigabe bf31526a E3; Einstellung plan_pruefung aktiv gilt). Wirft nie: ein Fehler der Anwende-Reihenfolge gilt fuer
+ * alle Ops der Teilmenge als nicht anwendbar, ein Pruefungsfehler sperrt nichts (Log).
+ */
+/** P22-T199: Schluessel einer Befund-Quittierung unabhaengig von Teilmengen-Index und Zeilen (Pruefer, Datei, Muster/Code, Autor). */
+function quittierSchluessel(b: Pick<PlanBefund, 'pruefer' | 'datei' | 'code' | 'pattern_id' | 'agent_id'>): string {
+  return [b.pruefer, b.datei, b.code ?? b.pattern_id ?? '', b.agent_id ?? ''].join('|');
+}
+
+/** P22-T199: quittierte Befunde eines Plans (am Plan gespeichert) als Schluesselmenge fuer das Op-Gate. Wirft nie. */
+async function quittierteSchluessel(planId: string): Promise<Set<string>> {
+  const gespeichert = await ladePlanBefunde(planId);
+  return new Set((gespeichert?.befunde ?? []).filter((b) => b.status === 'quittiert').map(quittierSchluessel));
+}
+
+// ─── P22-T201: Schattenstand-Puffer (Entwurf 07f41a1e A, Freigabe T1-T3) ───────────────────────────────────────────────
+
+/** P22-T201: nur diese Ops wirken je Datei streng nacheinander (keine Umordnung, keine Zeilen-Umrechnung, kein create/delete/move). */
+const PUFFER_OPS = new Set<FileBatchOpAction>(['search_replace', 'search_replace_batch']);
+
+/** P22-T201: Stand EINER Datei nach einer Kette (Indizes = Position in der Kette). Gehoert dem Puffer, wird nie veraendert. */
+interface PufferStand {
+  inhalt: string;
+  bereiche: Array<Bereich[] | undefined>;
+  fehler: Array<string | undefined>;
+}
+
+const opSchluesselCache = new WeakMap<FileBatchOp, string>();
+
+/** P22-T201: Schluessel einer Op in der Kette (ganzer Op-Inhalt; plan_update an derselben Stelle ergibt einen anderen). */
+function opSchluessel(op: FileBatchOp): string {
+  let s = opSchluesselCache.get(op);
+  if (s === undefined) { s = JSON.stringify(op); opSchluesselCache.set(op, s); }
+  return s;
+}
+
+/** Zeilenzahl von text, hoechstens bis (bricht frueh ab). */
+function zeilenBis(text: string, bis: number): number {
+  let n = 1;
+  for (let i = text.indexOf('\n'); i !== -1 && n < bis; i = text.indexOf('\n', i + 1)) n++;
+  return n;
+}
+
+/**
+ * P22-T201: Schatten der ops ueber den Puffer je Datei - DIESELBE Anwende-Schleife (wendeOpsAn) mit denselben Optionen wie die
+ * kleine Pruefung (Zeilen bis diffMaxZeichen, fein), nur ohne die schon gepufferten Ops erneut anzuwenden. Nur wenn jede Op eine
+ * Text-Op auf genau einer Datei ist (search_replace/_batch): dann wirken die Ops je Datei streng nacheinander
+ * (prepareOpsForApply ordnet nichts um, keine Zeilen-Umrechnung), und Fehler, Endstand und Bereiche je Op sind identisch zum
+ * Neuaufbau aus der Basis. Sonst, bei Puffer aus oder kleiner Datei: aus (der Aufrufer baut wie vorher neu auf).
+ */
+function schattenUeberPuffer(planId: string, ops: FileBatchOp[], basen: Map<string, string>, grenze: { bytes: number; minZeilen: number }):
+  { stand: SchattenStand; art: SchattenPufferArt; angewendet: number } | { aus: string } {
+  if (!(grenze.bytes > 0)) return { aus: 'schatten_puffer_mb = 0' };
+  const jeDatei = new Map<string, number[]>();
+  for (let i = 0; i < ops.length; i++) {
+    const op = ops[i];
+    if (!PUFFER_OPS.has(op.action) || touchedPaths(op).length !== 1) return { aus: `Op ${op.action} (Puffer nur fuer search_replace/_batch)` };
+    jeDatei.set(op.file_path, [...(jeDatei.get(op.file_path) ?? []), i]);
+  }
+  const zeilenAn = (filePath: string) => (basen.get(filePath)?.length ?? 0) <= diffMaxZeichen();
+  const buffers = new Map<string, PreparedFile>();
+  const bereiche = new Map<number, Bereich[]>();
+  const folge: number[] = [];
+  const fehler: Array<{ index: number; message: string }> = [];
+  let angewendet = 0;
+  let neuaufbau = false;
+  let verlaengert = false;
+  for (const [datei, idx] of jeDatei) {
+    const basis = basen.get(datei) ?? '';
+    const kette = idx.map((i) => opSchluessel(ops[i]));
+    const gefunden = holePuffer<PufferStand>(planId, datei, basis, kette);
+    if (!gefunden && zeilenBis(basis, grenze.minZeilen) < grenze.minZeilen) return { aus: `${datei}: unter ${grenze.minZeilen} Zeilen` };
+    let stand: PufferStand = gefunden?.stand ?? { inhalt: basis, bereiche: [], fehler: [] };
+    const fehlend = idx.slice(gefunden?.laenge ?? 0);
+    if (fehlend.length > 0) {
+      const buf = new PreparedFile(stand.inhalt);
+      const a = wendeOpsAn(new Map([[datei, buf]]), fehlend.map((i) => ops[i]), { zeilen: zeilenAn, fein: true, weiterBeiFehler: true });
+      stand = {
+        inhalt: buf.finalContent,
+        bereiche: [...stand.bereiche, ...fehlend.map((_, k) => a.bereiche.get(k))],
+        fehler: [...stand.fehler, ...fehlend.map((_, k) => a.fehler.find((f) => f.index === k)?.message)],
+      };
+      angewendet += fehlend.length;
+      if (gefunden) verlaengert = true; else neuaufbau = true;
+      legePufferAb(planId, datei, basis, kette, stand, stand.inhalt.length + basis.length + 64 * kette.length, grenze.bytes);
+    }
+    idx.forEach((i, k) => {
+      const meldung = stand.fehler[k];
+      if (meldung !== undefined) { fehler.push({ index: i, message: meldung }); return; }
+      folge.push(i);
+      const b = stand.bereiche[k];
+      if (b) bereiche.set(i, b);
+    });
+    buffers.set(datei, new PreparedFile(stand.inhalt));
+  }
+  folge.sort((a, b) => a - b);
+  fehler.sort((a, b) => a.index - b.index);
+  return {
+    stand: {
+      basen: new Map([...jeDatei.keys()].map((filePath) => [filePath, basen.get(filePath) ?? ''] as const)), buffers,
+      angewendet: { previews: [], zeilen: new Map(), bereiche, folge, fehler }, drift: new Map(),
+    },
+    art: neuaufbau ? 'neuaufbau' : verlaengert ? 'verlaengert' : 'treffer',
+    angewendet,
+  };
+}
+
+function coeditWerkzeuge(plan: { id?: string; project: string; owner_agent_id: string | null; owner_identity_id?: string | null }, quittiert: Set<string> = new Set()): CoeditZustandWerkzeuge<FileBatchOp> {
+  const alleNicht = (ops: FileBatchOp[], error: unknown) => ops.map((_, index) => ({ index, message: (error as Error).message }));
+  // P22-T201: Schatten ueber den Puffer je Plan und Datei; Grenze einmal je Werkzeug gelesen. null = wie vorher neu aufbauen.
+  let grenze: Promise<{ bytes: number; minZeilen: number }> | null = null;
+  const pufferSchatten = async (ops: FileBatchOp[], basen: Map<string, string>): Promise<SchattenStand | null> => {
+    const planId = plan.id;
+    if (!planId) return null;
+    try {
+      grenze ??= schattenPufferGrenze(plan.project);
+      const g = await grenze;
+      const t0 = performance.now();
+      const r = schattenUeberPuffer(planId, ops, basen, g);
+      const ms = performance.now() - t0;
+      if ('aus' in r) { zaehleSchattenPuffer(planId, 'aus', { ops: ops.length, angewendet: 0, ms, grund: r.aus }); return null; }
+      zaehleSchattenPuffer(planId, r.art, { ops: ops.length, angewendet: r.angewendet, ms });
+      return r.stand;
+    } catch (error) {
+      console.error('[file-batch] P22-T201: Schattenstand-Puffer fehlgeschlagen, Neuaufbau (non-blocking):', (error as Error).message);
+      return null;
+    }
+  };
+  return {
+    pfade: touchedPaths,
+    autor: (op) => opAgentKey(op, plan),
+    wendeAn: async (ops, basen) => {
+      const gepuffert = await pufferSchatten(ops, basen);
+      if (gepuffert) return gepuffert.angewendet.fehler;
+      let applyPlan: Array<{ op: FileBatchOp; originalIndex: number }>;
+      try { applyPlan = prepareOpsForApply(ops); } catch (error) { return alleNicht(ops, error); }
+      try { return wendeOpsAn(basenPuffer(ops, basen), ops, { zeilen: false, weiterBeiFehler: true }, applyPlan).fehler; } catch (error) { return alleNicht(ops, error); }
+    },
+    konflikte: (ops, basen) => {
+      try {
+        return detectCrossAgentConflicts(ops, basen).map((k) => ({ left_op_index: k.left_op_index, right_op_index: k.right_op_index, reason: k.reason, message: k.message }));
+      } catch { return []; }
+    },
+    pruefe: async (ops, basen) => {
+      const ergebnis = new Map<number, string[]>();
+      if (!(await planPruefungAn(plan.project))) return ergebnis;
+      try {
+        // P22-T201: derselbe Schatten aus dem Puffer (identisch zum Neuaufbau, siehe schattenUeberPuffer), sonst wie vorher.
+        let stand = await pufferSchatten(ops, basen);
+        if (!stand) {
+          const buffers = basenPuffer(ops, basen);
+          const angewendet = wendeOpsAn(buffers, ops, { zeilen: (filePath) => (basen.get(filePath)?.length ?? 0) <= diffMaxZeichen(), fein: true, weiterBeiFehler: true });
+          stand = { basen: new Map([...buffers.keys()].map((filePath) => [filePath, basen.get(filePath) ?? ''] as const)), buffers, angewendet, drift: new Map() };
+        }
+        const pruefung = await pruefePlanDateien(plan.project, pruefDateienAus(stand, ops, plan.owner_agent_id, plan.owner_identity_id ?? null), [], { ohneTypen: true });
+        // Quittierte Befunde (absichtlich fehlerhafter Inhalt) sperren auch im Op-Gate nicht (Luecke 1).
+        for (const [index, befunde] of opGateBefunde(pruefung.befunde)) {
+          const offen = befunde.filter((befund) => !quittiert.has(quittierSchluessel(befund)));
+          for (const befund of offen) merkeOpGateBefund(befund);
+          if (offen.length > 0) ergebnis.set(index, offen.map((befund) => befund.id));
+        }
+      } catch (error) {
+        console.error('[file-batch] P22-T199: kleine Pruefung je Op fehlgeschlagen (non-blocking):', (error as Error).message);
+      }
+      return ergebnis;
+    },
+  };
+}
+
+/** P22-T199: Zeilen-Op ueber die exakten Spleisse eines Teilcommits umrechnen (gleiche Regel wie spaeteZeilenOpsUmrechnen). */
+function zeilenOpUeberZuordnung(op: FileBatchOp, map: Zuordnung): { op: FileBatchOp } | { grund: string } {
+  if (op.action === 'insert_after') {
+    const nach = op.after_line ?? 0;
+    if (nach <= 0 || nach > map.basisZeilen) return { op };
+    const ziel = map.zeile(nach);
+    return ziel ? { op: { ...op, after_line: ziel } } : { grund: `Zeile ${nach} (nach der eingefuegt werden soll) wurde vom Teilcommit geaendert oder entfernt` };
+  }
+  const start = op.line_start ?? 0;
+  const ende = op.line_end ?? 0;
+  if (start < 1 || ende < start || ende > map.basisZeilen) return { op };
+  const zielStart = map.zeile(start);
+  for (let i = start; i <= ende; i++) {
+    const y = i === start ? zielStart : map.zeile(i);
+    if (!y || y - zielStart !== i - start) return { grund: `Zeile ${i} wurde vom Teilcommit geaendert oder entfernt` };
+  }
+  return { op: { ...op, line_start: zielStart, line_end: zielStart + (ende - start) } };
+}
+
+/** P22-T199: offene Ops eines Plans mit Zustand (Antwortfeld offen). */
+function offeneOpsAus(plan: { owner_agent_id: string | null; ops: FileBatchOp[]; op_zustaende?: unknown }, alt?: number[]): OffeneOp[] {
+  const ops = Array.isArray(plan.ops) ? plan.ops : [];
+  const zustaende = leseOpZustaende(plan.op_zustaende, ops.length);
+  return ops.map((op, i) => {
+    const z = zustaende[i];
+    return {
+      op_index: i, ...(alt ? { alter_op_index: alt[i] } : {}), agent_id: op.agent_id ?? plan.owner_agent_id, file_path: op.file_path, action: op.action,
+      zustand: z?.zustand ?? 'unbewertet', ...(z?.grund ? { grund: z.grund } : {}), ...(z?.befund_ids ? { befund_ids: z.befund_ids } : {}),
+      ...(z?.mit ? { mit: z.mit } : {}), ...(op.gruppe ? { gruppe: op.gruppe } : {}),
+    };
+  });
+}
+
+/** P22-T199: Vorschau-Eintraege der verbliebenen Ops (fehlerhaft/drift -> ok:false wie ein gescheiterter Trockenlauf). */
+function restVorschau(ops: FileBatchOp[], zustaende: Array<OpZustand | null>, anlass: string): OpPreview[] {
+  return ops.map((op, index) => {
+    const z = zustaende[index];
+    // t215: ein fester Konflikt (mit einer schon geschriebenen Op) ist wie fehlerhaft nicht anwendbar - sonst schriebe ihn ein
+    // Altweg (Schalter wieder AUS) still ueber die fremde Aenderung.
+    const kaputt = z?.zustand === 'fehlerhaft' || z?.zustand === 'drift' || (z?.zustand === 'konflikt' && z.fest === true);
+    return { index, file_path: op.file_path, action: op.action, ok: !kaputt,
+      ...(kaputt ? { error: z?.grund ?? z?.zustand } : { context: `P22-T199: ${anlass} (${z?.zustand ?? 'unbewertet'})` }) };
+  });
+}
+
+/** P22-T201: Grenze des Schattenstand-Puffers (Einstellung plan_pruefung schatten_puffer_mb/_min_zeilen; 0 MB = aus). Wirft nie. */
+async function schattenPufferGrenze(project: string): Promise<{ bytes: number; minZeilen: number }> {
+  const e = await lesePlanPruefEinstellungen(project);
+  return { bytes: e.schatten_puffer_mb.wert * 1024 * 1024, minZeilen: e.schatten_puffer_min_zeilen.wert };
+}
+
+/** P22-T201 (Freigabe T1): Details der Op-Gate-Befunde je Befund-ID fuer die coedit_add-Antwort (prozesslokal, begrenzt). */
+const opGateBefundDetails = new Map<string, PlanBefund>();
+function merkeOpGateBefund(befund: PlanBefund): void {
+  opGateBefundDetails.delete(befund.id);
+  opGateBefundDetails.set(befund.id, befund);
+  if (opGateBefundDetails.size > 2000) opGateBefundDetails.delete(opGateBefundDetails.keys().next().value as string);
+}
+
+/**
+ * P22-T201 (Freigabe T1): Antwortfelder pruefung/eigene_befunde einer coedit_add-Antwort bei EIN aus den Op-Zustaenden
+ * (befund_ids) statt aus einer Gesamtplan-Pruefung. sperre ist bei EIN immer false: eine fehlerhafte Op blockiert niemanden.
+ */
+function opGatePruefungAntwort(alle: OffeneOp[], eigene: OffeneOp[]): Record<string, unknown> {
+  const details = (op: OffeneOp) => (op.befund_ids ?? []).map((id) => {
+    const b = opGateBefundDetails.get(id);
+    return { id, op_index: op.op_index, severity: b?.severity ?? 'error', datei: b?.datei ?? op.file_path, zeilen: b?.zeilen ?? null, was: b?.was ?? op.grund ?? null };
+  });
+  const befunde = alle.flatMap(details);
+  const eigeneBefunde = eigene.flatMap(details);
+  return {
+    pruefung: {
+      status: 'fertig', quelle: 'op_gate', sperre: false, anzahl: befunde.length,
+      op_indices_mit_befund: alle.filter((op) => (op.befund_ids ?? []).length > 0).map((op) => op.op_index),
+      befunde: befunde.slice(0, 10), ...(befunde.length > 10 ? { weitere: befunde.length - 10 } : {}),
+      hinweis: 'Schalter coedit_ohne_gate EIN: jede Op wird beim Bewerten auf dem Stand ihrer Datei geprueft (Syntax/Fehlermuster); '
+        + 'eine fehlerhafte Op bleibt beim Autor und blockiert niemanden. Zustand je Op: eigene_op_zustaende bzw. plan_status offen[].',
+    },
+    ...(eigeneBefunde.length > 0 ? { eigene_befunde: eigeneBefunde } : {}),
+  };
+}
+
+/**
+ * P22-T201 (Entwurf C/V3): Bewertungsergebnis je Index speichern statt CAS ueber die ganze Op-Liste. Bedingung: die bewerteten
+ * Ops (Praefix in der gelesenen Laenge) sind unveraendert. Inzwischen angehaengte Ops behalten ihren Zustand - eine angehaengte
+ * Op aendert keinen frueheren Zustand (bewerteOps schaut nur auf fruehere Ops). false = Praefix geaendert (plan_update,
+ * Teilcommit, Rueckzug) oder Plan nicht mehr offen; dann liest der Aufrufer neu.
+ */
+async function speichereBewertungJeIndex(planId: string, ops: FileBatchOp[], zustaende: OpZustand[]): Promise<boolean> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const jetzt = (await client.query<{ status: string; ops: FileBatchOp[]; op_zustaende: unknown; previews: OpPreview[] | null }>(
+      `SELECT status::text AS status, ops, op_zustaende, previews FROM file_batch_plans WHERE id = $1::bigint FOR UPDATE`, [planId])).rows[0];
+    const alleOps = jetzt && Array.isArray(jetzt.ops) ? jetzt.ops : [];
+    if (!jetzt || jetzt.status !== 'open' || alleOps.length < ops.length || JSON.stringify(alleOps.slice(0, ops.length)) !== JSON.stringify(ops)) {
+      await client.query('ROLLBACK');
+      return false;
+    }
+    const gemischt = [...zustaende, ...leseOpZustaende(jetzt.op_zustaende, alleOps.length).slice(ops.length)];
+    const previews = [...restVorschau(ops, zustaende, 'bewertet'), ...(Array.isArray(jetzt.previews) ? jetzt.previews.slice(ops.length) : [])];
+    await client.query('UPDATE file_batch_plans SET op_zustaende = $2::jsonb, previews = $3::jsonb WHERE id = $1::bigint',
+      [planId, JSON.stringify(gemischt), JSON.stringify(previews)]);
+    await client.query('COMMIT');
+    return true;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * P22-T199: noch unbewertete Ops eines offenen Plans bewerten und speichern (best effort, ausserhalb jeder Sperre;
+ * CAS ueber die Op-Liste - hat sich der Plan inzwischen geaendert, bleibt es beim naechsten Anlass). Wirft nie.
+ */
+export async function bewerteOffenePlanOps(planId: string, neuIdx: number[] = [], opt: { nurUnbewertet?: boolean } = {}): Promise<void> {
+  // P22-T201 (Entwurf C): je Plan in diesem Prozess nacheinander bewerten; parallele Beitraege haengen weiter sofort an.
+  const lauf = (bewertungsSchlange.get(planId) ?? Promise.resolve()).then(() => bewerteOffenePlanOpsKern(planId, neuIdx, opt));
+  bewertungsSchlange.set(planId, lauf);
+  try { await lauf; } finally { if (bewertungsSchlange.get(planId) === lauf) bewertungsSchlange.delete(planId); }
+}
+
+const bewertungsSchlange = new Map<string, Promise<void>>();
+
+async function bewerteOffenePlanOpsKern(planId: string, neuIdx: number[], opt: { nurUnbewertet?: boolean }): Promise<void> {
+  try {
+    const pool = getPool();
+    // t215: CAS-Fehlschlag (paralleler Beitrag hat Ops angehaengt) -> neu lesen und erneut bewerten, hoechstens 5 Versuche;
+    // vorher blieb der eigene Beitrag in der coedit_add-Antwort 'unbewertet' (T198-Last mit EIN).
+    for (let versuch = 0; versuch < 5; versuch++) {
+      const plan = (await pool.query<FileBatchPlanRow>(
+        `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, ops, expected_hashes, status::text AS status, op_zustaende
+           FROM file_batch_plans WHERE id = $1::bigint`, [planId])).rows[0];
+      if (!plan || plan.status !== 'open' || !Array.isArray(plan.ops) || plan.ops.length === 0) return;
+      const zustaende = leseOpZustaende(plan.op_zustaende, plan.ops.length);
+      // P22-T201 (Entwurf C/V2, nur mit Puffer): Anlass coedit_add bewertet nur noch unbewertete neue Ops samt Kaskade - eine von
+      // einer parallelen Bewertung schon bewertete angehaengte Op haette dieselben Eingaben und dasselbe Ergebnis.
+      const puffer = (await schattenPufferGrenze(plan.project)).bytes > 0;
+      const neuJetzt = puffer && opt.nurUnbewertet ? neuIdx.filter((i) => zustaende[i] === null) : neuIdx;
+      if (neuJetzt.length === 0 && !zustaende.some((z) => z === null)) return;
+      const basen = new Map<string, string>();
+      for (const filePath of uniqueStrings(plan.ops.flatMap(touchedPaths))) basen.set(filePath, (await getFileContentFromPg(plan.project, filePath)) ?? '');
+      const neu = await bewerteOps({ ops: plan.ops, zustaende, neu: neuJetzt, basen, w: coeditWerkzeuge(plan, await quittierteSchluessel(planId)) });
+      // P22-T201 (Entwurf C/V3, nur mit Puffer): je Index speichern; nur eine echte Praefix-Aenderung verlangt einen Neuversuch.
+      if (puffer) {
+        if (await speichereBewertungJeIndex(planId, plan.ops, neu)) { notifyPlanChange(); return; }
+        neuIdx = neuIdx.filter((i) => i < plan.ops.length);
+        continue;
+      }
+      const r = await pool.query(
+        `UPDATE file_batch_plans SET op_zustaende = $3::jsonb, previews = $4::jsonb
+          WHERE id = $1::bigint AND status = 'open' AND ops = $2::jsonb`,
+        [planId, JSON.stringify(plan.ops), JSON.stringify(neu), JSON.stringify(restVorschau(plan.ops, neu, 'bewertet'))]);
+      if ((r.rowCount ?? 0) > 0) { notifyPlanChange(); return; }
+      // Nur angehaengte Ops verschieben keine Indizes; bei plan_update/Teilcommit bewertet der dortige Anlass selbst.
+      neuIdx = neuIdx.filter((i) => i < plan.ops.length);
+    }
+  } catch (error) {
+    console.error(`[file-batch] P22-T199: Bewertung offener Ops von Plan ${planId} fehlgeschlagen (best effort):`, (error as Error).message);
+  }
+}
+
+/**
+ * P22-T199 (t215): gilt fuer diesen offenen Plan die Methode ohne Gate? Schalter EIN und mehrere Autoren (E1) ODER schon ein
+ * Teilcommit aus diesem Plan - der Rest-Plan eines Teilcommits hat oft nur noch EINEN Autor und muss trotzdem im
+ * ohne-Gate-Weg bleiben (sonst schriebe der Altweg einen festen Konflikt still ueber die fremde Aenderung). Wirft nie.
+ */
+async function ohneGatePlan(plan: { id: string; project: string; owner_agent_id: string | null; owner_identity_id?: string | null; ops: FileBatchOp[] }): Promise<boolean> {
+  if (!(await coeditOhneGate(plan.project))) return false;
+  const ops = Array.isArray(plan.ops) ? plan.ops : [];
+  if (new Set(ops.map((op) => opAgentKey(op, plan))).size > 1) return true;
+  try {
+    return ((await getPool().query('SELECT 1 FROM file_batch_plans WHERE aus_plan_id = $1::bigint LIMIT 1', [plan.id])).rowCount ?? 0) > 0;
+  } catch { return false; }
+}
+
+type CommitOhneGateArgs = { auto_commit?: boolean; plan_id: string; agent_id?: string; task_id?: string; agent_note?: string; befunde_quittieren?: Array<{ id: string; grund?: string }> };
+
+/**
+ * P22-T199 SOLL 3/4/6/7 (Schalter coedit_ohne_gate EIN, gemeinsamer Plan mit mehreren Autoren; Entwurf 7efece9b, Freigabe
+ * bf31526a): schreibt ALLE in diesem Moment gueltigen Ops atomar - ohne Ready-Gate, ohne Warten, ohne Inaktivitaetsfrist.
+ * Fehlerhafte, kollidierende oder gedriftete Ops werden nicht geschrieben und blockieren nichts; sie bleiben mit Zustand
+ * beim Autor im Plan.
+ *  - Phase 1 ohne Sperren: Plan und Dateien lesen, fremde Drift je Datei umrechnen (spaeteZeilenOpsUmrechnen, sonst drift),
+ *    Zustaende bewerten, Kandidaten im Fixpunkt waehlen (kommitKandidaten, inkl. Syntax/Fehlermuster der Teilmenge).
+ *  - Phase 2 unter Sperre (Plan FOR UPDATE, Dateisperren, code_files): hat seit Aufrufbeginn schon ein Teilcommit dieses
+ *    Plans geschrieben, antwortet der Aufruf bereits_committet + offen (SOLL 7). Haben sich Plan oder Dateien seit Phase 1
+ *    geaendert, beginnt er neu (hoechstens 3x).
+ *  - Teilcommit als EIGENE committete Zeile (aus_plan_id = dieser Plan, E4): ihre id ist die batch_id - restore_batch,
+ *    history, Diff-Nachlauf, Zeilenumrechnung spaeterer Beitraege und PLAN_COMMITTED (Dedupe je batch_id) arbeiten damit
+ *    unveraendert. Der Plan bleibt mit derselben plan_id offen: Rest-Ops werden neu durchnummeriert, Zeilen-Ops ueber die
+ *    Spleisse des Teilcommits umgerechnet (nicht abbildbar -> drift), betroffene Ops nach dem COMMIT neu bewertet
+ *    (bewerteOffenePlanOps). Ohne Rest-Ops wird der Plan committed.
+ *  - Reservierungen werden nur fuer Autoren ohne offene Ops im Plan freigegeben (Nachtrag 0f1ce666, angenommen).
+ */
+async function commitOhneGate(args: CommitOhneGateArgs, versuch = 0): Promise<CommitBatchResult> {
+  const pool = getPool();
+  const caller = resolveAgentId(args.agent_id);
+  const beginn = (await pool.query<{ t: string }>('SELECT clock_timestamp()::text AS t')).rows[0].t;
+  const plan = (await pool.query<FileBatchPlanRow>(
+    `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, committed_by_identity_id, cancelled_by_identity_id, ops, expected_hashes, previews,
+            status, open_for_coedit, notify_channel, reason, expires_at::text AS expires_at, created_at::text AS created_at,
+            committed_at::text AS committed_at, op_zustaende
+       FROM file_batch_plans WHERE id = $1::bigint`, [args.plan_id])).rows[0];
+  if (!plan) return { success: false, plan_id: args.plan_id, status: 'cancelled', error: 'plan_not_found', message: `Plan ${args.plan_id} nicht gefunden.` };
+  pruefePlanBezug(plan);
+  if (plan.status !== 'open') {
+    return { success: false, plan_id: args.plan_id, status: plan.status, error: plan.status, coedit_methode: 'ohne_gate', message: `Plan ${args.plan_id} ist nicht offen (Status: ${plan.status}).` };
+  }
+  // Luecke 1: befunde_quittieren wie im bisherigen commit am Plan speichern (Grund Pflicht); quittierte sperren das Op-Gate nicht.
+  if (Array.isArray(args.befunde_quittieren) && args.befunde_quittieren.length > 0) await pruefeGespeichertenPlanSicher(plan.id, args.befunde_quittieren);
+  const snapshot = JSON.stringify([plan.ops, plan.expected_hashes]);
+  const jetzt = new Date().toISOString();
+  const w = coeditWerkzeuge(plan, await quittierteSchluessel(plan.id));
+  const ops: FileBatchOp[] = [...plan.ops];
+  const expected: Record<string, string> = { ...plan.expected_hashes };
+  const planPaths = uniqueStrings([...Object.keys(expected), ...ops.flatMap(touchedPaths)]);
+  const basen = new Map<string, string>();
+  const gelesen = new Map<string, string>();
+  for (const filePath of planPaths) {
+    const inhalt = (await getFileContentFromPg(plan.project, filePath)) ?? '';
+    basen.set(filePath, inhalt);
+    gelesen.set(filePath, contentHash(inhalt));
+  }
+  let zustaende: Array<OpZustand | null> = leseOpZustaende(plan.op_zustaende, ops.length);
+  const neu: number[] = [];
+  // Drift je Datei (fremdes Schreiben): nur die Ops dieser Datei umrechnen bzw. neu bewerten, nie den ganzen Plan stale setzen.
+  for (const filePath of Object.keys(expected)) {
+    if (gelesen.get(filePath) === expected[filePath]) continue;
+    for (let i = 0; i < ops.length; i++) {
+      if (!touchedPaths(ops[i]).includes(filePath) || neu.includes(i)) continue;
+      // t215: ein fester Konflikt (mit schon geschriebener Op) bleibt auch bei fremder Drift beim Autor - neu bewertet saehe er
+      // auf dem neuen Stand gueltig aus und ueberschriebe die fremde Aenderung still.
+      if (zustaende[i]?.fest) continue;
+      if (ZEILEN_OPS_OHNE_GATE.has(ops[i].action)) {
+        const umgerechnet = await spaeteZeilenOpsUmrechnen(plan.project, plan.id, [ops[i]]);
+        if (umgerechnet.ok) { ops[i] = umgerechnet.ops[0]; zustaende[i] = null; neu.push(i); }
+        else zustaende[i] = { zustand: 'drift', grund: umgerechnet.abgelehnt[0]?.grund ?? 'nach fremder Aenderung nicht umrechenbar', bewertet_am: jetzt };
+      } else { zustaende[i] = null; neu.push(i); }
+    }
+    expected[filePath] = gelesen.get(filePath) as string;
+  }
+  zustaende = await bewerteOps({ ops, zustaende, neu, basen, w, jetzt });
+  const auswahl = await kommitKandidaten({ ops, zustaende, basen, w });
+  const kandidaten = new Set(auswahl.kandidaten);
+
+  const client = await pool.connect();
+  let nochmal = false;
+  let nachCommit: (() => Promise<void>) | null = null;
+  try {
+    await client.query('BEGIN');
+    const gesperrt = (await client.query<{ status: string; ops: FileBatchOp[]; expected_hashes: Record<string, string>; op_zustaende: unknown; owner_agent_id: string | null }>(
+      `SELECT status::text AS status, ops, expected_hashes, op_zustaende, owner_agent_id FROM file_batch_plans WHERE id = $1::bigint FOR UPDATE`, [plan.id])).rows[0];
+    const frueher = (await client.query<{ batch_id: string; committed_at: string; reason: string | null }>(
+      `SELECT id::text AS batch_id, committed_at::text AS committed_at, reason FROM file_batch_plans
+        WHERE aus_plan_id = $1::bigint AND status = 'committed' AND committed_at > $2::timestamptz
+        ORDER BY committed_at DESC, id DESC LIMIT 1`, [plan.id, beginn])).rows[0];
+    if (frueher) {
+      await client.query('ROLLBACK');
+      const offen = gesperrt && gesperrt.status === 'open' ? offeneOpsAus(gesperrt) : [];
+      return {
+        success: true, plan_id: plan.id, batch_id: frueher.batch_id, committed: 0, files: [], committed_ops: 0,
+        coedit_methode: 'ohne_gate', plan_offen: gesperrt?.status === 'open', offen,
+        bereits_committet: { batch_id: frueher.batch_id, committed_at: asIso(frueher.committed_at), grund: frueher.reason },
+        message: `Bereits committet: waehrend dieses Aufrufs wurde Teilcommit ${frueher.batch_id} aus Plan ${plan.id} geschrieben (${frueher.reason ?? 'ohne Grund'}); `
+          + `nichts erneut geschrieben. Offen: ${offen.length} Op(s) (offen[]). Ein neuer commit schreibt, was inzwischen gueltig ist.`,
+      };
+    }
+    if (!gesperrt || gesperrt.status !== 'open' || JSON.stringify([gesperrt.ops, gesperrt.expected_hashes]) !== snapshot) {
+      await client.query('ROLLBACK');
+      if (gesperrt && gesperrt.status !== 'open') {
+        return { success: false, plan_id: plan.id, status: gesperrt.status as FileBatchStatus, error: gesperrt.status, coedit_methode: 'ohne_gate', message: `Plan ${plan.id} ist nicht offen (Status: ${gesperrt.status}).` };
+      }
+      nochmal = true;
+    } else {
+      await lockFilesForPlanning(client, plan.project, planPaths);
+      await client.query('LOCK TABLE code_files IN SHARE ROW EXCLUSIVE MODE');
+      const jetztStand = await client.query<{ file_path: string; content: string }>(
+        `SELECT file_path, content FROM code_files WHERE project = $1 AND file_path = ANY($2::text[]) AND deleted_at IS NULL FOR UPDATE`,
+        [plan.project, planPaths]);
+      const jetztHash = new Map(jetztStand.rows.map((row) => [row.file_path, contentHash(row.content ?? '')] as const));
+      if (planPaths.some((filePath) => (jetztHash.get(filePath) ?? EMPTY_CONTENT_HASH) !== gelesen.get(filePath))) {
+        await client.query('ROLLBACK');
+        nochmal = true;
+      } else if (kandidaten.size === 0) {
+        // Nichts gueltig: Zustaende (und umgerechnete Drift-Ops) speichern, nichts schreiben, niemanden blockieren.
+        await client.query(
+          `UPDATE file_batch_plans SET ops = $2::jsonb, expected_hashes = $3::jsonb, op_zustaende = $4::jsonb, previews = $5::jsonb WHERE id = $1::bigint`,
+          [plan.id, JSON.stringify(ops), JSON.stringify(expected), JSON.stringify(zustaende), JSON.stringify(restVorschau(ops, zustaende, 'offen'))]);
+        await client.query('COMMIT'); notifyPlanChange();
+        const offen = offeneOpsAus({ owner_agent_id: plan.owner_agent_id, ops, op_zustaende: zustaende });
+        return {
+          success: false, plan_id: plan.id, status: 'open', error: 'nichts_gueltig', committed: 0, nichts_geschrieben: true,
+          coedit_methode: 'ohne_gate', offen, ...(auswahl.zurueckgehalten.length > 0 ? { zurueckgehalten: auswahl.zurueckgehalten } : {}),
+          message: `Nichts geschrieben, kein Fehler fuer andere: Plan ${plan.id} hat gerade keine gueltige Op (${offen.length} offen, Zustand je Op in offen[]). `
+            + 'Fehlerhafte/kollidierende/gedriftete Ops korrigiert ihr Autor (plan_update bzw. coedit_add mit op_index); danach erneut committen.',
+        };
+      } else {
+        const kandidatenListe = [...kandidaten].sort((a, b) => a - b);
+        const teilOps = kandidatenListe.map((i) => ops[i]);
+        const teilPfade = uniqueStrings(teilOps.flatMap(touchedPaths));
+        const teilHashes = Object.fromEntries(teilPfade.map((filePath) => [filePath, expected[filePath] ?? gelesen.get(filePath) ?? EMPTY_CONTENT_HASH] as const));
+        const combined = buildCombinedCoeditPreview({ ...plan, ops: teilOps, expected_hashes: teilHashes }, basen, true);
+        if (!combined.ok) {
+          await client.query('ROLLBACK');
+          return { success: false, plan_id: plan.id, status: 'open', error: 'teilmenge_nicht_anwendbar', coedit_methode: 'ohne_gate',
+            message: `Nichts geschrieben: die gueltigen Ops von Plan ${plan.id} liessen sich zusammen nicht anwenden (${combined.conflict.message}). Erneut committen; bleibt es, Befund melden.` };
+        }
+        const abspaltung = await client.query<{ id: string }>(
+          `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, status, open_for_coedit, reason, owner_identity_id, aus_plan_id, committed_at, committed_by_identity_id)
+           VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, 'committed', false, $6, $7, $8::bigint, clock_timestamp(), ${fileIdentitySql(aktuelleAgentIdentityId(plan.project, args.agent_id))})
+           RETURNING id::text AS id`,
+          [plan.project, plan.owner_agent_id, JSON.stringify(teilOps), JSON.stringify(teilHashes), JSON.stringify(combined.previews),
+            `Teilcommit aus Plan ${plan.id} [committed von ${caller ?? 'unbekannt'}]`, plan.owner_identity_id ?? null, plan.id]);
+        const batchId = abspaltung.rows[0].id;
+
+        // Ein Vorher-Snapshot je (Datei, Autor, Task) wie im gemeinsamen commit, batch_id = Teilcommit.
+        const snapshots = new Map<string, { filePath: string; agentId: string | null; identityId: string | null; taskId: string | null; count: number; actions: Set<string>; reasons: Set<string> }>();
+        for (const op of teilOps) {
+          const agentId = op.agent_id ?? plan.owner_agent_id ?? caller ?? null;
+          const identityId = op.agent_id ? op.author_identity_id ?? null : plan.owner_identity_id ?? aktuelleAgentIdentityId(plan.project, args.agent_id);
+          for (const filePath of touchedPaths(op)) {
+            const taskId = op.task_id ?? args.task_id ?? null;
+            const key = `${filePath}\u0000${fileAgentKey({ agent_id: agentId, identity_id: identityId })}\u0000${taskId ?? ''}`;
+            const entry = snapshots.get(key) ?? { filePath, agentId, identityId, taskId, count: 0, actions: new Set<string>(), reasons: new Set<string>() };
+            entry.count++;
+            entry.actions.add(op.action);
+            if (op.reason) entry.reasons.add(op.reason);
+            snapshots.set(key, entry);
+          }
+        }
+        for (const entry of snapshots.values()) {
+          const before = basen.get(entry.filePath) ?? '';
+          const actions = [...entry.actions].join(',');
+          const marker = await client.query<{ id: string }>(
+            `INSERT INTO file_versions
+               (project, file_path, content, content_hash, edit_action, agent_id, batch_id,
+                size_bytes, reason, agent_note, task_id, author_identity_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10, $11, $12) RETURNING id::text AS id`,
+            [plan.project, entry.filePath, before, contentHash(before),
+              entry.count === 1 ? `batch:${batchId}:${actions}` : `batch:${batchId}:coedit(${entry.count}x ${actions})`,
+              entry.agentId, batchId, Buffer.byteLength(before, 'utf8'),
+              entry.reasons.size > 0 ? [...entry.reasons].join(' | ') : plan.reason, args.agent_note ?? null, entry.taskId, entry.identityId]);
+          for (const row of marker.rows) merkeFileTaskVersion({ id: row.id, file_path: entry.filePath, task_id: entry.taskId });
+        }
+        const writtenFiles: Array<{ file_path: string; size: number; hash: string; created: boolean; deleted?: boolean }> = [];
+        for (const [filePath, buffer] of combined.buffers) {
+          const existedBefore = teilHashes[filePath] !== EMPTY_CONTENT_HASH;
+          if (buffer.deleted) {
+            if (!existedBefore) continue;
+            await client.query(`UPDATE code_files SET deleted_at = NOW(), updated_at = NOW() WHERE project = $1 AND file_path = $2`, [plan.project, filePath]);
+            writtenFiles.push({ file_path: filePath, size: 0, hash: EMPTY_CONTENT_HASH, created: false, deleted: true });
+          } else if (!existedBefore) {
+            const fileName = filePath.split('/').pop() ?? filePath;
+            const fileType = fileName.includes('.') ? fileName.split('.').pop() ?? '' : '';
+            await client.query(
+              `INSERT INTO code_files
+                 (id, project, file_path, file_name, file_type, content, content_hash,
+                  file_size, chunk_count, deleted_at, updated_at)
+               VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, 0, NULL, NOW())
+               ON CONFLICT (project, file_path) DO UPDATE
+                 SET content = EXCLUDED.content, content_hash = EXCLUDED.content_hash,
+                     file_size = EXCLUDED.file_size, deleted_at = NULL, updated_at = NOW()`,
+              [plan.project, filePath, fileName, fileType, buffer.finalContent, buffer.finalHash, Buffer.byteLength(buffer.finalContent, 'utf8')]);
+            writtenFiles.push({ file_path: filePath, size: Buffer.byteLength(buffer.finalContent, 'utf8'), hash: buffer.finalHash, created: true });
+          } else if (buffer.finalHash !== teilHashes[filePath]) {
+            await client.query(
+              `UPDATE code_files SET content = $3, content_hash = $4, file_size = $5, deleted_at = NULL, updated_at = NOW()
+                WHERE project = $1 AND file_path = $2`,
+              [plan.project, filePath, buffer.finalContent, buffer.finalHash, Buffer.byteLength(buffer.finalContent, 'utf8')]);
+            writtenFiles.push({ file_path: filePath, size: Buffer.byteLength(buffer.finalContent, 'utf8'), hash: buffer.finalHash, created: false });
+          }
+        }
+
+        // SOLL 4: Rest-Ops auf den neuen Stand. Zeilen-Ops auf geschriebenen Dateien ueber die exakten Spleisse des
+        // Teilcommits; Ganzdatei-Ops, move/copy-Ziele und shift_mode absolute sind nicht sicher abbildbar -> drift.
+        const restIdx = ops.map((_, i) => i).filter((i) => !kandidaten.has(i));
+        const zuordnung = new Map<string, Zuordnung | null>();
+        for (const filePath of teilPfade) {
+          const splices = combined.previews.filter((preview) => preview && preview.file_path === filePath && preview.zeilen).map((preview) => preview.zeilen as ZeilenSplice);
+          const ganz = teilOps.some((op) => op.new_path === filePath || (op.file_path === filePath && ['create', 'update', 'delete', 'move'].includes(op.action)));
+          zuordnung.set(filePath, splices.length > 0 && !ganz ? spliceZuordnung(splices) : null);
+        }
+        const restOps: FileBatchOp[] = [];
+        const restZustaende: Array<OpZustand | null> = [];
+        for (const i of restIdx) {
+          let op = ops[i];
+          let z: OpZustand | null = zustaende[i] ?? null;
+          // Konflikt mit einer Op, die gerade geschrieben wurde: bleibt Konflikt beim Autor (fest), bis er die Op aendert -
+          // auf dem neuen Stand saehe sie sonst gueltig aus und ueberschriebe die fremde Aenderung still.
+          if (z?.zustand === 'konflikt' && z.mit && kandidaten.has(z.mit.op_index)) {
+            z = { ...z, fest: true, grund: `kollidiert mit Op ${z.mit.op_index} (${z.mit.agent_id ?? '?'}), geschrieben mit Teilcommit ${batchId} - Op aendern (plan_update) oder zurueckziehen (cancel)` };
+          }
+          if (!z?.fest && touchedPaths(op).some((filePath) => zuordnung.has(filePath))) {
+            if (ZEILEN_OPS_OHNE_GATE.has(op.action) && zuordnung.has(op.file_path)) {
+              const map = zuordnung.get(op.file_path);
+              const r = op.shift_mode === 'absolute' || !map
+                ? { grund: 'Zeilen-Op nach Teilcommit nicht sicher umrechenbar (Ganzdatei-Op, move/copy oder shift_mode absolute) - neu planen (search_replace oder Anker)' }
+                : zeilenOpUeberZuordnung(op, map);
+              if ('op' in r) { op = r.op; z = null; } else z = { zustand: 'drift', grund: r.grund, bewertet_am: jetzt };
+            } else z = z?.zustand === 'drift' ? z : null;
+          }
+          restOps.push(op);
+          restZustaende.push(z);
+        }
+        const geschriebenStand = new Map([...combined.buffers].map(([filePath, buffer]) => [filePath, buffer.deleted ? EMPTY_CONTENT_HASH : buffer.finalHash] as const));
+        const restHashes = Object.fromEntries(uniqueStrings(restOps.flatMap(touchedPaths)).map((filePath) => [
+          filePath, geschriebenStand.get(filePath) ?? expected[filePath] ?? gelesen.get(filePath) ?? EMPTY_CONTENT_HASH] as const));
+        if (restOps.length === 0) {
+          await client.query(
+            `UPDATE file_batch_plans SET status = 'committed', committed_at = clock_timestamp(),
+                    committed_by_identity_id = ${fileIdentitySql(aktuelleAgentIdentityId(plan.project, args.agent_id))},
+                    ops = '[]'::jsonb, expected_hashes = '{}'::jsonb, previews = '[]'::jsonb, op_zustaende = '[]'::jsonb, befunde = NULL,
+                    reason = CONCAT_WS(' ', reason, $2::text)
+              WHERE id = $1::bigint`,
+            [plan.id, `[alle Ops in Teilcommits geschrieben, letzter Teilcommit ${batchId} von ${caller ?? 'unbekannt'}]`]);
+        } else {
+          await client.query(
+            `UPDATE file_batch_plans SET ops = $2::jsonb, expected_hashes = $3::jsonb, previews = $4::jsonb, op_zustaende = $5::jsonb, befunde = NULL
+              WHERE id = $1::bigint`,
+            [plan.id, JSON.stringify(restOps), JSON.stringify(restHashes), JSON.stringify(restVorschau(restOps, restZustaende, `offen nach Teilcommit ${batchId}`)), JSON.stringify(restZustaende)]);
+        }
+
+        // Reservierungen nur fuer Autoren freigeben, die keine offene Op mehr im Plan haben.
+        const offeneAutoren = new Set(restOps.map((op) => opAgentKey(op, plan)));
+        const fertig = teilOps.filter((op) => !offeneAutoren.has(opAgentKey(op, plan)));
+        // Luecke 5: fertige Fremdautoren behalten ihre Reservierung auf dem neuen Stand (wie im gemeinsamen commit,
+        // rebaseCommitAuthorReservations; PLAN_COMMITTED nennt Versionen und Hashes). Der Aufrufer gibt seine frei, wenn er
+        // keine offene Op mehr hat. Autoren mit offenen Ops behalten ihre Reservierung unveraendert.
+        const fertigOps = fertig.map((op) => (op.agent_id ? op : { ...op, agent_id: plan.owner_agent_id ?? undefined, author_identity_id: plan.owner_identity_id ?? undefined }));
+        const transfers = await rebaseCommitAuthorReservations(client,
+          { id: plan.id, project: plan.project, owner_agent_id: null, owner_identity_id: null, ops: fertigOps, expected_hashes: teilHashes }, caller, batchId);
+        const released: Array<{ agent_id: string; file_path: string }> = [];
+        if (caller && !offeneAutoren.has(fileCallerKey(plan.project, caller))) {
+          const callerIdentity = aktuelleAgentIdentityId(plan.project, caller);
+          released.push(...(await client.query<{ agent_id: string; file_path: string }>(
+            callerIdentity
+              ? `UPDATE agent_identitaet_file_reservations SET released_at = NOW(), plan_id = COALESCE(plan_id, $4::bigint)
+                  WHERE project = $1 AND file_path = ANY($2::text[]) AND identity_id = $3 AND released_at IS NULL RETURNING agent_id, file_path`
+              : `UPDATE file_reservations SET released_at = NOW(), plan_id = COALESCE(plan_id, $4::bigint)
+                  WHERE project = $1 AND file_path = ANY($2::text[]) AND agent_id = $3 AND released_at IS NULL RETURNING agent_id, file_path`,
+            [plan.project, teilPfade, callerIdentity ?? caller, batchId])).rows);
+        }
+        await closeOrphanCarriers(client, plan.project, `Teilcommit ${batchId} von Plan ${plan.id}`);
+        // PLAN_COMMITTED an die Autoren der geschriebenen Ops, dedupliziert je batch_id (nicht je plan_id).
+        await notifyPlanCommitted(client, { ...plan, id: batchId, ops: teilOps, expected_hashes: teilHashes }, caller, transfers);
+        await client.query('COMMIT'); notifyPlanChange();
+        // P22-T201: neue Basis und neue Op-Nummern - der Schattenstand-Puffer dieses Plans gilt nicht mehr.
+        verwerfeSchattenPuffer(plan.id);
+        const offen = offeneOpsAus({ owner_agent_id: plan.owner_agent_id, ops: restOps, op_zustaende: restZustaende }, restIdx);
+        nachCommit = async () => {
+          if (released.length > 0) await replanUnblockedReservationWaits(plan.project, released.map((r) => r.file_path));
+          for (const file of writtenFiles) if (!file.deleted) enqueueParseAndEmbed(plan.project, file.file_path);
+          if (restOps.length > 0) void bewerteOffenePlanOps(plan.id);
+        };
+        const ergebnis: CommitBatchResult = {
+          success: true, plan_id: plan.id, batch_id: batchId, committed: writtenFiles.length, files: writtenFiles, committed_ops: teilOps.length,
+          coedit_methode: 'ohne_gate', plan_offen: restOps.length > 0, geschriebene_op_indices: kandidatenListe, offen,
+          ...(auswahl.zurueckgehalten.length > 0 ? { zurueckgehalten: auswahl.zurueckgehalten } : {}),
+          ...(released.length > 0 ? { released_reservations: released } : {}),
+          ...(writtenFiles.some((file) => !file.deleted) ? { embeddings_pending: true, embeddings_hint: 'Struktur/Symbole (code_intel) sind sofort nutzbar. Die semantische Suche (Embeddings) spiegelt diese Aenderung noch nicht — laeuft im Hintergrund nach.' } : {}),
+          message: `Teilcommit ${batchId} aus Plan ${plan.id}: ${teilOps.length} gueltige Op(s) in ${writtenFiles.length} Datei(en) geschrieben (batch_id ${batchId}; restore_batch rollt genau ihn zurueck). `
+            + (restOps.length > 0
+              ? `Plan ${plan.id} bleibt mit derselben plan_id offen: ${restOps.length} Op(s), neu durchnummeriert (offen[].alter_op_index). Gueltige gehen beim naechsten commit mit; `
+                + 'fehlerhafte, kollidierende oder gedriftete Ops korrigiert ihr Autor per plan_update bzw. coedit_add mit op_index - sie blockieren niemanden.'
+              : `Plan ${plan.id} ist damit vollstaendig geschrieben.`),
+        };
+        try { await nachCommit(); } catch (error) { console.error('[file-batch] P22-T199: Nacharbeit nach Teilcommit (best effort):', (error as Error).message); }
+        return ergebnis;
+      }
+    }
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+  if (nochmal && versuch < 3) return commitOhneGate(args, versuch + 1);
+  return { success: false, plan_id: plan.id, status: 'open', error: 'plan_geaendert', coedit_methode: 'ohne_gate',
+    message: `Plan ${plan.id} oder seine Dateien aenderten sich waehrend des commits mehrfach; nichts geschrieben. Erneut committen.` };
+}
 
 /**
  * Wie lange ein in einen gemeinsamen Plan gefuehrter Wait (ohne Reservierung des
@@ -2474,7 +3194,12 @@ async function findJoinableSharedPlans(
           OR ($5::boolean AND ${fileCallerSql('p.owner_agent_id','p.owner_identity_id','$2')}))
         AND p.expected_hashes ? f.file_path
         AND jsonb_array_length(p.ops) > 0
-        AND NOT (p.previews @> '[{"ok": false}]'::jsonb)
+        -- P22-T199: bei Schalter coedit_ohne_gate EIN sperrt eine gescheiterte Op den Beitritt nicht ($6) - nur bei fremden
+        -- bzw. gemeinsamen Plaenen (mehrere Autoren). Ein eigener Ein-Autor-Plan mit gescheiterter Op bleibt wie bei AUS
+        -- kein Merge-Ziel (E1: Ein-Autor-Plaene atomar; t215 Fall 1 alte plan_id nach plan_update).
+        AND (NOT (p.previews @> '[{"ok": false}]'::jsonb)
+          OR ($6::boolean AND (NOT (${fileCallerSql('p.owner_agent_id','p.owner_identity_id','$2')})
+            OR (SELECT count(DISTINCT COALESCE(o->>'agent_id', p.owner_agent_id)) FROM jsonb_array_elements(p.ops) o) > 1)))
         AND NOT EXISTS (
           SELECT 1 FROM jsonb_each_text(p.expected_hashes) e
            WHERE e.value IS DISTINCT FROM COALESCE((
@@ -2484,7 +3209,7 @@ async function findJoinableSharedPlans(
            ), $4)
         )
       ORDER BY f.file_path, p.created_at, p.id`,
-    [project, callerAgentId ?? null, filePaths, EMPTY_CONTENT_HASH, mitEigenen],
+    [project, callerAgentId ?? null, filePaths, EMPTY_CONTENT_HASH, mitEigenen, await coeditOhneGate(project)],
   );
   return rows;
 }
@@ -2510,10 +3235,11 @@ async function reservierungenMitOffenemPlan(
       `SELECT 1 FROM file_batch_plans
         WHERE project = $1 AND ${fileAgentSql('owner_agent_id', 'owner_identity_id', '$2', row.reserved_identity_id)}
           AND status = 'open' AND open_for_coedit = true AND jsonb_array_length(ops) > 0
-          AND NOT (previews @> '[{"ok": false}]'::jsonb)
+          -- P22-T199 (Luecke 3): bei Schalter coedit_ohne_gate EIN zaehlt ein Plan mit gescheiterter Op weiter als Co-Edit-Ziel.
+          AND ($4::boolean OR NOT (previews @> '[{"ok": false}]'::jsonb))
           AND created_at >= $3::timestamptz
         LIMIT 1`,
-      [project, row.reserved_by, row.reserved_since],
+      [project, row.reserved_by, row.reserved_since, await coeditOhneGate(project)],
     );
     if ((offen.rowCount ?? 0) > 0) ergebnis.push(row);
   }
@@ -2639,7 +3365,7 @@ async function planBatchKern(args: {
   });
   // P15-T17 E3: Pruefbefunde (Syntax + Signatur-Muster) auf DEMSELBEN Trockenlauf-Schatten - kein Extra-
   // Lesezugriff; laeuft neben der Plan-TX und wird erst fuer die Antwort abgewartet. Wirft nie.
-  const pruefungLauf: Promise<PlanPruefung | null> = failedOpsOf(previews).length > 0 || !planPruefungAn()
+  const pruefungLauf: Promise<PlanPruefung | null> = failedOpsOf(previews).length > 0 || !(await planPruefungAn(args.project))
     ? Promise.resolve(null)
     : pruefePlanDateien(args.project, pruefDateienAus(schattenStand, args.ops, resolveAgentId(args.agent_id) ?? null, aktuelleAgentIdentityId(args.project,args.agent_id))).catch(() => null);
 
@@ -2918,7 +3644,7 @@ async function planBatchKern(args: {
     // die Plan-Zeile, dann die Dateien — hier ist es umgekehrt, also nicht warten, sondern nach
     // kurzer Pause neu planen (danach ist der Plan committed und kein Ziel mehr, oder wieder frei).
     const zusammengefuehrt: Array<{
-      plan_id: string; ops: number; files: string[]; total_ops: number; expected: Record<string, string>; previews: OpPreview[];
+      plan_id: string; ops: number; files: string[]; total_ops: number; expected: Record<string, string>; previews: OpPreview[]; ohne_gate?: boolean;
     }> = [];
     const mergeOverlaps: CoeditConflictDetail[] = [];
     const nachZiel = new Map<string, FileBatchOp[]>();
@@ -2970,7 +3696,10 @@ async function planBatchKern(args: {
         { ...ziel, ops: teilOps, expected_hashes: Object.fromEntries([...pruefDateien].map((filePath) => [filePath, zielHashes[filePath]])) },
         baselines,
       );
-      if (!probe.ok) {
+      // Luecke 2 (P22-T199): Schalter coedit_ohne_gate EIN und gemeinsamer Ziel-Plan -> nicht anwendbare Ops werden angehaengt
+      // und danach als fehlerhaft/konflikt markiert, statt das Anhaengen zu sperren.
+      const zielOhneGate = new Set([...ziel.ops, ...neueOps].map((op) => opAgentKey(op, ziel))).size > 1 && await coeditOhneGate(args.project);
+      if (!probe.ok && !zielOhneGate) {
         throw new Error(
           `Deine Ops liegen auf Dateien deines offenen Plans ${ziel.id} und werden dort angehaengt (ein Plan je Datei), ` +
           `sind aber zusammen mit ihm nicht anwendbar: ${probe.conflict.message} — nichts geplant, nichts geaendert. ` +
@@ -2996,7 +3725,7 @@ async function planBatchKern(args: {
       });
       zusammengefuehrt.push({
         plan_id: ziel.id, ops: neueOps.length, files: uniqueStrings(neueOps.flatMap(touchedPaths)),
-        total_ops: alleOps.length, expected: zielHashes, previews: vorschau,
+        total_ops: alleOps.length, expected: zielHashes, previews: vorschau, ohne_gate: zielOhneGate,
       });
     }
     const mergedInto = zusammengefuehrt.map(({ plan_id, ops, files }) => ({ plan_id, ops, files }));
@@ -3008,6 +3737,8 @@ async function planBatchKern(args: {
       // P15-T17 E3: die Zielplaene mit den angehaengten Ops neu pruefen (Befunde an deren Ops).
       const zielPruefung = await pruefeGespeichertenPlanSicher(erster.plan_id);
       for (const weiterer of zusammengefuehrt.slice(1)) await pruefeGespeichertenPlanSicher(weiterer.plan_id);
+      // P22-T199: angehaengte Ops eines gemeinsamen Plans bei Schalter EIN sofort bewerten (unbewertet -> Zustand).
+      for (const ziel of zusammengefuehrt) if (ziel.ohne_gate) await bewerteOffenePlanOps(ziel.plan_id);
       return {
         plan_id: erster.plan_id,
         ...(planloseHinweise.length ? { reservation_hint: {
@@ -3064,7 +3795,7 @@ async function planBatchKern(args: {
         )).rows[0]?.id ?? null
       : null;
     // P15-T17 E3: voller Plan -> Befunde gleich beim INSERT speichern (kein zweiter Roundtrip nach dem COMMIT).
-    const vorabPruefung = !traeger && !umgewidmet && !geteilt && planOps.length > 0 && planPruefungAn() ? await pruefungLauf : null;
+    const vorabPruefung = !traeger && !umgewidmet && !geteilt && planOps.length > 0 && await planPruefungAn(args.project) ? await pruefungLauf : null;
     const planRes = traeger || umgewidmet ? null : await client.query<{ id: string; expires_at: string }>(
       `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit, reason, befunde, owner_identity_id)
        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7, $8::jsonb, ${fileIdentitySql(aktuelleAgentIdentityId(args.project,ownerAgentId))})
@@ -3284,7 +4015,7 @@ async function planBatchKern(args: {
     // P15-T17 E3: Pruefbefunde an die Ops dieses Plans. Voller Plan: Ergebnis des Laufs auf dem Trockenlauf-
     // Schatten. Teilplan (Waits/Anhaengen): andere Op-Indizes -> am gespeicherten Plan neu pruefen.
     let planPruefung: PlanPruefung | null = null;
-    if (planOps.length > 0 && planPruefungAn()) {
+    if (planOps.length > 0 && await planPruefungAn(args.project)) {
       const roh = geteilt ? null : await pruefungLauf;
       if (roh) {
         planPruefung = roh;
@@ -3294,6 +4025,7 @@ async function planBatchKern(args: {
       }
     }
     for (const ziel of zusammengefuehrt) await pruefeGespeichertenPlanSicher(ziel.plan_id);
+    for (const ziel of zusammengefuehrt) if (ziel.ohne_gate) await bewerteOffenePlanOps(ziel.plan_id);
     const result: PlanBatchResult = {
       plan_id: planRow.id,
       ...(planloseHinweise.length ? { reservation_hint: {
@@ -4053,7 +4785,10 @@ async function addCoeditContributionKern(args: {
       return await followUpForLateContribution(args, caller, plan.owner_agent_id, plan.owner_identity_id);
     }
     if (plan.status !== "open") throw new Error(`Plan ${args.plan_id} ist nicht offen (Status: ${plan.status})`);
-    if (failedOpsOf(plan.previews).length > 0) {
+    // P22-T199 (E2): bei Schalter coedit_ohne_gate EIN sperren gescheiterte Ops niemanden; ein Beitrag wird angenommen und
+    // danach bewertet (gueltig | fehlerhaft | konflikt), statt mit contribution_failed abgelehnt zu werden.
+    const ohneGate = await coeditOhneGate(args.project);
+    if (!ohneGate && failedOpsOf(plan.previews).length > 0) {
       throw new Error(`Plan ${args.plan_id} enthaelt gescheiterte Ops — erst plan_update durch den Owner`);
     }
     if (!plan.open_for_coedit) throw new Error(`Plan ${args.plan_id} ist nicht fuer Co-Edit geoeffnet`);
@@ -4261,7 +4996,7 @@ async function addCoeditContributionKern(args: {
           { ...plan, ops: [...pruefPlanIdx.map((index) => plan.ops[index]), ...additions], expected_hashes: subsetHashes },
           baselines,
         );
-        if (!combined.ok && combined.conflict.left_op_index >= pruefPlanIdx.length) {
+        if (!ohneGate && !combined.ok && combined.conflict.left_op_index >= pruefPlanIdx.length) {
           await client.query("ROLLBACK");
           const index = combined.conflict.left_op_index - pruefPlanIdx.length;
           const bad = additions[index];
@@ -4540,6 +5275,8 @@ export async function markCoeditNoChanges(args: {
     const completedFiles = uniqueStrings(zielWaits.flatMap(completedWaitFiles));
     const remainingFiles = uniqueStrings(zielWaits.flatMap(remainingWaitFiles));
     return {
+      // P22-T199: bei Schalter coedit_ohne_gate EIN ist no_changes keine Commit-Bedingung mehr (Aufruf bleibt kompatibel).
+      ...(await coeditOhneGate(args.project) ? { coedit_methode: 'ohne_gate', hinweis: 'Schalter coedit_ohne_gate EIN: no_changes/ready sind keine Commit-Bedingung mehr; jeder Beteiligte kann jederzeit committen (alle gueltigen Ops werden geschrieben).' } : {}),
       success: true, plan_id: args.plan_id, status: remainingFiles.length > 0 || zielWaits.some(wait => wait.shared_files.length > 0 && wait.status !== 'ready' && wait.status !== 'no_changes')
         ? 'linked' : zielWaits.some(wait => wait.shared_files.length > 0 && wait.status === 'ready') ? 'ready' : 'no_changes',
       completed_files: completedFiles, remaining_files: remainingFiles, no_change_files: requestedFiles,
@@ -4607,6 +5344,8 @@ export async function markCoeditReady(args: {
     }
     await client.query("COMMIT"); notifyPlanChange();
     return {
+      // P22-T199: bei Schalter coedit_ohne_gate EIN ist ready keine Commit-Bedingung mehr (Aufruf bleibt kompatibel).
+      ...(await coeditOhneGate(args.project) ? { coedit_methode: 'ohne_gate', hinweis: 'Schalter coedit_ohne_gate EIN: ready/no_changes sind keine Commit-Bedingung mehr; jeder Beteiligte kann jederzeit committen (alle gueltigen Ops werden geschrieben).' } : {}),
       success: true, plan_id: args.plan_id, status: "ready",
       completed_files: uniqueStrings(zielWaits.flatMap(completedWaitFiles)), remaining_files: [],
       ausserhalb_zielplan: ausserhalb,
@@ -5029,10 +5768,15 @@ export async function commitBatch(args: {
   const caller = resolveAgentId(args.agent_id);
   for (;;) {
     const result = await commitBatchOnce(args);
+    // P22-T199 (Luecke 4): ohne Gate gibt es nichts zu warten - wait_seconds wird ignoriert, die Antwort sagt es.
+    if (result.coedit_methode === 'ohne_gate' && seconds > 0) {
+      result.message = `${result.message ?? ''} Hinweis: wait_seconds wird bei Schalter coedit_ohne_gate EIN ignoriert (kein Warten; commit schreibt sofort alle gueltigen Ops).`.trim();
+    }
     // P15-T22 Ziel 2: endgueltiges Diff an die file_versions des Batches haengen — nebenlaeufig nach dem
     // COMMIT, verzoegert und gefaehrdet den commit nicht (Fehler nur im Log; fehlt es, rechnet history/
     // get_version es beim Lesen nach).
-    if (result.success) diffNachCommitPlanen(result.plan_id);
+    // P22-T199: Teilcommit ohne Gate hat eine eigene batch_id (sonst batch_id = plan_id, unveraendert).
+    if (result.success) diffNachCommitPlanen(result.batch_id);
     // P15-T36 Teil 2: kein Abbruch, aber ein Hinweis, welche .env-Variablen mit Wert der commit ueberschrieben
     // oder entfernt hat (nur Namen; Stand vor dem commit aus file_versions des Batches).
     if (result.success) {
@@ -5055,7 +5799,7 @@ export async function commitBatch(args: {
         // P6-T44: fs_pruefung bleibt der Pre-Flight-Stand, gekennzeichnet; nach_commit nennt den Stand danach.
         ...(result.fs_pruefung ? { fs_pruefung: fsPruefungNachCommit(result.fs_pruefung, files) } : {}),
       };
-      const envListe = await envHinweiseFuerBatch(result.plan_id).catch(() => [] as string[]);
+      const envListe = await envHinweiseFuerBatch(result.batch_id).catch(() => [] as string[]);
       return envListe.length > 0 ? { ...mitSyncStatus, env_hinweise: envListe } : mitSyncStatus;
     }
     if (result.status !== 'waiting_for_contributors') return result;
@@ -5282,8 +6026,12 @@ async function commitBatchOnce(args: {
       message: `Fremder Plan: Owner ist ${ownerText}; Aufrufer ${caller ?? 'ohne agent_id'} ist nicht beteiligt. Deine offenen Plaene: ${eigeneText}. Pruefe die Plan-ID und committe einen eigenen Plan.`,
     };
   }
+  // P22-T199: Schalter coedit_ohne_gate EIN und gemeinsamer Plan mit MEHREREN Autoren (E1) -> commit ohne Gate
+  // (commitOhneGate): gescheiterte Ops, Pruefbefunde, Konflikte und nicht bereite Beitragende sperren nichts. Plaene mit
+  // einem Autor und Schalter AUS laufen unveraendert weiter unten.
+  const ohneGate = await ohneGatePlan(plan);
   const failedOps = failedOpsOf(plan.previews);
-  if (failedOps.length > 0) {
+  if (!ohneGate && failedOps.length > 0) {
     return {
       success: false,
       plan_id: args.plan_id,
@@ -5328,7 +6076,7 @@ async function commitBatchOnce(args: {
   let commitArgs = args;
   // P16-T23: Pruefdateien des Plans fuer den Nachlauf nach dem Schreiben (nur bei Schalter EIN wirksam).
   let nachlaufDateien: PruefDatei[] | undefined;
-  if (Array.isArray(plan.ops) && plan.ops.length > 0) {
+  if (!ohneGate && Array.isArray(plan.ops) && plan.ops.length > 0) {
     const pruef = await pruefeVorCommit(args.plan_id, args.befunde_quittieren, { project: plan.project, owner: plan.owner_agent_id, args: { ...args } });
     if (pruef.sperre) return pruef.sperre;
     nachlaufDateien = pruef.dateien;
@@ -5351,7 +6099,7 @@ async function commitBatchOnce(args: {
     if(err instanceof FsDriftFehler)return {success:false,plan_id:args.plan_id,status:'open',error:'fs_drift',geschrieben:false,fs_pruefung:err.fs_pruefung,message:err.message};
     throw err;
   }
-  const result=Number(coeditWaitCount.rows[0]?.count ?? 0)>0||distinctOpAgents.size>1||mehrereTasks
+  const result=ohneGate ? await commitOhneGate(commitArgs) : Number(coeditWaitCount.rows[0]?.count ?? 0)>0||distinctOpAgents.size>1||mehrereTasks
     ? await commitCoeditBatch(commitArgs,JSON.stringify([plan.ops,plan.expected_hashes])) : await commitLegacyLocked(commitArgs,plan);
   // P16-T23: geschrieben -> nichts starten, nur vormerken; die Antwort nennt den fertigen Aufruf build_pruefen
   // (Nachlauf-Schalter; sonst null, Antwort unveraendert).
@@ -5732,7 +6480,7 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
         : plan.owner_agent_id;
       await client.query(
         `UPDATE file_batch_plans
-            SET ops = $2::jsonb, previews = $3::jsonb, expected_hashes = $4::jsonb, status = 'open',
+            SET ops = $2::jsonb, previews = $3::jsonb, expected_hashes = $4::jsonb, status = 'open', op_zustaende = NULL,
                 owner_agent_id = $5, owner_identity_id = ${fileIdentitySql(newOwnerIdentityId)}
           WHERE id = $1::bigint`,
         [plan_id, JSON.stringify(remainingOps), JSON.stringify(freshPreviews), JSON.stringify(expected), newOwner],
@@ -6045,7 +6793,7 @@ async function updatePlanInPlace(
       `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, committed_by_identity_id, cancelled_by_identity_id, ops, expected_hashes, previews,
               status, open_for_coedit, notify_channel, reason,
               expires_at::text AS expires_at, created_at::text AS created_at,
-              committed_at::text AS committed_at
+              committed_at::text AS committed_at, op_zustaende
          FROM file_batch_plans
         WHERE id = $1::bigint AND project = $2
         FOR UPDATE`,
@@ -6094,6 +6842,9 @@ async function updatePlanInPlace(
     // P22-T219: plan_update mit task_id ordnet auch die schon geplanten eigenen Ops ohne Task zu; fremde bleiben.
     const planTask = args.task_id;
     if (planTask) nextOps = nextOps.map((op) => !op.task_id && opAgentKey(op,plan) === fileCallerKey(plan.project,caller) ? { ...op, task_id: planTask } : op);
+    // P22-T199: Schalter coedit_ohne_gate EIN und gemeinsamer Plan -> Ueberlappung, Drift und nicht anwendbare Ops sperren die
+    // Korrektur nicht; die Ops werden danach bewertet (fehlerhaft/konflikt/drift beim Autor, niemand blockiert).
+    const ohneGate = await ohneGatePlan({ ...plan, ops: nextOps });
     const isReplaced = (index: number) => index >= replacedFrom && index < replacedFrom + replacement.length;
 
     // P6-T21 (a): nur Dateien, die nach der Aenderung noch eine Op haben. Eine Datei ohne Op bliebe
@@ -6110,6 +6861,8 @@ async function updatePlanInPlace(
       const content = (await getFileContentFromPg(args.project, filePath)) ?? '';
       const hash = contentHash(content);
       if (filePath in expected && expected[filePath] !== hash) {
+        // P22-T199: ohne Gate bleibt die alte Basis; der commit rechnet die Ops dieser Datei um (sonst drift).
+        if (ohneGate) { baselines.set(filePath, content); driftDateien.add(filePath); continue; }
         throw new Error(`Plan ${args.plan_id} ist veraltet: ${filePath} wurde ausserhalb des Plans geaendert — nichts geaendert (commit wuerde stale enden)`);
       }
       expected[filePath] = hash;
@@ -6122,16 +6875,24 @@ async function updatePlanInPlace(
     const ankerZusatz = Object.values(anker?.fundstellen ?? {}).map(ankerFundstellenText).join('');
     const overlaps = detectCrossAgentConflicts(nextOps, baselines)
       .filter((conflict) => isReplaced(conflict.left_op_index) || isReplaced(conflict.right_op_index));
-    if (overlaps.length > 0) {
+    if (!ohneGate && overlaps.length > 0) {
       throw new Error(`plan_update ueberlappt mit Ops anderer Agenten — nichts geaendert: ${overlaps.map((c) => c.message).join(' | ')}. `
         + `Vollstaendig ansehen: files(action:'plan_status', plan_id:'${args.plan_id}', op_indices:[${uniqueStrings(overlaps.flatMap((c) => [String(c.left_op_index), String(c.right_op_index)])).join(',')}])`);
     }
     const combined = buildCombinedCoeditPreview({ ...plan, ops: nextOps, expected_hashes: expected }, baselines);
-    if (!combined.ok) throw new Error(`${combined.conflict.message}${ankerZusatz} — nichts geaendert`);
+    if (!ohneGate && !combined.ok) throw new Error(`${combined.conflict.message}${ankerZusatz} — nichts geaendert`);
     ergaenzeAnkerVorschau(combined.previews, anker?.umgerechnet, anker?.fundstellen);
+    // P22-T199: Zustaende an die neuen Op-Indizes anpassen; ersetzte Ops sind unbewertet (danach bewerteOffenePlanOps).
+    const alteZustaende = leseOpZustaende(plan.op_zustaende, plan.ops.length);
+    const neueZustaende: Array<OpZustand | null> = anhaengen
+      ? [...alteZustaende, ...replacement.map(() => null)]
+      : args.op_index === undefined || args.op_index === null
+      ? [...plan.ops.map((op, i) => ({ op, z: alteZustaende[i] })).filter(({ op }) => opAgentKey(op,plan) !== fileCallerKey(plan.project,caller)).map(({ z }) => z), ...replacement.map(() => null)]
+      : [...alteZustaende.slice(0, args.op_index), ...replacement.map(() => null), ...alteZustaende.slice(args.op_index + 1)];
     await client.query(
-      `UPDATE file_batch_plans SET ops = $2::jsonb, expected_hashes = $3::jsonb, previews = $4::jsonb, status = 'open' WHERE id = $1::bigint`,
-      [args.plan_id, JSON.stringify(nextOps), JSON.stringify(expected), JSON.stringify(combined.previews)],
+      `UPDATE file_batch_plans SET ops = $2::jsonb, expected_hashes = $3::jsonb, previews = $4::jsonb, status = 'open',
+              op_zustaende = CASE WHEN $5::boolean THEN $6::jsonb ELSE op_zustaende END WHERE id = $1::bigint`,
+      [args.plan_id, JSON.stringify(nextOps), JSON.stringify(expected), JSON.stringify(combined.previews), ohneGate, JSON.stringify(neueZustaende)],
     );
     if (plan.status === 'conflict') {
       await client.query(
@@ -6141,6 +6902,7 @@ async function updatePlanInPlace(
       );
     }
     await client.query('COMMIT'); notifyPlanChange();
+    if (ohneGate) await bewerteOffenePlanOps(plan.id, replacement.map((_, k) => replacedFrom + k));
     return {
       plan_id: plan.id,
       total_ops: nextOps.length,
@@ -6210,9 +6972,12 @@ async function replanBatchKern(args: {
     throw new Error(`Plan ${args.plan_id} ist nicht offen (Status: ${plan.status}) — nur offene Plaene lassen sich korrigieren`);
   }
   const caller = resolveAgentId(args.agent_id);
+  // P22-T199 (t215): ein ohne-Gate-Plan (z. B. Rest-Plan nach Teilcommit mit nur noch Owner-Ops) wird immer im Plan korrigiert
+  // (SOLL 4: gleiche plan_id bleibt offen) - der Entwurfsweg mit neuer plan_id scheiterte dort an den Co-Edit-Waits.
   const ownDraft = failedOpsOf(plan.previews).length > 0
     && (!plan.owner_agent_id || fileCallerKey(plan.project,caller) === ownerAgentKey(plan))
-    && !plan.ops.some((op) => op.agent_id && opAgentKey(op,plan) !== ownerAgentKey(plan));
+    && !plan.ops.some((op) => op.agent_id && opAgentKey(op,plan) !== ownerAgentKey(plan))
+    && !(await ohneGatePlan(plan));
   if (!ownDraft) {
     const imPlan = await updatePlanInPlace(args, caller);
     // P15-T17 E3: neu pruefen, Quittierungen bleiben (Schluessel ohne Zeilen).
@@ -6377,8 +7142,24 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
       ORDER BY w.wait_token`,
     [plan_id],
   );
+  // P22-T199: Schalter coedit_ohne_gate EIN (gemeinsamer Plan mit mehreren Autoren): kein Ready-Gate, Zustand je Op.
+  // Teilcommits (eigene batch_id) dieses Plans erscheinen, sobald es welche gibt (bei AUS gibt es keine).
+  const ohneGateSicht = row.status === 'open' && await ohneGatePlan(row);
+  let teilcommits: NonNullable<FileBatchPlanRow['teilcommits']> = [];
+  try {
+    teilcommits = (await pool.query<{ batch_id: string; committed_at: Date | string; reason: string | null; ops: number }>(
+      `SELECT id::text AS batch_id, committed_at, reason, jsonb_array_length(ops)::int AS ops FROM file_batch_plans
+        WHERE aus_plan_id = $1::bigint AND status = 'committed' ORDER BY committed_at, id`, [plan_id])).rows
+      .map((t) => ({ batch_id: t.batch_id, committed_at: asIso(t.committed_at), ops: t.ops, committed_by: /\[committed von ([^\]]+)\]/.exec(t.reason ?? '')?.[1] ?? null }));
+  } catch { teilcommits = []; }
+  let offen: OffeneOp[] | undefined;
+  if (ohneGateSicht) {
+    const z = (await pool.query<{ op_zustaende: unknown }>('SELECT op_zustaende FROM file_batch_plans WHERE id = $1::bigint', [plan_id])).rows[0]?.op_zustaende;
+    offen = offeneOpsAus({ owner_agent_id: row.owner_agent_id, ops: Array.isArray(row.ops) ? row.ops : [], op_zustaende: z });
+    if (offen.some((op) => op.zustand === 'unbewertet')) void bewerteOffenePlanOps(String(plan_id));
+  }
   // E1: auf wen ein commit gerade warten wuerde (aktive, noch nicht bereite Beitragende).
-  const commitWartetAuf = row.status === 'open' && waitRows.rows.length > 0
+  const commitWartetAuf = !ohneGateSicht && row.status === 'open' && waitRows.rows.length > 0
     ? await readyGateBlockers(pool, { id: String(plan_id), project: row.project, owner_agent_id: row.owner_agent_id, owner_identity_id: row.owner_identity_id, expected_hashes: row.expected_hashes }, null)
     : [];
   let overlapWarnings: CoeditConflictDetail[] = [];
@@ -6401,6 +7182,8 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
     ...(overlapWarnings.length > 0 ? { overlap_warnings: overlapWarnings } : {}),
     ...(insertNotes.length > 0 ? { insert_notes: insertNotes } : {}),
     ...(commitWartetAuf.length > 0 ? { commit_wartet_auf: commitWartetAuf } : {}),
+    ...(offen ? { coedit_methode: 'ohne_gate' as const, offen } : {}),
+    ...(teilcommits.length > 0 ? { teilcommits } : {}),
     ...(eigeneWaits.rows.length > 0 ? { coedit_waits: eigeneWaits.rows.map(w=>{if(!w.primary_identity_id) delete w.primary_identity_id; return w;}) } : {}),
   };
 }
@@ -6604,6 +7387,8 @@ export async function buildCompactPlanStatusResponse(
     ops_count: Array.isArray(plan.ops) ? plan.ops.length : 0,
     count: ops.length,
     ops,
+    // P22-T201: Debug des Schattenstand-Puffers (nur Co-Edit ohne Gate): treffer/verlaengert/neuaufbau/aus, ms, letzter Fall.
+    ...(ansicht === 'befunde' && (plan as { coedit_methode?: string }).coedit_methode === 'ohne_gate' ? { schatten_puffer: schattenPufferStatus(plan.id) } : {}),
   });
 }
 
@@ -6748,6 +7533,17 @@ export function buildPlanStatusResponse(plan: FileBatchPlanRow): Record<string, 
           }
         : {};
     })(),
+    // P22-T199: Schalter coedit_ohne_gate EIN - Zustand je Op statt Ready-Gate; Teilcommits mit eigener batch_id.
+    ...(plan.coedit_methode
+      ? {
+          coedit_methode: plan.coedit_methode,
+          offen: plan.offen ?? [],
+          ohne_gate_hinweis: 'Schalter coedit_ohne_gate EIN: kein ready, kein Warten. commit schreibt jederzeit alle gueltigen Ops (offen[].zustand gueltig); '
+            + 'fehlerhafte, kollidierende oder gedriftete Ops bleiben beim Autor und blockieren niemanden. Korrektur: plan_update (op_index) bzw. coedit_add mit op_index.',
+          ...(failedOpsOf(previews).length > 0 ? { failed_hint: 'Schalter coedit_ohne_gate EIN: gescheiterte Ops sperren den commit nicht; geschrieben werden die gueltigen.' } : {}),
+        }
+      : {}),
+    ...(plan.teilcommits && plan.teilcommits.length > 0 ? { teilcommits: plan.teilcommits } : {}),
     reason: plan.reason,
     created_at: plan.created_at,
     committed_at: plan.committed_at,
@@ -7165,15 +7961,17 @@ function gleicheHashes(a: Record<string, string>, b: Record<string, string>): bo
   return schluessel.length === Object.keys(b).length && schluessel.every((k) => a[k] === b[k]);
 }
 
-/** Notaus/Messvergleich: FEHLERPRUEFUNG_PLAN=0 schaltet Pruefung und commit-Sperre der Plaene ab (Standard an). */
-function planPruefungAn(): boolean {
-  return process.env.FEHLERPRUEFUNG_PLAN !== '0';
+/**
+ * Notaus/Messvergleich: Pruefung und commit-Sperre der Plaene an/aus (Standard an). P22-T199: Einstellung plan_pruefung aktiv
+ * (code_check build_einstellungen, projekt > global), Env FEHLERPRUEFUNG_PLAN nur noch Rueckfall (plan-pruef-einstellungen.ts).
+ */
+async function planPruefungAn(project: string | null): Promise<boolean> {
+  return (await lesePlanPruefEinstellungen(project)).aktiv.wert;
 }
 
-/** So lange gilt eine gespeicherte Pruefung bei unveraendertem Endstand (ms, Env FEHLERPRUEFUNG_GUELTIG_MS, Standard 60000). */
-function pruefungGueltigMs(): number {
-  const roh = Number(process.env.FEHLERPRUEFUNG_GUELTIG_MS);
-  return Number.isFinite(roh) && roh >= 0 ? roh : 60_000;
+/** So lange gilt eine gespeicherte Pruefung bei unveraendertem Endstand (ms; P22-T199: Einstellung gueltig_ms, Env FEHLERPRUEFUNG_GUELTIG_MS nur Rueckfall, Standard 60000). */
+async function pruefungGueltigMs(project: string | null): Promise<number> {
+  return (await lesePlanPruefEinstellungen(project)).gueltig_ms.wert;
 }
 
 /**
@@ -7194,6 +7992,9 @@ export async function pruefeGespeichertenPlan(
   )).rows[0];
   const ops = plan && Array.isArray(plan.ops) ? plan.ops : [];
   if (!plan || ops.length === 0) return null;
+  // P22-T199: Notaus je Projekt (Einstellung plan_pruefung aktiv); vorher in pruefeGespeichertenPlanSicher per Env.
+  if (!(await planPruefungAn(plan.project))) return null;
+  const gueltigMs = await pruefungGueltigMs(plan.project);
   const stand = await ladeSchattenStand(plan);
   if ('fehler' in stand) return null;
   const dateien = pruefDateienAus(stand, ops, plan.owner_agent_id, plan.owner_identity_id ?? null);
@@ -7203,7 +8004,7 @@ export async function pruefeGespeichertenPlan(
   // P16-T15: andere Paketdateien/Abhängigkeiten können sich trotz gleicher Plan-Hashes geändert haben.
   // Die Typstufe nutzt ihren eigenen Paketcache; gespeicherte Gesamtbefunde niemals blind wiederverwenden.
   if (!vorher?.typen && !vorher?.build && !dateien.some(d => /\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/.test(d.file_path))
-    && vorher && vorher.status === 'fertig' && Date.now() - new Date(vorher.geprueft_am).getTime() < pruefungGueltigMs()
+    && vorher && vorher.status === 'fertig' && Date.now() - new Date(vorher.geprueft_am).getTime() < gueltigMs
     && gleicheHashes(vorher.ergebnis_hashes ?? {}, ergebnisHashesAus(dateien))
     && vorher.befunde.every(b=>(b.author_identity_id??null)===(b.op_index===null?null:ops[b.op_index]?.author_identity_id??null))) {
     pruefung = vorher;
@@ -7225,7 +8026,7 @@ async function pruefeGespeichertenPlanSicher(
   planId: string,
   quittierungen: Array<{ id: string; grund?: string }> = [],
 ): Promise<Awaited<ReturnType<typeof pruefeGespeichertenPlan>>> {
-  if (!planPruefungAn()) return null;
+  // P22-T199: der Notaus (plan_pruefung aktiv, je Projekt) wird jetzt in pruefeGespeichertenPlan nach dem Laden geprueft.
   try {
     return await pruefeGespeichertenPlan(planId, quittierungen);
   } catch (error) {
@@ -7377,8 +8178,31 @@ export async function addCoeditContribution(args: Parameters<typeof addCoeditCon
     if(err instanceof FsDriftFehler)return {success:false,plan_id:args.plan_id,appended_ops:0,already_consumed_ops:0,error:'fs_drift',fs_pruefung:err.fs_pruefung,message:err.message};
     throw err;
   }
-  const result = {...await addCoeditContributionKern({...args,ops}),fs_pruefung};
-  if (!result.success || !result.plan_id || !(Number(result.appended_ops) > 0)) return result;
+  const roh = {...await addCoeditContributionKern({...args,ops}),fs_pruefung};
+  if (!roh.success || !roh.plan_id) return roh;
+  const neu = Number(roh.appended_ops ?? 0);
+  // P22-T199 (E2): bei Schalter coedit_ohne_gate EIN den angenommenen Beitrag sofort bewerten und den Zustand der eigenen Ops
+  // nennen (fehlerhaft/konflikt blockieren niemanden; Korrektur per coedit_add mit op_index bzw. plan_update).
+  // t215: auch wenn dieser Aufruf nichts neu anhaengt (Wiederholung, already_consumed_ops) - dann alle Ops des Aufrufers.
+  let eigeneZustaende: OffeneOp[] | undefined;
+  let alleZustaende: OffeneOp[] | undefined;
+  if (await coeditOhneGate(args.project)) {
+    const gesamt = Number(roh.total_plan_ops ?? 0);
+    const idx = Array.from({ length: neu }, (_, k) => gesamt - neu + k).filter((i) => i >= 0);
+    await bewerteOffenePlanOps(roh.plan_id, idx, { nurUnbewertet: true });
+    const stand = (await getPool().query<{ owner_agent_id: string | null; ops: FileBatchOp[]; op_zustaende: unknown }>(
+      'SELECT owner_agent_id, ops, op_zustaende FROM file_batch_plans WHERE id = $1::bigint', [roh.plan_id])).rows[0];
+    const aufrufer = resolveAgentId(args.agent_id) ?? null;
+    if (stand) {
+      alleZustaende = offeneOpsAus(stand);
+      eigeneZustaende = alleZustaende.filter((op) => (neu > 0 ? idx.includes(op.op_index) : op.agent_id === aufrufer));
+    }
+  }
+  if (!(neu > 0)) return eigeneZustaende ? { ...roh, coedit_methode: 'ohne_gate', eigene_op_zustaende: eigeneZustaende } : roh;
+  const result = eigeneZustaende ? { ...roh, coedit_methode: 'ohne_gate', eigene_op_zustaende: eigeneZustaende } : roh;
+  // P22-T201 (Freigabe T1): bei EIN entfaellt die Gesamtplan-Pruefung nach coedit_add. Das Op-Gate hat jede neue Op schon auf
+  // dem kumulierten Stand ihrer Datei geprueft (Syntax/Fehlermuster); pruefung und eigene_befunde kommen aus den Op-Zustaenden.
+  if (eigeneZustaende && alleZustaende) return { ...result, ...opGatePruefungAntwort(alleZustaende, eigeneZustaende) };
   const ergebnis = await pruefeGespeichertenPlanSicher(result.plan_id);
   if (!ergebnis) return result;
   const caller = resolveAgentId(args.agent_id) ?? null;
