@@ -1,5 +1,5 @@
 /** P22-T93: serverseitige Projektion bestehender API-Daten; kein DB-Zugriff im Browser. */
-import { getPool, hauptagentIdentitaetsId, HAUPTAGENT_AGENT_ID, leseNetzwerkKonfiguration, netzwerkEreignis, netzwerkErfolg, netzwerkText, type ToolCallRow } from '@synapse/core';
+import { getPool, listeProjekte, listeAusweisVisa, letzteAktiveProjektTasks, hauptagentIdentitaetsId, HAUPTAGENT_AGENT_ID, leseNetzwerkKonfiguration, netzwerkEreignis, netzwerkErfolg, netzwerkText, type ToolCallRow } from '@synapse/core';
 
 /**
  * P22-T156: SQL-Ausschnitte nur fuer die serverseitige Klassifikation (core netzwerkErgebnis). Sie werden NIE ausgeliefert:
@@ -58,10 +58,74 @@ async function zaehleIndex(project: string): Promise<IndexGroesse> {
  return wert;
 }
 
-export async function ladeAgentennetzwerk(project: string) {
+/** P22-T232: schlanker Abruf; dieselbe Projektliste wie GET /api/projects, keine unregistrierten oder verborgenen Projekte. */
+export interface NetzwerkSicht { projekte:string[]; projektlose:boolean; identity_id:string|null }
+export async function ladeNetzwerkDatengrundlage(project: string, nur?: 'aktuelle_tasks' | 'projekt_aktivitaeten', sicht:NetzwerkSicht={projekte:[project],projektlose:false,identity_id:null}) {
+ const config = await leseNetzwerkKonfiguration(project);
+ const basis = { success: true, project, daten_schalter: config.daten_schalter, einstellungen: {aktivitaet_sekunden: config.einstellungen.aktivitaet_sekunden} };
+ if (!config.daten_schalter.aktiv) return {...basis, ...(nur === 'aktuelle_tasks' ? {aktuelle_tasks: []} : nur === 'projekt_aktivitaeten' ? {projekt_aktivitaeten: []} : {aktuelle_tasks: [],projekt_aktivitaeten: []})};
+ const aktuelle_tasks = nur === 'projekt_aktivitaeten' ? undefined : await letzteAktiveProjektTasks(project);
+ let projekt_aktivitaeten: Array<{project:string;letzte_aktivitaet:string;aufrufe:number}> | undefined;
+ if (nur !== 'aktuelle_tasks') {
+  const erlaubt = new Set(sicht.projekte);
+  const sichtbar = (await listeProjekte()).map(p=>p.name).filter(p=>erlaubt.has(p));
+  const r = await getPool().query<{project:string;letzte_aktivitaet:Date;aufrufe:number}>(`SELECT project,MAX(ts) AS letzte_aktivitaet,COUNT(*)::int AS aufrufe FROM tool_calls
+   WHERE project=ANY($1::text[]) AND ts >= NOW()-($2::int * INTERVAL '1 second') GROUP BY project ORDER BY MAX(ts) DESC`, [sichtbar,config.werte.aktivitaet_sekunden]);
+  projekt_aktivitaeten = r.rows.map(z=>({...z,letzte_aktivitaet:z.letzte_aktivitaet.toISOString()}));
+ }
+ return {...basis,...(aktuelle_tasks ? {aktuelle_tasks} : {}),...(projekt_aktivitaeten ? {projekt_aktivitaeten} : {})};
+}
+
+/** Globaler Umfang: ein begrenzter, registrysichtbarer Ereignis-Abruf statt je Projekt ein Snapshot. */
+async function ladeGlobalesNetzwerk(project: string, sicht:NetzwerkSicht) {
+ const konfiguration = await leseNetzwerkKonfiguration('');
+ const basis = {success:true,version:1,project,umfang:'global',stand:new Date().toISOString(),...konfiguration};
+ if (!konfiguration.schalter.aktiv || !konfiguration.daten_schalter.aktiv)
+  return {...basis,agenten:[],ereignisse:[],projekt_aktivitaeten:[],begrenzt:0};
+ const erlaubt=new Set(sicht.projekte);
+ const sichtbar=(await listeProjekte()).map(p=>p.name).filter(p=>erlaubt.has(p));
+ const r=await getPool().query<ToolCallRow & ErgebnisSpalten & {gesamt:string;heimat:string|null;akteur:string|null;visum_bis:Date|null;visum_ab:Date|null;freigabe_ab:Date|null;freigabe_bis:Date|null}>(`
+  SELECT c.id::text,c.ts,c.project,c.agent_id,c.identity_id,c.lauf_id,c.tool_name,c.action,c.args_preview,c.ok,c.error,
+   i.project AS heimat,COALESCE(c.akteur_identity_id,c.identity_id) AS akteur,
+   ap.visum_ausgestellt_am AS visum_ab,ap.visum_bis,ap.arbeitsfreigabe_am AS freigabe_ab,ap.arbeitsfreigabe_bis AS freigabe_bis,
+   COUNT(*) OVER()::text AS gesamt,${ERGEBNIS_SPALTEN_SQL}
+  FROM tool_calls c LEFT JOIN agent_identitaeten i ON i.id=COALESCE(c.akteur_identity_id,c.identity_id)
+  LEFT JOIN agent_ausweis_projekte ap ON ap.identity_id=i.id AND ap.project=c.project
+  WHERE (c.project=ANY($1::text[]) OR ((c.project IS NULL OR c.project='') AND ($4::boolean OR ($5::text IS NOT NULL AND COALESCE(c.akteur_identity_id,c.identity_id)=$5)))) AND c.ts>=NOW()-($2::int*INTERVAL '1 second')
+   AND (c.agent_id IS NOT NULL OR c.identity_id IS NOT NULL) AND COALESCE(c.agent_id,'') NOT LIKE 'archiv-%'
+   AND (i.id IS NULL OR i.status='aktiv')
+  ORDER BY c.id DESC LIMIT $3`,[sichtbar,konfiguration.werte.aktivitaet_sekunden,konfiguration.werte.ereignis_limit,sicht.projektlose,sicht.identity_id]);
+ const ereignisse=r.rows.reverse().map(z=>{
+  const e=netzwerkEreignis(z), t=new Date(z.ts).getTime();
+  const inFrist=(a:Date|null,b:Date|null)=>!!a&&!!b&&a.getTime()<=t&&b.getTime()>=t;
+  const zugang=z.heimat===z.project?'heimat':inFrist(z.freigabe_ab,z.freigabe_bis)?'arbeitsfreigabe':inFrist(z.visum_ab,z.visum_bis)?'visum':null;
+  const ende=[z.visum_bis,z.freigabe_bis].filter((d):d is Date=>!!d).sort((a,b)=>b.getTime()-a.getTime())[0];
+  return {...e,identity_id:z.akteur??e.identity_id,heimat_projekt:z.heimat,ziel_projekt:z.project||null,zugang,visum_bis:ende?.toISOString()??null};
+ });
+ const personen=new Map<string,{id:string;identity_id:string|null;agent:string;name:string;project:string;heimat_projekt:string;rolle:string;zuletzt_aktiv:string;kanaele:string[]}>();
+ for(const e of ereignisse) {
+  const id=e.identity_id??e.agent, heimat=e.heimat_projekt??e.project;
+  if(id) personen.set(id,{id,identity_id:e.identity_id,agent:e.agent,name:e.agent,project:heimat,heimat_projekt:heimat,rolle:'arbeitsagent',zuletzt_aktiv:e.zeit,kanaele:[]});
+ }
+ const aktiv=await getPool().query<{project:string;letzte_aktivitaet:Date;aufrufe:number}>(`SELECT project,MAX(ts) AS letzte_aktivitaet,COUNT(*)::int AS aufrufe
+  FROM tool_calls WHERE project=ANY($1::text[]) AND ts>=NOW()-($2::int*INTERVAL '1 second')
+  GROUP BY project ORDER BY MAX(ts) DESC`,[sichtbar,konfiguration.werte.aktivitaet_sekunden]);
+ return {...basis,agenten:[...personen.values()],ereignisse,channel_ereignisse:[],visa:[],
+  projekt_aktivitaeten:aktiv.rows.map(z=>({...z,letzte_aktivitaet:z.letzte_aktivitaet.toISOString()})),
+  begrenzt:Math.max(0,Number(r.rows[0]?.gesamt??0)-r.rows.length),cursor:ereignisse.at(-1)?.id??null};
+}
+
+export async function ladeAgentennetzwerk(project: string, umfang: 'projekt' | 'global' = 'projekt', sicht:NetzwerkSicht={projekte:[project],projektlose:false,identity_id:null}) {
+ if (umfang==='global') return ladeGlobalesNetzwerk(project,sicht);
  const konfiguration = await leseNetzwerkKonfiguration(project);
  const basis = { success: true, version: 1, project, stand: new Date().toISOString(), ...konfiguration };
  if (!konfiguration.schalter.aktiv) return { ...basis, agenten: [], ereignisse: [], begrenzt: 0 };
+ const daten = konfiguration.daten_schalter.aktiv ? await ladeNetzwerkDatengrundlage(project,undefined,sicht) : {};
+ const visaStand = konfiguration.daten_schalter.aktiv ? await listeAusweisVisa(project) : null;
+ const visa = ((visaStand?.agenten ?? []) as Array<{identity_id:string;agent_id:string;heimat:string;zugang:string;status:string;visum_bis:string|null;arbeitsfreigabe_bis:string|null}>)
+  .filter(z=>z.status==='aktiv' && (z.zugang==='visum'||z.zugang==='arbeitsfreigabe'))
+  .map(z=>({identity_id:z.identity_id,agent:z.agent_id,heimat_projekt:z.heimat,zugang:z.zugang,
+   visum_bis:[z.visum_bis,z.arbeitsfreigabe_bis].filter((x):x is string=>!!x).sort().at(-1)??null}));
  const mainId = await hauptagentIdentitaetsId();
  const [team, r, starts, mainTeam, frequenz, channelCalls, ohneAbsender] = await Promise.all([
   ladeAgentenTeam(project),
@@ -132,9 +196,41 @@ export async function ladeAgentennetzwerk(project: string) {
  };
  // P22-T97: nur die Groesse des Ergebnisses (Bytes), nie der Inhalt.
  const ereignisse = r.rows.reverse().map(row => ({ ...netzwerkEreignis(row), plan_id: planBezug(row), ergebnis_bytes: Number(row.ergebnis_bytes ?? 0), ergebnis_leer: row.ergebnis_leer === true }));
+ // T232: aktuelle Zugangszeile ist kein historisches Audit; nur belegte Zeitintervalle klassifizieren.
+ if (konfiguration.daten_schalter.aktiv) {
+  const m = await getPool().query<{id:string;identity_id:string|null;heimat:string|null;zugang:string|null;visum_ab:Date|null;visum_bis:Date|null;freigabe_ab:Date|null;freigabe_bis:Date|null}>(
+   `SELECT c.id::text,COALESCE(c.akteur_identity_id,c.identity_id) AS identity_id,i.project AS heimat,
+    ap.zugang_zuletzt AS zugang,ap.visum_ausgestellt_am AS visum_ab,ap.visum_bis,ap.arbeitsfreigabe_am AS freigabe_ab,ap.arbeitsfreigabe_bis AS freigabe_bis
+    FROM tool_calls c LEFT JOIN agent_identitaeten i ON i.id=COALESCE(c.akteur_identity_id,c.identity_id)
+    LEFT JOIN agent_ausweis_projekte ap ON ap.identity_id=i.id AND ap.project=$1 WHERE c.id=ANY($2::bigint[])`,
+   [project,ereignisse.map(e=>e.id)]);
+  const meta = new Map(m.rows.map(z=>[z.id,z]));
+  for (const e of ereignisse) {
+   const z=meta.get(e.id), zeit=Date.parse(e.zeit);
+   const zwischen=(a:Date|null|undefined,b:Date|null|undefined)=>!!a&&!!b&&a.getTime()<=zeit&&b.getTime()>=zeit;
+   const zugang=z?.heimat===e.project?'heimat':zwischen(z?.freigabe_ab,z?.freigabe_bis)?'arbeitsfreigabe':zwischen(z?.visum_ab,z?.visum_bis)?'visum':null;
+   const ende=[z?.visum_bis,z?.freigabe_bis].filter((d):d is Date=>!!d).sort((a,b)=>b.getTime()-a.getTime())[0];
+   Object.assign(e,{identity_id:z?.identity_id??e.identity_id,heimat_projekt:z?.heimat??null,ziel_projekt:e.project,zugang,visum_bis:ende?.toISOString()??null});
+  }
+  // Heimat-Aufrufe ausschliesslich als Effekt-Metadaten; keine Argumente, Inhalte, Resultate oder Empfaenger.
+  const heimat = await getPool().query<ToolCallRow & {heimat:string;visum_bis:Date|null}>(`
+   SELECT c.id::text,c.ts,c.project,c.agent_id,c.identity_id,c.lauf_id,c.tool_name,'' AS action,NULL AS args_preview,
+    true AS ok,NULL AS error,i.project AS heimat,GREATEST(ap.visum_bis,ap.arbeitsfreigabe_bis) AS visum_bis
+   FROM agent_ausweis_projekte ap JOIN agent_identitaeten i ON i.id=ap.identity_id AND i.project<>ap.project AND i.status='aktiv'
+   JOIN tool_calls c ON c.identity_id=i.id AND c.project=i.project
+   WHERE ap.project=$1 AND c.ts>=NOW()-($2::int*INTERVAL '1 second')
+    AND GREATEST(ap.visum_bis,ap.arbeitsfreigabe_bis)>=NOW()-($2::int*INTERVAL '1 second')
+   ORDER BY c.ts DESC LIMIT $3`,[project,konfiguration.werte.inaktiv_sekunden,konfiguration.werte.ereignis_limit]);
+  for (const row of heimat.rows) {
+   const e=netzwerkEreignis(row);
+   ereignisse.push({...e,plan_id:null,ergebnis_bytes:0,ergebnis_leer:false,
+    heimat_projekt:row.heimat,ziel_projekt:row.project,zugang:'heimat',visum_bis:row.visum_bis?.toISOString()??null} as typeof ereignisse[number]);
+  }
+  ereignisse.sort((a,b)=>a.zeit.localeCompare(b.zeit));
+ }
  const channel_ereignisse=channelCalls.rows.reverse().map(netzwerkEreignis);
  // Legacy main-session-Namen sind Anzeige-Aliase derselben Hauptidentitaet.
- for (const [index, e] of ereignisse.entries()) if (r.rows[index].ist_main) e.agent = main.agent;
+ for (const e of ereignisse) if (r.rows.find(row => String(row.id) === e.id)?.ist_main) e.agent = main.agent;
  // Zuordnung ist eine belegte Beziehung, kein aus Namen geratenes Team.
  const alle = [main, ...agenten];
  const alias = new Map(alle.flatMap(a=>[[a.id,a],[a.agent,a],[a.name,a]] as const));
@@ -184,7 +280,7 @@ export async function ladeAgentennetzwerk(project: string) {
    beitraege: [...new Set([besitzer, ...(p.beitraege ?? []).map(agentVon)].filter((x): x is string => !!x))] };
  });
  const index = await ladeIndexGroesse(project, konfiguration.werte);
- return { ...basis, plaene, plaene_ende, index, agenten: alle.map(a=>({...a,
+ return { ...daten, ...basis, visa, plaene, plaene_ende, index, agenten: alle.map(a=>({...a,
   aufrufe_im_fenster:frequenzen.get(a.id)?.anzahl??0,
   letzter_aufruf:frequenzen.get(a.id)??null,
   zuletzt_aktiv:frequenzen.get(a.id)?.zeit??a.zuletzt_aktiv,

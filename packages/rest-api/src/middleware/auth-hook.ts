@@ -256,6 +256,9 @@ export function registerAuthHook(fastify: FastifyInstance): void {
       return send401(reply, request, pathname, 'Token ungueltig oder abgelaufen');
     }
     if (!mainScopePasst(row.scope, method, pathname, request.headers as Record<string, unknown>)) {
+      // P22-T232: gueltiger Identitaets-Bearer, aber keine REST-Netzwerkberechtigung.
+      if(method === 'GET' && /^\/api\/projects\/[^/]+\/agentennetzwerk\/?$/.test(pathname))
+        return reply.code(403).send({success:false,error:{code:'forbidden',message:'Identitaets-Bearer ist fuer diese REST-Route nicht freigegeben'}});
       return send401(reply, request, pathname, 'Hauptagenten-Ausweis passt nicht zu MCP-Session und Werkzeugprofil');
     }
     // P22-T82: Bearer eines Container-Spezialisten gilt nur mit dem Ausweis genau seiner Identitaet.

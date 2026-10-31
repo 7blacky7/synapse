@@ -26,6 +26,10 @@ import { getPool } from '../db/client.js';
 
 /** Bekannte Schalter und ihre Modi; der erste Modus ist der Standard. */
 export const INTERN_SCHALTER = {
+  // P22-T227: befristeter Testoverride fuer benannte Log-Stroeme.
+  log_strom: ['freigegeben'],
+  // P22-T226: befristeter Testoverride fuer Projektdatei-Vertraege.
+  datei_vertrag: ['freigegeben'],
   // P22-T217: befristeter EIN/AUS-Override der Anker-Umrechnung im Plan, Produktstandard AUS.
   anker_umrechnung: ['freigegeben'],
   // P22-T191: befristeter EIN/AUS-Override, Produktstandard AUS.
@@ -35,6 +39,7 @@ export const INTERN_SCHALTER = {
   reverse_pe_ressourcen: ['freigegeben'],
   reverse_siedler3: ['freigegeben'],
   agentennetzwerk: ['freigegeben'],
+  netzwerk_datengrundlage: ['freigegeben'],
   hex_lesen: ['freigegeben'],
   hex_adressen: ['freigegeben'],
   hex_formate: ['freigegeben'],
@@ -193,7 +198,7 @@ function alsStand(name: string, z: SchalterZeile | null, jetzt = Date.now()): In
       dauerhaft: false, grund: null, gesetzt_von: null, gesetzt_am: null,
     };
   }
-  const abgelaufen = (z.aktiv || name === 'reverse_siedler3' || name === 'reverse_verknuepfungen' || name === 'reverse_erkenntnisse' || name === 'reverse_fortschritt_live' || name === 'reverse_blockuebernahme' || name === 'reverse_asset_registrierung' || name === 'reverse_parser_adapter' || name === 'reverse_leser' || name === 'reverse_leser_nachzug' || name === 'reverse_leser_runtime_verwaltung' || name === 'reverse_leser_hinweise' || name === 'reverse_entstoerer_auto' || name === 'reverse_wav_pregap' || name === 'reverse_global_sichtbar' || name === 'reverse_intel_abruf' || name === 'reverse_fehlerlog' || name === 'agentennetzwerk' || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'hauptagent' || name === 'hauptagent_api' || name === 'mehrprojekt' || (name === 'runtime_tool_ausgabe' || name === 'user_inbox' || name === 'zeilen_anmerkungen') || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) && z.bis !== null && z.bis.getTime() <= jetzt;
+  const abgelaufen = (z.aktiv || name === 'reverse_siedler3' || name === 'reverse_verknuepfungen' || name === 'reverse_erkenntnisse' || name === 'reverse_fortschritt_live' || name === 'reverse_blockuebernahme' || name === 'reverse_asset_registrierung' || name === 'reverse_parser_adapter' || name === 'reverse_leser' || name === 'reverse_leser_nachzug' || name === 'reverse_leser_runtime_verwaltung' || name === 'reverse_leser_hinweise' || name === 'reverse_entstoerer_auto' || name === 'reverse_wav_pregap' || name === 'reverse_global_sichtbar' || name === 'reverse_intel_abruf' || name === 'reverse_fehlerlog' || (name === 'agentennetzwerk' || name === 'netzwerk_datengrundlage') || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'hauptagent' || name === 'hauptagent_api' || name === 'mehrprojekt' || (name === 'runtime_tool_ausgabe' || name === 'user_inbox' || name === 'zeilen_anmerkungen') || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) && z.bis !== null && z.bis.getTime() <= jetzt;
   return {
     name,
     aktiv: name==='reverse_siedler3'?false:z.aktiv && !abgelaufen,
@@ -202,7 +207,7 @@ function alsStand(name: string, z: SchalterZeile | null, jetzt = Date.now()): In
     abgelaufen,
     modus: z.modus,
     bis: z.bis ? z.bis.toISOString() : null,
-    dauerhaft: (z.aktiv || name === 'agent_bezug_modus' || ((name === 'reverse_siedler3' || name === 'reverse_verknuepfungen' || name === 'reverse_erkenntnisse' || name === 'reverse_fortschritt_live' || name === 'reverse_blockuebernahme' || name === 'reverse_asset_registrierung' || name === 'reverse_parser_adapter' || name === 'reverse_leser' || name === 'reverse_leser_nachzug' || name === 'reverse_leser_runtime_verwaltung' || name === 'reverse_leser_hinweise' || name === 'reverse_entstoerer_auto' || name === 'reverse_wav_pregap' || name === 'reverse_global_sichtbar' || name === 'reverse_intel_abruf' || name === 'reverse_fehlerlog' || name === 'agentennetzwerk' || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'hauptagent' || name === 'hauptagent_api' || name === 'mehrprojekt' || (name === 'runtime_tool_ausgabe' || name === 'user_inbox' || name === 'zeilen_anmerkungen') || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) && z.modus === 'freigegeben')) && z.bis === null,
+    dauerhaft: (z.aktiv || name === 'agent_bezug_modus' || ((name === 'reverse_siedler3' || name === 'reverse_verknuepfungen' || name === 'reverse_erkenntnisse' || name === 'reverse_fortschritt_live' || name === 'reverse_blockuebernahme' || name === 'reverse_asset_registrierung' || name === 'reverse_parser_adapter' || name === 'reverse_leser' || name === 'reverse_leser_nachzug' || name === 'reverse_leser_runtime_verwaltung' || name === 'reverse_leser_hinweise' || name === 'reverse_entstoerer_auto' || name === 'reverse_wav_pregap' || name === 'reverse_global_sichtbar' || name === 'reverse_intel_abruf' || name === 'reverse_fehlerlog' || (name === 'agentennetzwerk' || name === 'netzwerk_datengrundlage') || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'hauptagent' || name === 'hauptagent_api' || name === 'mehrprojekt' || (name === 'runtime_tool_ausgabe' || name === 'user_inbox' || name === 'zeilen_anmerkungen') || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) && z.modus === 'freigegeben')) && z.bis === null,
     grund: z.grund,
     gesetzt_von: z.gesetzt_von,
     gesetzt_am: z.gesetzt_am ? z.gesetzt_am.toISOString() : null,
@@ -235,7 +240,7 @@ export async function setzeSchalter(
   let hinweis: string | undefined;
 
   // Der Freigabeschalter braucht auch fuer einen AUS-Override einen Ablauf.
-  if (opt.aktiv || name === 'reverse_verknuepfungen' || name === 'reverse_erkenntnisse' || name === 'reverse_fortschritt_live' || name === 'reverse_blockuebernahme' || name === 'reverse_asset_registrierung' || name === 'reverse_parser_adapter' || name === 'reverse_leser' || name === 'reverse_leser_nachzug' || name === 'reverse_leser_runtime_verwaltung' || name === 'reverse_leser_hinweise' || name === 'reverse_entstoerer_auto' || name === 'reverse_wav_pregap' || name === 'reverse_global_sichtbar' || name === 'reverse_intel_abruf' || name === 'reverse_fehlerlog' || name === 'agentennetzwerk' || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'mehrprojekt' || (name === 'runtime_tool_ausgabe' || name === 'user_inbox' || name === 'zeilen_anmerkungen') || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) {
+  if (opt.aktiv || name === 'reverse_verknuepfungen' || name === 'reverse_erkenntnisse' || name === 'reverse_fortschritt_live' || name === 'reverse_blockuebernahme' || name === 'reverse_asset_registrierung' || name === 'reverse_parser_adapter' || name === 'reverse_leser' || name === 'reverse_leser_nachzug' || name === 'reverse_leser_runtime_verwaltung' || name === 'reverse_leser_hinweise' || name === 'reverse_entstoerer_auto' || name === 'reverse_wav_pregap' || name === 'reverse_global_sichtbar' || name === 'reverse_intel_abruf' || name === 'reverse_fehlerlog' || (name === 'agentennetzwerk' || name === 'netzwerk_datengrundlage') || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'mehrprojekt' || (name === 'runtime_tool_ausgabe' || name === 'user_inbox' || name === 'zeilen_anmerkungen') || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) {
     modus = opt.modus ?? erlaubt[0];
     if (!erlaubt.includes(modus)) {
       throw new InternSchalterFehler('modus_ungueltig', `Modus "${modus}" passt nicht zu "${name}". Erlaubt: ${erlaubt.join(', ')}.`);

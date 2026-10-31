@@ -534,11 +534,11 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
    */
   fastify.get<{
     Params: { name: string };
-    Querystring: { netzwerk?: string };
+    Querystring: { netzwerk?: string; umfang?: string };
   }>('/api/projects/:name/events', async (request, reply) => {
     const { name: project } = request.params;
-    const netzwerkStand = request.query.netzwerk === '1' ? await leseNetzwerkKonfiguration(project) : null;
-    const netzwerk = netzwerkStand?.schalter.aktiv === true;
+    const netzwerkStand = request.query.netzwerk === '1' ? await leseNetzwerkKonfiguration(request.query.umfang === 'global' ? '' : project) : null;
+    const netzwerk = netzwerkStand?.schalter.aktiv === true || netzwerkStand?.daten_schalter.aktiv === true;
     const mainId = netzwerk ? await hauptagentIdentitaetsId() : null;
 
     // Set correct headers for SSE
@@ -601,7 +601,7 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
         try {
           const payload = JSON.parse(msg.payload || '{}');
           // Only send if it matches the current project
-          if (payload.project === project || (netzwerk && msg.channel === 'synapse_tool_activity' && mainId && payload.identity_id === mainId)) {
+          if (payload.project === project || (netzwerk && msg.channel === 'synapse_tool_activity' && (netzwerkStand?.daten_schalter.aktiv || (mainId && payload.identity_id === mainId)))) {
             if (netzwerk) {
               // Ein Hinweis pro Buendel, kein Inhalt und kein wachsender Schreibpuffer bei Last.
               if (!netzwerkTimer) netzwerkTimer = setTimeout(() => {

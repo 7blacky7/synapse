@@ -221,6 +221,17 @@ SELECT b.identity_id, b.agent_id, b.kurz AS task_id, b.titel, b.status, b.quelle
   FROM oben b LEFT JOIN wechsel w USING (schluessel)
  ORDER BY b.ts DESC`;
 
+/** P22-T232: dieselben Aktivitaetssignale wie die Agenten-Zuordnung, nach Task statt Agent gruppiert. */
+export async function letzteAktiveProjektTasks(project: string) {
+ const einstellungen = await leseAktuelleTaskEinstellungen();
+ const sql = AKTIVITAET_SQL.split('), o AS (')[0] + `)
+ SELECT DISTINCT ON (kurz) kurz AS task_id,titel,ts AS zuletzt,quelle FROM s
+ WHERE status='in_progress' ORDER BY kurz,ts DESC`;
+ const r = await getPool().query<{task_id:string;titel:string|null;zuletzt:Date;quelle:string}>({text:sql,values:[project,einstellungen.werte.fenster_stunden],query_timeout:5000} as Q);
+ return r.rows.sort((a,b)=>b.zuletzt.getTime()-a.zuletzt.getTime()).slice(0,3)
+  .map(z=>({...z,zuletzt:z.zuletzt.toISOString()}));
+}
+
 const BINDUNG_SQL = `
 SELECT DISTINCT ON (x.id) x.id AS identity_id, b.task_id, b.gesetzt_am, p.task->>'title' AS titel, p.task->>'status' AS status
   FROM plan_task_bindungen b
