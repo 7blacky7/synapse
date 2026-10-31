@@ -68,12 +68,13 @@ after(() => {
 
 // =============================================================================== REGISTRY
 
-test('REGISTRY: Standard-Registry enthaelt generic-binary und alle 31 Inspektoren der sieben Gruppen', () => {
-  assert.equal(alleInspektoren.length, 31);
-  assert.equal(standardRegistry.list().length, 32);
+// P4-T75 (t223): +7 Inspektoren textur-bmp, textur-ico, textur-heif, schrift-sfnt/-woff/-woff2/-eot.
+test('REGISTRY: Standard-Registry enthaelt generic-binary und alle 38 Inspektoren der acht Gruppen', () => {
+  assert.equal(alleInspektoren.length, 38);
+  assert.equal(standardRegistry.list().length, 39);
   for (const i of alleInspektoren) assert.equal(standardRegistry.get(i.id), i, i.id + ' nicht in der Standard-Registry');
   assert.equal(standardRegistry.get('generic-binary'), genericBinaryInspector);
-  const gruppen = { '3d-': 6, 'textur-': 8, 'archiv-': 4, 'exe-': 2, 'medien-': 2, 'dcc-': 4, 'unreal-': 5 };
+  const gruppen = { '3d-': 6, 'textur-': 11, 'archiv-': 4, 'exe-': 2, 'medien-': 2, 'dcc-': 4, 'unreal-': 5, 'schrift-': 4 };
   for (const [praefix, n] of Object.entries(gruppen)) {
     assert.equal(alleInspektoren.filter(i => i.id.startsWith(praefix)).length, n, 'Gruppe ' + praefix);
   }
@@ -81,12 +82,12 @@ test('REGISTRY: Standard-Registry enthaelt generic-binary und alle 31 Inspektore
   assert.equal(new Set(ids).size, ids.length, 'ids eindeutig');
   // Formate der Gruppen sind ueber die Registry sichtbar
   const formate = standardRegistry.formats();
-  for (const f of ['glb', 'gltf', 'obj', 'stl', 'ply', 'dae', 'png', 'jpeg', 'webp', 'dds', 'ktx', 'ktx2', 'exr', 'hdr', 'zip', 'tar', '7z', 'sqlite', 'pe', 'elf', 'wav', 'ogg', 'flac', 'mp3', 'mp4', 'mkv', 'avi', 'blend', 'fbx', 'usda', 'usdc', 'usdz', 'uasset', 'pak', 'utoc', 'gif', 'pdf']) {
+  for (const f of ['glb', 'gltf', 'obj', 'stl', 'ply', 'dae', 'png', 'jpeg', 'webp', 'dds', 'ktx', 'ktx2', 'exr', 'hdr', 'zip', 'tar', '7z', 'sqlite', 'pe', 'elf', 'wav', 'ogg', 'flac', 'mp3', 'mp4', 'mkv', 'avi', 'blend', 'fbx', 'usda', 'usdc', 'usdz', 'uasset', 'pak', 'utoc', 'gif', 'pdf', 'bmp', 'ico', 'cur', 'avif', 'heic', 'heif', 'ttf', 'otf', 'woff', 'woff2', 'eot']) {
     assert.ok(formate.includes(f), 'Format fehlt: ' + f);
   }
   // doppelte Registrierung ist harmlos (gleiche ids ersetzen sich)
   for (const i of alleInspektoren) standardRegistry.register(i);
-  assert.equal(standardRegistry.list().length, 32);
+  assert.equal(standardRegistry.list().length, 39);
 });
 
 test('REGISTRY: generic-binary traegt nur noch Magic von Formaten ohne eigenen Inspektor (gif, pdf)', () => {
@@ -216,12 +217,19 @@ test('KOLLISION mp4: nur bekannte Video-Brands sind mp4; HEIC/AVIF/M4A/MOV nicht
     assert.equal(d.via, 'magic', b);
   }
   const endungen = { heic: '.heic', heix: '.heic', hevc: '.heic', mif1: '.heif', msf1: '.heif', avif: '.avif', avis: '.avif', 'M4A ': '.m4a', 'M4B ': '.m4b', 'M4P ': '.m4p', 'qt  ': '.mov', 'crx ': '.cr3', 'jp2 ': '.jp2' };
+  // P4-T75: HEIF/AVIF-Brands gehoeren jetzt dem Bild-Inspektor textur-heif (nie Video); M4A/MOV/CR3/JP2 bleiben ohne Inspektor.
+  const HEIF_FORMAT = { heic: 'heic', heix: 'heic', hevc: 'heic', mif1: 'heif', msf1: 'heif', avif: 'avif', avis: 'avif' };
   for (const b of KEIN_VIDEO_BRANDS) {
     const k = kopf([0, 0, 0, 0x20], 'ftyp', b, [0, 0, 0, 0]);
     const ohne = erkenne('datei', k);
-    assert.equal(ohne.inspector, null, b + ' ohne Endung darf nicht als Video erkannt werden');
     const mit = erkenne('datei' + endungen[b], k);
-    assert.equal(mit.inspector, null, b + ' mit ' + endungen[b]);
+    for (const [d, wie] of [[ohne, 'ohne Endung'], [mit, 'mit ' + endungen[b]]]) {
+      assert.notEqual(d.inspector?.id, 'medien-video', b + ' ' + wie + ' darf nicht als Video erkannt werden');
+      if (HEIF_FORMAT[b]) {
+        assert.equal(d.inspector?.id, 'textur-heif', b + ' ' + wie);
+        assert.equal(d.format, HEIF_FORMAT[b], b + ' ' + wie);
+      } else assert.equal(d.inspector, null, b + ' ' + wie);
+    }
   }
   // Brand unbekannt, aber Endung .mp4: erkannt ueber die Endung, mit Warnung magic_fehlt (kein stilles Raten)
   const f4v = erkenne('film.mp4', kopf([0, 0, 0, 0x20], 'ftyp', 'f4v ', [0, 0, 0, 0]));
