@@ -86,7 +86,8 @@ try{
  await test('C neue ID und Ownerrolle',async()=>{
   const f='replan.txt',a=project+'replan';await seed(f,'ALT\n');
   const fail=await attempt(()=>plan(a,[sr(f,'NICHT DA','X')]));ok(!!fail.plan_id,'gescheiterter Entwurf hat ID',fail);
-  const p=await B.replanBatch({project,plan_id:fail.plan_id,agent_id:a,ops:[sr(f,'ALT','NEU')]});
+  // P6-T51: ganzen Entwurf ohne op_index ersetzen nur noch ausdruecklich (ersetzen_alle); ohne haengt plan_update an.
+  const p=await B.replanBatch({project,plan_id:fail.plan_id,agent_id:a,ersetzen_alle:true,ops:[sr(f,'ALT','NEU')]});
   ok(p.plan_id!==fail.plan_id&&p.superseded_plan_id===fail.plan_id&&p.message?.startsWith('NEUE plan_id '+p.plan_id),'Erfolg nennt neue ID zuerst',p);
   const own=await attempt(()=>B.addCoeditContribution({project,plan_id:p.plan_id,agent_id:a,ops:[sr(f,'ALT','NEU')]}));
   ok(!own.success&&/Owner.*plan_update/.test(own.error),'Owner wird auf plan_update verwiesen',own);

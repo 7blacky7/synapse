@@ -73,11 +73,11 @@ try {
   if (n3.plan_id) await batch.cancelBatch(n3.plan_id, 'ep-c');
   await batch.cancelBatch(p3.plan_id, 'ep-c');
 
-  // ===== E4 plan_update ohne op_index nimmt eine Datei heraus =====
+  // ===== E4 plan_update ohne op_index mit ersetzen_alle nimmt eine Datei heraus (P6-T51: ohne ersetzen_alle haengt es an) =====
   await anlegen('src/e4a.ts', 'a\n');
   await anlegen('src/e4b.ts', 'b\n');
   const p4 = await batch.planBatch({ project: PROJECT, agent_id: 'ep-d', ops: [sr('src/e4a.ts', 'a', 'A'), sr('src/e4b.ts', 'b', 'B')] });
-  const u4 = await versuch(() => batch.replanBatch({ project: PROJECT, plan_id: p4.plan_id, agent_id: 'ep-d', ops: [sr('src/e4a.ts', 'a', 'AA')] }));
+  const u4 = await versuch(() => batch.replanBatch({ project: PROJECT, plan_id: p4.plan_id, agent_id: 'ep-d', ersetzen_alle: true, ops: [sr('src/e4a.ts', 'a', 'AA')] }));
   pruefe(!u4.geworfen && u4.in_place === true && JSON.stringify(u4.files_touched) === JSON.stringify(['src/e4a.ts']),
     'E4: files_touched nach plan_update ohne op_index nur noch mit Dateien, die eine Op haben', u4);
   const st4 = await batch.getBatchPlan(p4.plan_id);

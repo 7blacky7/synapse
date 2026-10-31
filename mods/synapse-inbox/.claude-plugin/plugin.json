@@ -1,1 +1,1 @@
-{ "name": "synapse-inbox", "version": "0.1.0", "description": "Synapse Mod-Inbox (P22-T134): Nachrichten an den Ausweis dieser Sitzung starten ueber den lokalen Synapse-Daemon einen Turn" }
+{ "name": "synapse-inbox", "version": "0.4.0", "description": "Synapse Mod-Inbox (P22-T134): Nachrichten an den Ausweis dieser Sitzung starten ueber den lokalen Synapse-Daemon einen Turn" }
