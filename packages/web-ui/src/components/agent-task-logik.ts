@@ -56,6 +56,36 @@ export function findeAktuelleTask(daten: AktuelleTasksDaten | null | undefined, 
     ?? (name ? daten.agenten.find((a) => a.agent_id === name || a.name === name) : undefined) ?? null;
 }
 
+/**
+ * P22-T249 (User 31.10.2026 ~22:25): Das Agentennetzwerk (Uebersicht, Hauptagent-Arbeitsraum) zeigt Agenten MEHRERER Projekte. Die
+ * aktuelle Task kommt aus dem Puffer des Projekts des Agenten (Knoten-Projekt = Heimat, dann agent.project), erst danach aus dem
+ * angezeigten Projekt - dort NUR ueber die Identitaet: gleichnamige Agenten (z. B. 'koordinator') gibt es in jedem Projekt.
+ */
+export const AKTUELLE_TASK_PROJEKTE_MAX = 40;
+export type AktuelleTasksJeProjekt = ReadonlyMap<string, AktuelleTasksDaten | null>;
+
+/** Projekte, deren Puffer das Netz abonniert: angezeigtes Projekt zuerst, dann alle sichtbaren (sortiert, ohne Leere, gekappt). */
+export function aktuelleTaskProjekte(project: string | null | undefined, weitere: Iterable<string | null | undefined>, max = AKTUELLE_TASK_PROJEKTE_MAX): string[] {
+  const erst = text(project), rest = new Set<string>();
+  for (const p of weitere) { const t = text(p); if (t && t !== erst) rest.add(t); }
+  return [...(erst ? [erst] : []), ...[...rest].sort()].slice(0, Math.max(1, max));
+}
+
+/** Eintrag fuer einen Agenten aus mehreren Projekt-Puffern: erstes Projekt mit Identitaet oder Name, weitere nur mit Identitaet. */
+export function findeAktuelleTaskJeProjekt(staende: AktuelleTasksJeProjekt | null | undefined,
+  wer: { projekte: Array<string | null | undefined>; identityId?: string | null; name?: string | null }): { project: string; eintrag: AktuelleTaskEintrag } | null {
+  if (!staende) return null;
+  const gesehen = new Set<string>();
+  for (const p of wer.projekte) {
+    const projekt = text(p);
+    if (!projekt || gesehen.has(projekt)) continue;
+    const e = findeAktuelleTask(staende.get(projekt), gesehen.size ? { identityId: wer.identityId } : wer);
+    gesehen.add(projekt);
+    if (e) return { project: projekt, eintrag: e };
+  }
+  return null;
+}
+
 const QUELLE_TEXT: Record<string, string> = {
   'aktivitaet:tool_calls': 'letzte Aktivität (Tool-Aufruf)', 'aktivitaet:file_versions': 'letzte Aktivität (Dateiversion)',
   'aktivitaet:thoughts': 'letzte Aktivität (Thought)', bindung: 'Task-Bindung', beteiligt: 'Beteiligung (plan übernehmen)',

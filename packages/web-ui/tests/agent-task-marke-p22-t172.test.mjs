@@ -160,7 +160,8 @@ ok(/\{windowState\.agentName\}<AgentTaskMarke project=\{project\} identityId=\{w
 ok(/\{props\.windowState\.agentName\}<AgentTaskMarke project=\{props\.project\} identityId=\{id\}/.test(quelle('ChannelAgentFensterWeiche.tsx')), 'P22-T172 ChannelAgentFensterWeiche.tsx: Direktchat-Kopf');
 ok(/<strong>\{z\.agentId\}<AgentTaskMarke project=\{project\} identityId=\{z\.identityId\}/.test(quelle('AusweisIdentitaetenPanel.tsx')), 'P22-T172 AusweisIdentitaetenPanel.tsx: Identitaetenliste');
 const nw = quelle('Agentennetzwerk.tsx');
-ok(/useAktuelleTasks\(project\)/.test(nw) && /kn\.name \+ ' · ' \+ tk/.test(nw) && /<dt>Aktuelle Task<\/dt><dd><AgentTaskMarke /.test(nw), 'P22-T172 Agentennetzwerk.tsx: Etikett und Knotenkarte');
+// P22-T249: das Netz liest die Puffer aller sichtbaren Projekte (useAktuelleTasksJeProjekt) statt nur useAktuelleTasks(project).
+ok(/useAktuelleTasksJeProjekt\(taskProjekte\)/.test(nw) && /kn\.name \+ ' · ' \+ tk/.test(nw) && /<dt>Aktuelle Task<\/dt><dd><AgentTaskMarke /.test(nw), 'P22-T172 Agentennetzwerk.tsx: Etikett und Knotenkarte');
 const ze = quelle('ZitatEmpfaenger.tsx');
 ok(/\{e\.aktuelle_task && <small className="agent-task-marke" data-aktuelle-task=\{e\.aktuelle_task\}>/.test(ze) && !/AgentTaskMarke/.test(ze.replace(/className="agent-task-marke"/g, '')),
   'P22-T172 ZitatEmpfaenger.tsx: Task als Text aus dem Serverfeld, kein neuer Import (T170/T171-Tests unberuehrt)');

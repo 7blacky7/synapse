@@ -1,6 +1,6 @@
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import { abonniereAktuelleTasks, aktuelleTasksBekannt } from '../api/aktuelle-tasks';
-import { findeAktuelleTask, taskMarkeDetail, taskMarkeTitel, TASK_MARKE_TRENNER, type AktuelleTasksDaten } from './agent-task-logik';
+import { findeAktuelleTask, taskMarkeDetail, taskMarkeTitel, TASK_MARKE_TRENNER, type AktuelleTasksDaten, type AktuelleTasksJeProjekt } from './agent-task-logik';
 import { useVerweisFenster, VerweisFensterProvider } from './Lesefenster';
 import '../agent-task-marke.css';
 
@@ -23,6 +23,28 @@ export function useAktuelleTasks(project: string | null | undefined): AktuelleTa
     return abonniereAktuelleTasks(p, setDaten);
   }, [p]);
   return daten;
+}
+
+/**
+ * P22-T249: Puffer MEHRERER Projekte (Agentennetzwerk in Uebersicht und Hauptagent-Arbeitsraum). Je Projekt derselbe geteilte Puffer
+ * und Takt (api/aktuelle-tasks.ts, 20 s); neu abonniert wird nur, wenn sich die Projektmenge aendert. Debug je Projekt.
+ */
+export function useAktuelleTasksJeProjekt(projekte: readonly string[]): AktuelleTasksJeProjekt {
+  const schluessel = projekte.filter(Boolean).join('\n');
+  const [staende, setStaende] = useState<Map<string, AktuelleTasksDaten | null>>(() => new Map());
+  useEffect(() => {
+    const liste = schluessel ? schluessel.split('\n') : [];
+    setStaende(new Map(liste.map((p): [string, AktuelleTasksDaten | null] => [p, aktuelleTasksBekannt(p)])));
+    const ab = liste.map((p) => {
+      console.debug('[aktuelle-task]', 'netz-abo', { project: p, bekannt: !!aktuelleTasksBekannt(p), projekte: liste.length });
+      return abonniereAktuelleTasks(p, (d) => setStaende((vorher) => {
+        if (vorher.get(p) === d) return vorher;
+        const neu = new Map(vorher); neu.set(p, d); return neu;
+      }));
+    });
+    return () => { for (const abmelden of ab) abmelden(); };
+  }, [schluessel]);
+  return staende;
 }
 
 interface MarkeProps {
