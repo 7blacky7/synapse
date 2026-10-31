@@ -2,6 +2,7 @@
 import {getPool} from '../db/client.js';
 import {getAssetKonfiguration} from '../config/asset-konfig.js';
 import {registriereHinweisQuelle} from './ausloeser-hinweise.js';
+import {leseAssetIndexWirklichkeit} from './asset-transfer-generisch.js';
 import type {HinweisQuelle} from './ausloeser-hinweise.js';
 import type {AssetUploadDb} from './asset-upload.js';
 export function assetKonfliktHinweisQuelle(db:Pick<AssetUploadDb,'query'>=getPool() as unknown as AssetUploadDb):HinweisQuelle{
@@ -16,10 +17,13 @@ export function assetKonfliktHinweisQuelle(db:Pick<AssetUploadDb,'query'>=getPoo
    FROM asset_konflikte k JOIN asset_files a ON a.id=k.asset_id
    JOIN asset_revisionen share ON share.asset_id=k.asset_id AND share.revision=k.share_revision
    JOIN asset_revisionen pc ON pc.asset_id=k.asset_id AND pc.revision=k.pc_revision
-   WHERE a.project=$1 AND k.status='offen' AND (cardinality($2::text[])=0 AND cardinality($3::bigint[])=0
+   WHERE a.project=$1 AND k.status='offen' AND ($5::boolean IS NOT TRUE OR (a.deleted_at IS NULL AND a.status IS DISTINCT FROM 'quelle_nicht_gefunden'))
+    AND (cardinality($2::text[])=0 AND cardinality($3::bigint[])=0
     OR a.file_path=ANY($2::text[]) OR a.id=ANY($3::bigint[])
     OR EXISTS(SELECT 1 FROM unnest($4::text[]) d WHERE left(a.file_path,length(d)+1)=d||'/'))
-   ORDER BY k.id LIMIT 2`,[c.projekt,paths,ids,directories]);
+   ORDER BY k.id LIMIT 2`,[c.projekt,paths,ids,directories,
+    // P22-T236: Hinweise nur fuer vorhandene Assets (Schalter asset_index_wirklichkeit); Lesefehler = Altverhalten.
+    await leseAssetIndexWirklichkeit(c.projekt).then(s=>s.aktiv,()=>false)]);
   if(c.signal.aborted)return [];
   const stamp=(v:unknown)=>(v instanceof Date?v.toISOString():String(v)).slice(0,16);
   return r.rows.map(x=>{

@@ -50,8 +50,15 @@ export function projektAnsichtAdapter(o:{db?:AssetUploadDb;speicher:AssetSpeiche
       "AND a.prepared_mutation_id IS NULL AND a.prepared_konflikt_id IS NULL AND r.tombstone=false",
       [ref.id,ref.ziel_ref,ref.revision??null])).rows[0];
     if(!row){
-      const deleted=(await db.query('SELECT deleted_at FROM asset_files WHERE id=$1::bigint AND project=$2',[ref.id,ref.ziel_ref])).rows[0];
-      if(deleted)throw new AssetAnsichtFehler('asset_geloescht','Asset wurde gelöscht.');
+      // P22-T236 (thought 4d6e67d6): ehrlich unterscheiden. Frueher meldete JEDE vorhandene Zeile ohne Share-Revision
+      // 'gelöscht' (Befund: freigabe-bridge entwurf/bilder/*.png, synapse bildtest.avif lagen auf der Platte, deleted_at NULL).
+      const z=(await db.query('SELECT deleted_at,status,storage_status,storage_key,format,extension FROM asset_files WHERE id=$1::bigint AND project=$2',[ref.id,ref.ziel_ref])).rows[0];
+      if(z?.deleted_at)throw new AssetAnsichtFehler('asset_geloescht','Asset wurde gelöscht.');
+      if(z?.status==='quelle_nicht_gefunden')throw new AssetAnsichtFehler('asset_quelle_fehlt','Quelle fehlt: die Datei wurde auf dem PC nicht mehr gefunden (nicht über Synapse gelöscht).');
+      if(z&&(!z.storage_key||z.storage_status==='legacy_local'))throw new AssetAnsichtFehler('asset_nur_lokal',
+        'Asset liegt nur auf dem PC, nicht auf dem Share (storage_status '+String(z.storage_status??'unbekannt')+'); es ist NICHT gelöscht. '+
+        'Grund: Asset-Sync für das Projekt aus, oder Format '+String(z.format||z.extension||'unbekannt')+' wird nicht übertragen '+
+        '(ohne Inspector nur mit Produkt-Schalter asset_transfer_generisch, P22-T238; bzw. nicht in erlaubteTypen). Öffenbar, sobald der Daemon es überträgt.');
       throw new AssetAnsichtFehler('ansicht_quelle_fehlt','Keine bestätigte Bytesrevision verfügbar.');
     }
     if(!row.storage_key||!row.sha256||!['assets','binaries'].includes(String(row.storage_kind)))throw new AssetAnsichtFehler('ansicht_quelle_fehlt','Keine bestätigte Bytesrevision verfügbar.');

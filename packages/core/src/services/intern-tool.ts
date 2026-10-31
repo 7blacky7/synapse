@@ -55,6 +55,8 @@ import {
 import { WAITS_ACTIONS, WAITS_BESCHREIBUNG, WAITS_PARAMETER, fuehreWaitsAus, istWaitsAction } from './intern-waits.js';
 // P10-T42: Shell-Altbestand mit der Live-Maske nachmaskieren (intern-shell-alt.ts).
 import { SHELL_ALT_ACTIONS, SHELL_ALT_BESCHREIBUNG, SHELL_ALT_PARAMETER, fuehreShellAltAus, istShellAltAction } from './intern-shell-alt.js';
+// P22-T236: Projekt-Asset-Altbestand an 'Index = Wirklichkeit' angleichen (intern-asset-altbestand.ts).
+import { ASSET_ALT_ACTIONS, ASSET_ALT_BESCHREIBUNG, fuehreAssetAltAus, istAssetAltAction } from './intern-asset-altbestand.js';
 // P10-T74: tool_calls-Altbestand mit der Schwaerzung von logToolCall nachschwaerzen (intern-tool-calls-schwaerzen.ts).
 import {
   TOOL_CALLS_SCHWAERZEN_ACTIONS, TOOL_CALLS_SCHWAERZEN_BESCHREIBUNG, TOOL_CALLS_SCHWAERZEN_PARAMETER,
@@ -89,6 +91,7 @@ export const INTERN_ACTIONS = [
   ...WARTESCHLANGEN_ACTIONS,
   ...WAITS_ACTIONS,
   ...SHELL_ALT_ACTIONS,
+  ...ASSET_ALT_ACTIONS,
   ...TOOL_CALLS_SCHWAERZEN_ACTIONS,
   ...SKILL_PROBE_ACTIONS,
   ...DB_LESEN_ACTIONS,
@@ -134,10 +137,11 @@ export const INTERN_DEFINITION = {
     WARTESCHLANGEN_BESCHREIBUNG +
     WAITS_BESCHREIBUNG +
     SHELL_ALT_BESCHREIBUNG +
+    ASSET_ALT_BESCHREIBUNG +
     TOOL_CALLS_SCHWAERZEN_BESCHREIBUNG +
     SKILL_PROBE_BESCHREIBUNG +
     DB_LESEN_BESCHREIBUNG +
-    'Keine Aktion beendet Prozesse/Sitzungen oder loescht PG-Daten; nur neu_einbetten leert Qdrant-Collections (aus PG wiederherstellbar).',
+    'Keine Aktion beendet Prozesse/Sitzungen oder loescht PG-Daten; nur neu_einbetten leert Qdrant-Collections (aus PG wiederherstellbar) und asset_altbestand_bereinigen (ausfuehren:true) entfernt verwaiste Asset-Metadaten.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -294,6 +298,8 @@ export async function fuehreInternAus(
   if (istWaitsAction(action)) return await fuehreWaitsAus(action, a, agentId);
   // P10-T42: Shell-Altbestand nachmaskieren (intern-shell-alt.ts) - wirft nie
   if (istShellAltAction(action)) return await fuehreShellAltAus(action, a, agentId);
+  // P22-T236: Projekt-Asset-Altbestand (intern-asset-altbestand.ts) - wirft nie
+  if (istAssetAltAction(action)) return await fuehreAssetAltAus(action, a, agentId);
   // P10-T74: tool_calls-Altbestand nachschwaerzen (intern-tool-calls-schwaerzen.ts) - wirft nie
   if (istToolCallsSchwaerzenAction(action)) return await fuehreToolCallsSchwaerzenAus(action, a, agentId);
   // P23-T6: Skill-Vorschlaege diagnostizieren (intern-skill-probe.ts) - wirft nie, schreibt nichts

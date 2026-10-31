@@ -39,6 +39,7 @@ function reverseGrenzen(bereich: AssetBereich): ReverseAssetGrenzen | undefined 
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { assetBereichSql, pruefeAssetBereich, ASSET_BEREICH, REVERSE_ASSET_BEREICH } from './intel-bereich.js';
+import { leseAssetIndexWirklichkeit } from './asset-transfer-generisch.js';
 import type { AssetBereich } from './intel-bereich.js';
 export { ASSET_BEREICH, REVERSE_ASSET_BEREICH } from './intel-bereich.js';
 export type { AssetBereich } from './intel-bereich.js';
@@ -94,8 +95,10 @@ function leseTimeoutMs(): number {
   return Number.isInteger(n) && n >= 1 && n <= 60000 ? n : ASSET_LESE_TIMEOUT_MS;
 }
 
-async function mitLeser<T>(bereich: AssetBereich, fn: (q: Leser) => Promise<T>): Promise<T> {
+async function mitLeser<T>(bereich: AssetBereich, project: string, fn: (q: Leser) => Promise<T>): Promise<T> {
   pruefeAssetBereich(bereich);
+  // P22-T236: Schalter asset_index_wirklichkeit EIN = nur vorhandene Projekt-Assets sichtbar (intel-bereich.ts). AUS/Lesefehler = Altverhalten.
+  const nurVorhandene = bereich === ASSET_BEREICH ? (await leseAssetIndexWirklichkeit(project)).aktiv : false;
   const client: PoolClient = await (bereich === REVERSE_ASSET_BEREICH ? reverseAssetLeser.getStore()?.pool ?? getPool() : getPool()).connect();
   const g = reverseGrenzen(bereich);
   const timeout = g?.lese_timeout_ms ?? leseTimeoutMs();
@@ -104,7 +107,7 @@ async function mitLeser<T>(bereich: AssetBereich, fn: (q: Leser) => Promise<T>):
       'SET statement_timeout = ' + timeout + '; SET lock_timeout = ' + (g?.lock_timeout_ms ?? LOCK_TIMEOUT_MS) +
         '; SET idle_in_transaction_session_timeout = ' + (g?.idle_tx_timeout_ms ?? Math.max(timeout, ASSET_LESE_TIMEOUT_MS))
     );
-    const q: Leser = async (sql, params = []) => (await client.query(assetBereichSql(sql, bereich), params)).rows as Zeile[];
+    const q: Leser = async (sql, params = []) => (await client.query(assetBereichSql(sql, bereich, { nurVorhandene }), params)).rows as Zeile[];
     return await fn(q);
   } finally {
     try {
@@ -438,7 +441,7 @@ export async function holeAssetBaum(project: string, o: BaumOptionen = {}, berei
   const sql =
     'SELECT file_path, format, asset_type, status, file_size, n_objects, n_references, count(*) OVER() AS total FROM asset_files WHERE ' +
     wo.join(' AND ') + ' ORDER BY file_path LIMIT ' + p.add(limit);
-  const zeilen = await mitLeser(bereich, q => q(sql, p.werte));
+  const zeilen = await mitLeser(bereich, project, q => q(sql, p.werte));
   const total = zeilen.length > 0 ? Number(zeilen[0].total) : 0;
 
   const out: string[] = [(basis || '.') + '/'];
@@ -494,7 +497,7 @@ export async function inspiziereAusDb(project: string, filePath: unknown, o: Ins
   const limit = zahl(o.objects_limit, 'limit', g?.objekt_limit ?? 50, 0, g?.objekt_max ?? 500);
   const refLimit = zahl(o.references_limit, 'limit', g?.verweis_limit ?? 50, 0, g?.verweis_max ?? 500);
   const art = text(o.object_type, 'object_type', 64);
-  return mitLeser(bereich, async q => {
+  return mitLeser(bereich, project, async q => {
     const a = await findeAsset(q, project, pfad);
     if (!a) return null;
     const arten = await q('SELECT kind, count(*)::int AS n FROM asset_objects WHERE asset_id = $1 GROUP BY kind ORDER BY n DESC, kind', [a.id]);
@@ -551,7 +554,7 @@ export async function holeObjekte(project: string, o: ObjektOptionen, bereich: A
   const name = text(o.name, 'name', 200);
   const filter = parseAssetFilter(o.where);
   const pfad = o.file_path === undefined || o.file_path === null || o.file_path === '' ? undefined : pfadParam(o.file_path);
-  return mitLeser(bereich, async q => {
+  return mitLeser(bereich, project, async q => {
     if (!art) {
       const arten = await q('SELECT kind, count(*)::int AS n FROM asset_objects WHERE project = $1 GROUP BY kind ORDER BY n DESC, kind LIMIT 30', [project]);
       throw new AssetIntelFehler(
@@ -616,7 +619,7 @@ export async function holeVerweise(project: string, filePath: unknown, o: Verwei
   const pfad = pfadParam(filePath);
   const kind = text(o.kind, 'kind', 64);
   const limit = zahl(o.limit, 'limit', 200, 1, 2000);
-  return mitLeser(bereich, async q => {
+  return mitLeser(bereich, project, async q => {
     const a = await mussAsset(q, project, pfad);
     const zeilen = await q(
       `SELECT ordnung, kind, target, ziel_pfad, aufloesung, count(*) OVER() AS total FROM asset_references
@@ -645,7 +648,7 @@ export async function holeBenutztVon(project: string, filePath: unknown, o: Verw
   const kind = text(o.kind, 'kind', 64);
   const limit = zahl(o.limit, 'limit', 200, 1, 2000);
   const mitNamen = o.include_name_matches === true || o.include_name_matches === 'true';
-  return mitLeser(bereich, async q => {
+  return mitLeser(bereich, project, async q => {
     const a = await findeAsset(q, project, pfad);
     const ziel = a ? (a.file_path as string) : pfad;
     const zeilen = await q(
@@ -680,7 +683,7 @@ export async function holeFehlende(project: string, o: { file_path?: unknown; ki
   const pfad = o.file_path === undefined || o.file_path === null || o.file_path === '' ? undefined : pfadParam(o.file_path);
   const kind = text(o.kind, 'kind', 64);
   const limit = zahl(o.limit, 'limit', 200, 1, 2000);
-  return mitLeser(bereich, async q => {
+  return mitLeser(bereich, project, async q => {
     let assetId: unknown = null;
     if (pfad) assetId = (await mussAsset(q, project, pfad)).id;
     const wo = `r.project = $1 AND r.aufloesung = 'fehlt' AND ($2::bigint IS NULL OR r.asset_id = $2) AND ($3::text IS NULL OR r.kind = $3)`;
@@ -755,7 +758,7 @@ export async function holeGraph(project: string, filePath: unknown, o: GraphOpti
   const richtung = richtungRoh as 'down' | 'up';
   const tiefe = zahl(o.depth, 'depth', 3, 1, ASSET_GRAPH_MAX_TIEFE);
   const limit = zahl(o.limit, 'limit', 500, 1, 2000);
-  return mitLeser(bereich, async q => {
+  return mitLeser(bereich, project, async q => {
     const a = await findeAsset(q, project, pfad);
     const start = a ? (a.file_path as string) : pfad;
     if (!a && richtung === 'down') throw nichtImIndex(pfad);
@@ -829,7 +832,7 @@ export async function holeWurzelnUndWaisen(
   const format = text(o.format, 'format', 64);
   const typ = text(o.asset_type, 'asset_type', 64);
   const ausgehend = o.art === 'roots' ? 'EXISTS' : 'NOT EXISTS';
-  const zeilen = await mitLeser(bereich, q => q(
+  const zeilen = await mitLeser(bereich, project, q => q(
     `SELECT a.file_path, a.format, a.asset_type, a.status, a.n_references, count(*) OVER() AS total
        FROM asset_files a
       WHERE a.project = $1 AND a.status <> 'quelle_nicht_gefunden'
@@ -895,7 +898,7 @@ export async function sucheAssets(project: string, o: SuchOptionen, bereich: Ass
   if (begriffe.length === 0 && filter.length === 0 && !format && !typ) {
     throw new AssetIntelFehler('parameter_fehlt', 'search braucht query (Begriffe und/oder Filter).', 'Beispiel: query:"rock format:ktx2 image.width>=4096"');
   }
-  return mitLeser(bereich, async q => {
+  return mitLeser(bereich, project, async q => {
     const typen = filter.length > 0 ? await assetTypen(q, project) : new Set<string>();
     const p = new Parameter([project]);
     const wo = ['a.project = $1'];
@@ -1036,7 +1039,7 @@ function vorschlagTarget(quellPfad: string, alterTarget: string, kind: string, z
 export async function movePreview(project: string, filePath: unknown, newPath: unknown, bereich: AssetBereich = ASSET_BEREICH): Promise<Record<string, unknown>> {
   const alt = pfadParam(filePath);
   const neu = pfadParam(newPath, 'new_path');
-  return mitLeser(bereich, async q => {
+  return mitLeser(bereich, project, async q => {
     const a = await mussAsset(q, project, alt);
     const von = a.file_path as string;
     if (von === neu) throw new AssetIntelFehler('parameter_ungueltig', 'new_path ist gleich file_path.');
@@ -1096,7 +1099,7 @@ export async function movePreview(project: string, filePath: unknown, newPath: u
 export async function assetHealth(project: string, filePath?: unknown, bereich: AssetBereich = ASSET_BEREICH): Promise<Record<string, unknown>> {
   const versionen = standardRegistry.list().map(i => ({ id: i.id, version: i.version }));
   const pfad = filePath === undefined || filePath === null || filePath === '' ? undefined : pfadParam(filePath);
-  return mitLeser(bereich, async q => {
+  return mitLeser(bereich, project, async q => {
     if (pfad) {
       const a = await mussAsset(q, project, pfad);
       const v = versionen.find(x => x.id === a.inspector);
@@ -1156,6 +1159,21 @@ export async function assetHealth(project: string, filePath?: unknown, bereich: 
       total: s.dateien,
       gekappt: false,
     };
+    // P22-T236 Debug: ausgeblendete (nicht vorhandene) Eintraege zaehlen - sie erscheinen in keiner anderen Abfrage.
+    // Quotiertes "asset_files" = Tabelle ohne Sicht (intel-bereich.ts).
+    if (bereich === ASSET_BEREICH && (await leseAssetIndexWirklichkeit(project)).aktiv) {
+      const [u] = await q(
+        `SELECT count(*) FILTER (WHERE deleted_at IS NULL AND status = 'quelle_nicht_gefunden')::int AS quelle_fehlt,
+                count(*) FILTER (WHERE deleted_at IS NOT NULL)::int AS im_wiederherstellungsfenster
+           FROM "asset_files" WHERE project = $1`,
+        [project]
+      );
+      aus.ausgeblendet = {
+        quelle_fehlt: u.quelle_fehlt,
+        im_wiederherstellungsfenster: u.im_wiederherstellungsfenster,
+        hinweis: 'Nicht vorhandene Assets (Schalter asset_index_wirklichkeit): geloeschte nur ueber asset_intel geloescht/wiederherstellen; fehlende Quellen bereinigt intern asset_altbestand_bereinigen.',
+      };
+    }
     if (s.dateien === 0) aus.hinweis = 'Keine Asset-Eintraege fuer dieses Projekt. Inspiziert wird nur im lokalen Watcher-Prozess (sieht die Dateien); Container/REST lesen nur.';
     return aus;
   });

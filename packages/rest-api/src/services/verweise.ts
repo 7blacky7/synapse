@@ -6,7 +6,7 @@
  *         (Ausnahme tech_docs: projektuebergreifend). Nie rohes JSON: strukturierte Werte werden zu Feldzeilen.
  */
 
-import { getPool, getPlan, findeTaskInPlan, getProjectRegistryRows, ladeAnmerkungQuelle } from '@synapse/core';
+import { getPool, getPlan, findeTaskInPlan, getProjectRegistryRows, ladeAnmerkungQuelle, projektAssetSql, leseAssetIndexWirklichkeit } from '@synapse/core';
 
 export type VerweisArt = 'thought' | 'memory' | 'task' | 'plan' | 'doc' | 'event' | 'nachricht' | 'chat' | 'asset' | 'artefakt';
 
@@ -87,6 +87,13 @@ async function projektWurzeln(project: string): Promise<string[]> {
 export interface AssetVerweisDienste {
   frage: (sql: string, params: unknown[]) => Promise<Array<Record<string, unknown>>>;
   wurzeln: (project: string) => Promise<string[]>;
+  /** P22-T236: Schalter asset_index_wirklichkeit (nur vorhandene Assets); Tests ersetzen ihn. */
+  nurVorhandene?: (project: string) => Promise<boolean>;
+}
+
+/** P22-T236 (thought 4d6e67d6): Schalter asset_index_wirklichkeit; Lesefehler = Altverhalten. */
+async function nurVorhandeneAssets(project: string): Promise<boolean> {
+  try { return (await leseAssetIndexWirklichkeit(project)).aktiv; } catch { return false; }
 }
 
 // Nur nicht geloeschte Bilder (MIME, Format oder Endung).
@@ -99,15 +106,17 @@ const BILD_BEDINGUNG = "deleted_at IS NULL AND (mime_type LIKE 'image/%' OR lowe
  * Kein Schalter: gleiche Route, gleiche Antwortform, es werden nur mehr Schreibweisen aufgeloest (reine Anzeige).
  */
 export async function loeseAssetVerweis(project: string, text: string, dienste: Partial<AssetVerweisDienste> = {}): Promise<VerweisTreffer[]> {
-  const d: AssetVerweisDienste = { frage, wurzeln: projektWurzeln, ...dienste };
+  const d: AssetVerweisDienste = { frage, wurzeln: projektWurzeln, nurVorhandene: nurVorhandeneAssets, ...dienste };
   const t = text.trim();
   let zeilen: Array<Record<string, unknown>>;
+  // P22-T236: mit Schalter asset_index_wirklichkeit nur vorhandene Assets (Sicht aus intel-bereich.ts).
+  const nur = await d.nurVorhandene!(project);
   if (/^\d{1,12}$/.test(t)) {
-    zeilen = await d.frage('SELECT file_path, file_name FROM asset_files WHERE project = $1 AND id = $2::bigint AND ' + BILD_BEDINGUNG, [project, t]);
+    zeilen = await d.frage(projektAssetSql('SELECT file_path, file_name FROM asset_files WHERE project = $1 AND id = $2::bigint AND ' + BILD_BEDINGUNG, nur), [project, t]);
   } else {
     const pfad = assetPfadAusVerweis(t, t.startsWith('/') ? await d.wurzeln(project) : []);
     if (!pfad) return [];
-    zeilen = await d.frage('SELECT file_path, file_name FROM asset_files WHERE project = $1 AND file_path = $2 AND ' + BILD_BEDINGUNG, [project, pfad]);
+    zeilen = await d.frage(projektAssetSql('SELECT file_path, file_name FROM asset_files WHERE project = $1 AND file_path = $2 AND ' + BILD_BEDINGUNG, nur), [project, pfad]);
   }
   const a = zeilen[0];
   return a ? [{ art: 'asset', id: String(a.file_path), titel: String(a.file_name) }] : [];
@@ -329,7 +338,8 @@ export async function leseVerweis(project: string, art: VerweisArt, id: string):
       };
     }
     case 'asset': {
-      const r = await frage('SELECT file_path, file_name, asset_type, format, file_size, mime_type, metadata, mtime FROM asset_files WHERE project = $1 AND file_path = $2', [project, id]);
+      // P22-T236: Inhalt nur fuer vorhandene Assets, wenn der Schalter asset_index_wirklichkeit EIN ist.
+      const r = await frage(projektAssetSql('SELECT file_path, file_name, asset_type, format, file_size, mime_type, metadata, mtime FROM asset_files WHERE project = $1 AND file_path = $2', await nurVorhandeneAssets(project)), [project, id]);
       if (!r[0]) return null;
       const x = r[0];
       const md = (x.metadata ?? {}) as Record<string, unknown>;

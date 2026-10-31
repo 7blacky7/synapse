@@ -1,6 +1,7 @@
 /**
  * P18-T12/RV2: feste interne Lesebereiche. Keine Tool-Parameter, keine freien
  * Tabellennamen. Projekt-SQL bleibt unverändert; Reverse nutzt dieselbe Engine.
+ * P22-T236: Ausnahme Projekt-Assets mit nurVorhandene (Schalter asset_index_wirklichkeit), siehe assetBereichSql.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { QueryResult, QueryResultRow } from 'pg';
@@ -101,9 +102,43 @@ const REVERSE_DATEI_SICHT = `(SELECT
   (to_jsonb(d)->>'updated_at')::timestamptz AS updated_at
   FROM reverse_dateien d)`;
 
-export function assetBereichSql(sql: string, bereich: AssetBereich = ASSET_BEREICH): string {
+/**
+ * P22-T236 (User-Grundsatz 31.10.2026, thought 4d6e67d6 'Index = Wirklichkeit'): Mit nurVorhandene sieht der Projekt-
+ * Leseweg nur VORHANDENE Assets - ohne deleted_at (Wiederherstellungsfenster nur unter asset_intel geloescht/
+ * wiederherstellen) und ohne status 'quelle_nicht_gefunden' (Datei weg; die Zeile bleibt nur fuer Umbenennen per sha256
+ * und die Bereinigung). Objekte/Verweise folgen ihrer Datei. Quotierte Namen ("asset_files") bleiben unveraendert -
+ * so zaehlt health die ausgeblendeten Eintraege.
+ */
+const PROJEKT_ASSET_VORHANDEN = "deleted_at IS NULL AND status IS DISTINCT FROM 'quelle_nicht_gefunden'";
+const PROJEKT_ASSET_SICHT: Readonly<Record<string, string>> = Object.freeze({
+  asset_files: `(SELECT * FROM asset_files WHERE ${PROJEKT_ASSET_VORHANDEN})`,
+  asset_objects: `(SELECT o.* FROM asset_objects o WHERE EXISTS (SELECT 1 FROM asset_files f WHERE f.id = o.asset_id AND f.${PROJEKT_ASSET_VORHANDEN.replace(' AND status', ' AND f.status')}))`,
+  asset_references: `(SELECT r.* FROM asset_references r WHERE EXISTS (SELECT 1 FROM asset_files f WHERE f.id = r.asset_id AND f.${PROJEKT_ASSET_VORHANDEN.replace(' AND status', ' AND f.status')}))`,
+});
+export interface AssetSichtOptionen {
+  /** P22-T236: nur vorhandene Projekt-Assets (Schalter asset_index_wirklichkeit); ohne = bisheriges Projekt-SQL. */
+  nurVorhandene?: boolean;
+}
+
+/** P22-T236: Projekt-Asset-SQL mit Sicht nur vorhandener Assets (nurVorhandene=false = unveraendert). */
+export function projektAssetSql(sql: string, nurVorhandene: boolean): string {
+  return assetBereichSql(sql, ASSET_BEREICH, { nurVorhandene });
+}
+
+/** P22-T236: Leser fuer direkte Projekt-Asset-Abfragen (asset-weiche.ts); code_files & Co. bleiben unveraendert. */
+export function projektAssetLeser(nurVorhandene: boolean) {
+  const pool = getPool();
+  return {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    query<R extends QueryResultRow = any>(sql: string, params?: unknown[]): Promise<QueryResult<R>> {
+      return pool.query<R>(projektAssetSql(sql, nurVorhandene), params);
+    },
+  };
+}
+
+export function assetBereichSql(sql: string, bereich: AssetBereich = ASSET_BEREICH, o: AssetSichtOptionen = {}): string {
   pruefeAssetBereich(bereich);
-  if (bereich === ASSET_BEREICH) return sql;
+  if (bereich === ASSET_BEREICH) return o.nurVorhandene ? bezeichnerSql(sql, PROJEKT_ASSET_SICHT) : sql;
   return bezeichnerSql(sql, {
     asset_files: REVERSE_DATEI_SICHT,
     asset_objects: '(SELECT o.*, o.datei_id AS asset_id FROM reverse_objekte o)',

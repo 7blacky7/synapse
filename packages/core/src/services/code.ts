@@ -2875,12 +2875,21 @@ export async function searchMedia(
     must.push({ key: 'media_category', match: { value: mediaCategory } });
   }
 
-  return searchVectors<MediaChunkPayload>(
+  const treffer = await searchVectors<MediaChunkPayload>(
     collectionName,
     queryVector,
     limit,
     must.length > 0 ? filter : undefined
   );
+  // P22-T236 (User-Grundsatz 'Index = Wirklichkeit', thought 4d6e67d6): mit Schalter asset_index_wirklichkeit keine Treffer
+  // fuer geloeschte (Wiederherstellungsfenster) oder fehlende Projekt-Assets. Vektoren bleiben (Wiederherstellen ohne Neueinbettung).
+  try {
+    const { ausgeblendeteAssetPfade } = await import('./asset-altbestand.js');
+    const weg = await ausgeblendeteAssetPfade(projectName, treffer.map(t => String(t.payload?.file_path ?? '')));
+    return weg.size ? treffer.filter(t => !weg.has(String(t.payload?.file_path ?? ''))) : treffer;
+  } catch {
+    return treffer; // Lesefehler des Filters: Altverhalten statt leerer Suche
+  }
 }
 
 /**
