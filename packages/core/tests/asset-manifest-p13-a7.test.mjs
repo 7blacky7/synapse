@@ -48,6 +48,17 @@ const input=(v,extra={})=>({event_id:randomUUID(),asset_id:v.asset_id,basis_revi
 test('A7 feature is absent on deployed baseline (positive counterpart here)',()=>{
  assert.equal(typeof AssetManifestKern,'function');assert.equal(typeof AssetSpeicher.prototype.mutierePfad,'function');
 });
+// P22-T252 User 33047/33049: PC offline -> Tombstone bleibt im Delta, eine andere Veröffentlichung läuft weiter.
+test('P22-T252 Offline-Löschauftrag blockiert unabhängige Veröffentlichung nicht',async()=>{
+ const m=manifest(), before=await m.manifest(ctx), original=await put('t252/offline.png','offline-t252');
+ const deleted=await m.mutieren(ctx,'loeschen',input(original));
+ const other=await put('t252/parallel.png','parallel-t252');
+ assert.ok(other.asset_id,'P22-T252 unabhängiges Asset veröffentlicht');
+ assert.equal(await bytes(other.asset_id,other.revision),'parallel-t252','P22-T252 Veröffentlichung lesbar');
+ const delta=await m.aenderungen(ctx,{cursor:before.aenderungs_cursor});
+ assert.ok(delta.eintraege.some(e=>e.asset_id===original.asset_id&&e.metadaten.deleted_at),'P22-T252 Tombstone nach Offline-Zeit im Delta');
+ assert.ok(deleted.deleted_at,'P22-T252 Löschung gespeichert');
+});
 test('explicit rename keeps ID, requires old path, no byte upload, revision readers preserved',async()=>{
  const v=await put('rename/from.png','rename-bytes'),s=new AssetSpeicher({konfiguration:cfg});
  s.stage=()=>{throw new Error('move must not stage upload bytes');};

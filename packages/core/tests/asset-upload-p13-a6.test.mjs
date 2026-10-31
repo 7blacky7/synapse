@@ -59,6 +59,17 @@ run('Resume über neuen Kern; zwei Finalisierer erzeugen genau eine Revision',as
   await assert.rejects(a.status({...ctx,ziel_ref:'foreign'},start.id),e=>e.code==='scope_verboten');
   await assert.rejects(a.status({...ctx,host_id:'foreign'},start.id),e=>e.code==='scope_verboten');
 });
+// P22-T252: gleicher erreichbarer Inhalt wird ohne neuen Teil-/Stagingtransport bestätigt.
+run('P22-T252 Gleichstand: bestehendes ready-Asset wiederverwenden',async()=>{
+ const a=kern(),bytes=Buffer.from('gleichstand252');
+ const s=await a.erstellen(ctx,input('gleich252.png',bytes,'gleich252-a'));
+ await a.teil(ctx,s.id,0,bytes.length,[bytes]);const erste=await a.finalisieren(ctx,s.id);
+ const zweite=await a.erstellen(ctx,{...input('gleich252.png',bytes,'gleich252-b'),basis_revision:erste.revision});
+ assert.equal(zweite.status,'finalisiert','P22-T252 sofort final');
+ assert.equal(zweite.offset,bytes.length,'P22-T252 kein neuer Chunk nötig');
+ assert.equal(zweite.ergebnis.asset_id,erste.asset_id,'P22-T252 gleiches Asset');
+ assert.equal((await pool.query('SELECT count(*)::int AS n FROM asset_upload_teile WHERE upload_id=$1',[zweite.id])).rows[0].n,0,'P22-T252 keine Teile');
+});
 run('Vollhashfehler verwirft Sitzung; Abbruch lässt Offset unverändert',async()=>{
   const a=kern(),bytes=Buffer.from('right');
   const start=await a.erstellen(ctx,input('hash.png',bytes,'hash'));
@@ -69,6 +80,77 @@ run('Vollhashfehler verwirft Sitzung; Abbruch lässt Offset unverändert',async(
   await assert.rejects(a.finalisieren(ctx,start.id),e=>e.code==='hash_falsch');
   assert.equal((await a.status(ctx,start.id)).status,'fehler');
   assert.equal((await pool.query("SELECT count(*)::int AS n FROM asset_files WHERE file_path='hash.png'")).rows[0].n,0);
+});
+// P22-T252: Server-Tombstone vs vorhandene PC-Datei bleibt offen; keine Uploadschleife.
+run('P22-T252 Tombstone: terminaler Fehler und eigene Stagings verworfen',async()=>{
+  const a=kern(), bytes=Buffer.from('t252-alt');
+  const prior=await a.erstellen(ctx,input('t252.png',bytes,'t252-prior'));
+  await a.teil(ctx,prior.id,0,bytes.length,[bytes]); await a.finalisieren(ctx,prior.id);
+  await pool.query("UPDATE asset_files SET deleted_at=clock_timestamp() WHERE project=$1 AND file_path=$2",[ctx.ziel_ref,'t252.png']);
+  const next=Buffer.from('t252-neu');
+  const s=await a.erstellen(ctx,{...input('t252.png',next,'t252-next'),basis_revision:'1'});
+  await a.teil(ctx,s.id,0,next.length,[next]);
+  const part=(await pool.query('SELECT staging_id::text AS id FROM asset_upload_teile WHERE upload_id=$1',[s.id])).rows[0].id;
+  await assert.rejects(a.finalisieren(ctx,s.id),e=>e.code==='tombstone_konflikt','P22-T252 erwarteter Konfliktcode');
+  const row=(await pool.query('SELECT status,ergebnis FROM asset_upload_sitzungen WHERE id=$1',[s.id])).rows[0];
+  assert.equal(row.status,'fehler','P22-T252 Session terminal');
+  assert.equal(row.ergebnis.fehler,'tombstone_konflikt','P22-T252 Grund gespeichert');
+  await assert.rejects(fs.stat(join(cfg.speicher.root,ctx.ziel_ref,'.intern','staging',part+'.part')),e=>e.code==='ENOENT','P22-T252 Chunk entfernt');
+  await assert.rejects(fs.stat(join(cfg.speicher.root,ctx.ziel_ref,'.intern','journal',part+'.json')),e=>e.code==='ENOENT','P22-T252 Journal entfernt');
+  assert.equal((await pool.query("SELECT deleted_at IS NOT NULL AS tombstone FROM asset_files WHERE project=$1 AND file_path=$2",[ctx.ziel_ref,'t252.png'])).rows[0].tombstone,true,'P22-T252 Tombstone bleibt');
+});
+// P22-T252: bei fehlgeschlagenem Teil-Fence kein unreferenziertes Staging/Journal hinterlassen.
+run('P22-T252 nicht bestätigter Chunk wird gezielt verworfen',async()=>{
+ const broken={...pool,async connect(){const c=await pool.connect();return {...c,async query(sql,values){
+  if(sql.startsWith('INSERT INTO asset_upload_teile'))throw new Error('P22-T252 simulated part failure');
+  return c.query(sql,values);
+ }};}};
+ const a=new api.AssetUploadKern({db:broken,speicher:new AssetSpeicher({konfiguration:cfg}),konfiguration:cfg});
+ const bytes=Buffer.from('part252'),s=await a.erstellen(ctx,input('part252.png',bytes,'part252'));
+ const dir=join(cfg.speicher.root,ctx.ziel_ref,'.intern','staging');
+ const vor=new Set(await fs.readdir(dir).catch(()=>[]));
+ await assert.rejects(a.teil(ctx,s.id,0,bytes.length,[bytes]),/simulated part failure/);
+ const danach=await fs.readdir(dir).catch(()=>[]);
+ assert.deepEqual(danach.filter(n=>!vor.has(n)),[],'P22-T252 kein nicht registrierter Teil');
+});
+// P22-T252 User 33045: neue PC-Bytes dürfen bei expliziter Freigabe den Tombstone fortsetzen.
+run('P22-T252 anderer Hash wird neue Revision, Tombstone wird aufgehoben',async()=>{
+ const a=new api.AssetUploadKern({db:pool,speicher:new AssetSpeicher({konfiguration:cfg}),konfiguration:cfg,tombstoneFreigabe:async()=>true});
+ const old=Buffer.from('t252-geloescht'),changed=Buffer.from('t252-neuer-inhalt');
+ const first=await a.erstellen(ctx,input('t252-neu.png',old,'t252-neu-1'));
+ await a.teil(ctx,first.id,0,old.length,[old]);const v=await a.finalisieren(ctx,first.id);
+ await pool.query("UPDATE asset_files SET deleted_at=clock_timestamp() WHERE project=$1 AND file_path=$2",[ctx.ziel_ref,'t252-neu.png']);
+ await fs.rename(join(cfg.speicher.root,ctx.ziel_ref,'assets','t252-neu.png'),join(root,'t252-retained'));
+ const next=await a.erstellen(ctx,{...input('t252-neu.png',changed,'t252-neu-2'),basis_revision:v.revision});
+ await a.teil(ctx,next.id,0,changed.length,[changed]);const result=await a.finalisieren(ctx,next.id);
+ assert.equal(result.status,'finalisiert','P22-T252 neue Revision');
+ const row=(await pool.query('SELECT deleted_at FROM asset_files WHERE project=$1 AND file_path=$2',[ctx.ziel_ref,'t252-neu.png'])).rows[0];
+ assert.equal(row.deleted_at,null,'P22-T252 Tombstone aufgehoben');
+});
+// P22-T252: Statusabfrage markiert eine abgelaufene, nicht vorbereitete Session und räumt bekannte Chunks auf.
+run('P22-T252 abgelaufene Lease: Status und bekannte Stagings',async()=>{
+ const a=kern(), bytes=Buffer.from('lease252');
+ const s=await a.erstellen(ctx,input('lease252.png',bytes,'lease252'));
+ await a.teil(ctx,s.id,0,bytes.length,[bytes]);
+ const part=(await pool.query('SELECT staging_id::text AS id FROM asset_upload_teile WHERE upload_id=$1',[s.id])).rows[0].id;
+ await pool.query("UPDATE asset_upload_sitzungen SET lease_bis=clock_timestamp()-interval '1 second' WHERE id=$1",[s.id]);
+ assert.equal((await a.status(ctx,s.id)).status,'abgebrochen','P22-T252 Lease terminal');
+ const row=(await pool.query('SELECT ergebnis FROM asset_upload_sitzungen WHERE id=$1',[s.id])).rows[0];
+ assert.equal(row.ergebnis.fehler,'lease_abgelaufen','P22-T252 Ablaufgrund');
+ await assert.rejects(fs.stat(join(cfg.speicher.root,ctx.ziel_ref,'.intern','staging',part+'.part')),e=>e.code==='ENOENT','P22-T252 bekannter Teil entfernt');
+});
+// P22-T252: fehlerhafte Bereinigung wird sichtbar statt als erfolgreich behauptet.
+run('P22-T252 Cleanup-Fehler bleibt im Sitzungsstatus sichtbar',async()=>{
+ const storage=new AssetSpeicher({konfiguration:cfg});
+ const a=new api.AssetUploadKern({db:pool,speicher:storage,konfiguration:cfg});
+ const bytes=Buffer.from('cleanup252'),s=await a.erstellen(ctx,input('cleanup252.png',bytes,'cleanup252'));
+ await a.teil(ctx,s.id,0,bytes.length,[bytes]);
+ await pool.query("UPDATE asset_upload_sitzungen SET lease_bis=clock_timestamp()-interval '1 second' WHERE id=$1",[s.id]);
+ storage.verwerfeStaging=async()=>false;
+ const ended=await a.status(ctx,s.id);
+ assert.equal(ended.status,'abgebrochen','P22-T252 abgelaufene Sitzung');
+ const row=(await pool.query('SELECT ergebnis FROM asset_upload_sitzungen WHERE id=$1',[s.id])).rows[0];
+ assert.equal(row.ergebnis.bereinigung_offen,1,'P22-T252 fehlgeschlagene Bereinigung debugbar');
 });
 run('Reverse registriert serverseitigen Finalisierer am selben Kern',async()=>{
   const a=kern(),r={bereich:'reverse',ziel_ref:'rev-test-a1b2c3',host_id:'daemon_fixture'};

@@ -30,12 +30,25 @@ before(async()=>{
  db={connect:connection,async query(s,v){const c=await connection();try{return await c.query(s,v);}finally{await c.release();}}};
  upload=new AssetUploadKern({db,konfiguration:cfg});
  const principal=token=>token==='daemon'?{kind:'service',scope:'daemon:fixture',token_hash:'a'.repeat(64)}:token==='compute'?{kind:'service',scope:'compute-node:fixture',token_hash:'b'.repeat(64)}:token==='user'?{kind:'access',scope:'api',token_hash:'c'.repeat(64)}:null;
- deps={upload,manifest:new AssetManifestKern({db,konfiguration:cfg}),validateToken:async token=>principal(token),projektErlaubt:async p=>p===project};
+ deps={upload,inventarDb:db,manifest:new AssetManifestKern({db,konfiguration:cfg}),validateToken:async token=>principal(token),projektErlaubt:async p=>p===project};
  app=Fastify({logger:false});await app.register(createAssetsRoutes(deps));await app.register(fsEventsRoutes);await app.ready();
 });
 after(async()=>{if(app)await app.close();if(admin){await admin.query('DROP SCHEMA '+schema+' CASCADE');await admin.release();}if(root)await fs.rm(root,{recursive:true,force:true});});
 const request=(method,url,payload,headers=auth())=>app.inject({method,url:base+url,payload,headers});
 const input=(pfad,b)=>({logischer_pfad:pfad,storage_kind:'assets',sha256:hash(b),groesse:b.length,basis_revision:'0',idempotency_key:randomUUID()});
+// P22-T252: DB-seitige Vorschau auf kleinen Seiten, keine Verzeichniszählung oder Ausführung.
+test('P22-T252 Inventar ist begrenzte DB-Vorschau und Altbestand bleibt schreibgeschützt',async()=>{
+ const a=await request('GET','/intern-inventar?limit=1',undefined,auth('user'));
+ assert.equal(a.statusCode,200,'P22-T252 Inventar HTTP');
+ assert.equal(a.json().inventar.quelle,'pg_sitzungen','P22-T252 DB-Quelle');
+ assert.equal(a.json().inventar.vollstaendig,false,'P22-T252 unbekannte Dateien nicht als vollständig ausgeben');
+ assert.ok(a.json().inventar.sitzungen.length<=1,'P22-T252 limit');
+ const b=await request('POST','/reverse-altbestand',{ausfuehren:true},auth('user'));
+ assert.equal(b.statusCode,409,'P22-T252 Aufräumen nur Vorschau');
+ assert.equal(b.json().error.code,'nur_vorschau','P22-T252 klare Ablehnung');
+ const c=await request('GET','/intern-inventar?limit=201',undefined,auth('user'));
+ assert.equal(c.statusCode,400,'P22-T252 Limit gedeckelt');
+});
 test('401/403/426 and project scopes reject before accepting upload bytes',async()=>{
  const body=input('auth.png',Buffer.from('x'));
  assert.equal((await request('POST','/uploads',body,{})).statusCode,401);

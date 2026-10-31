@@ -14,7 +14,7 @@ export interface AssetTransferScope {bereich:'projekt'|'reverse';ziel_ref:string
 /** RV6: Routenadapter Reverse. Sitzungen entstehen über POST /api/reverse/fundstellen (nicht POST uploads); null = Bytes sind serverseitig bekannt. */
 export interface ReverseRoutenAdapter {sitzung(pfad:string,h:{sha256:string;groesse:number}):Promise<{upload_id:string;reverse_id:string}|null>;}
 /** generisch (P22-T238): Formate ohne Inspector uebertragen (API-Policy generischeFormate); erlaubteTypen undefined = keine Einschraenkung. */
-export interface AssetTransferOptionen {richtung:AssetSyncRichtung;chunkBytes:number;retryMs:number;timeoutMs:number;maxDateiBytes:number;erlaubteTypen?:string[];parallelTransfers?:number;generisch?:boolean;
+export interface AssetTransferOptionen {richtung:AssetSyncRichtung;chunkBytes:number;retryMs:number;timeoutMs:number;maxDateiBytes:number;erlaubteTypen?:string[];parallelTransfers?:number;generisch?:boolean;tombstoneZustellung?:boolean;
  /** P22-T240: nach so vielen Fehlversuchen wird ein Download-/Loeschauftrag geparkt (blockiert den Cursor nicht mehr, Retry nur
   *  noch alle parkRetryMs). 0 = aus (Altverhalten, unbegrenzt). Standard ASSET_PARK_MAX_VERSUCHE / ASSET_PARK_RETRY_MS. */
  maxVersuche?:number;parkRetryMs?:number;}
@@ -32,7 +32,7 @@ interface Auftrag {
  hash_signatur?:string;
  upload?:string;sha256?:string;groesse?:number;signatur?:string;beobachtet_ms?:number;basis?:string;versuche:number;naechster:number;fehler?:string;gesperrt?:boolean;
  /** P22-T240: geparkt nach maxVersuche (Download/Loeschen): kein Cursor-Block, seltener Retry, sichtbar in status(). */
- geparkt?:boolean;geparkt_seit?:string;
+ geparkt?:boolean;geparkt_seit?:string;fehler_code?:string;
 }
 interface Zustand {
  version:1;scope:string;auftraege:Auftrag[];bekannt:Record<string,AssetSyncMeta>;marker:Record<string,{sha256:string;revision:string;phase:'installieren'|'fertig'}>;
@@ -99,6 +99,8 @@ export class AssetTransferQueue {
  private readonly ready:Promise<void>;private serial=Promise.resolve();private stopped=false;
  private readonly abort=new AbortController();
  private wake?:NodeJS.Timeout;private draining=false;private paused=true;private lauf?:Promise<void>;
+ // P22-T252: Tombstone-Dateiarbeit blockiert weder globale Queue-Sperre noch andere Pfade.
+ private readonly tombstoneAktiv=new Map<string,Promise<void>>();
  /** P27-T6: fertige Auftraege (Fortschritt) und Fehlversuche seit Prozessstart; Bytes allein sind KEIN Fortschritt. */
  private erledigt=0;private fehlschlaege=0;private letzterErfolgMs:number|null=null;private letzterFehler:string|null=null;
  constructor(scope:AssetTransferScope,private optionen:AssetTransferOptionen,readonly api=new AssetApiTransport(),
@@ -158,7 +160,7 @@ export class AssetTransferQueue {
   this.geaendert();
  }
  async status(){await this.ready;return {bereich:this.scope.bereich,ziel_ref:this.scope.ziel_ref,cursor:this.state.cursor,
-  stand:this.state.stand,auftraege:this.state.auftraege.map(j=>({...j})),bekannt:Object.keys(this.state.bekannt).length,konflikte:Object.values(this.state.konflikte??{}),laufend:this.draining,
+  stand:this.state.stand,auftraege:this.state.auftraege.map(j=>({...j})),bekannt:Object.keys(this.state.bekannt).length,konflikte:Object.values(this.state.konflikte??{}),laufend:this.draining||this.tombstoneAktiv.size>0,tombstone_zustellung:{aktiv:this.optionen.tombstoneZustellung===true,laufend:this.tombstoneAktiv.size},
   // P22-T240: Stau sichtbar (offene Auftraege je Art, geparkt, haeufigste Fehler).
   stau:this.stau()};}
  private stau(){
@@ -215,7 +217,7 @@ export class AssetTransferQueue {
    this.state.cursor=cursor;this.state.stand=stand;await this.save();
   });
  }
- setzeOptionen(o:AssetTransferOptionen){pruefeOptionen(o);const changed=this.optionen.richtung!==o.richtung;this.optionen=o;return changed;}
+ setzeOptionen(o:AssetTransferOptionen){pruefeOptionen(o);const changed=this.optionen.richtung!==o.richtung||this.optionen.tombstoneZustellung!==o.tombstoneZustellung;this.optionen=o;return changed;}
  /** RV6: vom Bibliotheks-Watcher stabil gehashte Datei mit der Sitzung aus POST /api/reverse/fundstellen einreihen. */
  async reverseEinreihen(pfad:string,e:{upload_id:string;reverse_id:string;sha256:string;groesse:number;signatur:string}){
   await this.ready;
@@ -266,7 +268,15 @@ export class AssetTransferQueue {
    const known=this.state.bekannt[rel];
    if(typ==='unlink'&&!known)return; // A missing source or incomplete scan is never a remote delete.
    const existing=this.state.auftraege.find(j=>j.pfad===rel&&j.art!=='download');
-   if(existing){existing.art=typ==='unlink'?'loeschen':'upload';existing.gesperrt=false;existing.naechster=0;}
+    if(existing){
+     // P22-T252: Wiederholte Scan-Ereignisse fuer dieselbe unveraenderte Datei duerfen einen
+     // terminalen Konflikt nicht entsperren und keine neue Sitzung erzeugen.
+     if(existing.gesperrt&&existing.fehler_code==='tombstone_konflikt')return; // Entscheidung durch User abwarten, auch bei lokalen Ereignissen.
+     if(existing.geparkt&&typ!=='unlink'){
+      try{const target=await this.local(rel);const st=await fs.lstat(target,{bigint:true});if(!st.isSymbolicLink()&&signature(st)===existing.signatur)return;}catch{/* Aenderung oder Entfernung neu pruefen */}
+     }
+     existing.art=typ==='unlink'?'loeschen':'upload';existing.gesperrt=false;existing.geparkt=false;delete existing.geparkt_seit;existing.versuche=0;existing.naechster=0;
+    }
    else this.state.auftraege.push({id:randomUUID(),art:typ==='unlink'?'loeschen':'upload',pfad:rel,basis:known?.revision??'0',versuche:0,naechster:0});
    await this.save();
   });
@@ -279,13 +289,14 @@ export class AssetTransferQueue {
   if(meta.storage_status!=='ready'||!meta.revision||!/^[1-9][0-9]*$/.test(meta.revision)||!meta.sha256||!HASH.test(meta.sha256)||!Number.isSafeInteger(meta.groesse)||meta.groesse<0||meta.groesse>this.optionen.maxDateiBytes)error('metadaten_ungueltig',409,'Nicht bestätigte oder ungültige Share-Revision; Cursor bleibt offen.');
   await this.locked(async()=>{
    const known=this.state.bekannt[pfad];
-   if(known?.revision===meta.revision&&known.deleted_at===meta.deleted_at)return;
+   if(known?.revision===meta.revision&&known.deleted_at===meta.deleted_at&&!(this.optionen.tombstoneZustellung&&meta.deleted_at))return;
    // P22-T240: Ein Delta liefert jede Zwischenrevision eines Assets. Nie auf eine aeltere Revision derselben Asset-ID
    // zurueckgehen (vorher: Pendeln zwischen Revisionen bei blockiertem Cursor, je Runde neue pc-before-install-Sicherung).
    if(aelter(meta,known))return;
    const prior=this.state.auftraege.find(j=>j.art==='download'&&j.pfad===pfad);
    if(prior&&aelter(meta,prior.meta))return;
    if(prior){prior.meta=meta;prior.gesperrt=false;prior.geparkt=false;delete prior.geparkt_seit;prior.versuche=0;prior.naechster=0;}
+   else if(this.optionen.tombstoneZustellung&&meta.deleted_at)this.state.auftraege.unshift({id:randomUUID(),art:'download',pfad,meta,versuche:0,naechster:0});
    else this.state.auftraege.push({id:randomUUID(),art:'download',pfad,meta,versuche:0,naechster:0});
    await this.save();
   });
@@ -390,6 +401,7 @@ export class AssetTransferQueue {
   let current:Awaited<ReturnType<AssetTransferQueue['hash']>>|undefined;
   try{current=await this.hash(j.pfad);}catch(e){if(!missing(e))throw e;}
   if(m.deleted_at){
+   // P22-T252 EIN wird separat und ohne Queue-Sperre in starteTombstone bearbeitet.
    if(current&&(!old?.sha256||current.sha256!==old.sha256))error('lokaler_konflikt',409,'Lokale Änderung vor Share-Tombstone sichern.');
    if(current)await fs.rename(target,path.join(this.dir,'deleted-'+j.id)); // retained until explicit configured retention
    this.state.bekannt[j.pfad]=m;delete this.state.marker[j.pfad];await this.save();return;
@@ -468,7 +480,14 @@ export class AssetTransferQueue {
   this.draining=true;
   try{await this.locked(async()=>{
    for(const job of [...this.state.auftraege]){
-    if(this.stopped||this.paused||job.gesperrt||job.naechster>Date.now())continue;
+    if(this.stopped||this.paused||!this.state.auftraege.includes(job)||job.gesperrt||job.naechster>Date.now())continue;
+    if(this.tombstoneAktiv.has(job.pfad))continue;
+    // Ein offener Tombstone-Fence gilt nur fuer denselben Pfad; andere Auftraege laufen weiter.
+    if(this.optionen.tombstoneZustellung&&job.art==='upload'&&this.state.auftraege.some(x=>x.art==='download'&&x.pfad===job.pfad&&x.meta?.deleted_at))continue;
+    if(job.art==='download'&&job.meta?.deleted_at&&this.optionen.tombstoneZustellung){
+     if(this.tombstoneAktiv.size<(this.optionen.parallelTransfers??1))this.starteTombstone(job);
+     continue;
+    }
     const release=await transferSlot(this.optionen.parallelTransfers??1,this.abort.signal);
     try{
      if(this.paused||this.stopped)continue;
@@ -476,14 +495,17 @@ export class AssetTransferQueue {
      this.state.auftraege=this.state.auftraege.filter(j=>j!==job);await this.save();
      this.erledigt++;this.letzterErfolgMs=Date.now();
     }catch(e){
-     const err=e as Error;job.fehler=err.message;job.versuche++;
+     const err=e as Error;job.fehler=err.message;job.fehler_code=e instanceof AssetApiFehler?e.code:undefined;job.versuche++;
+     if(job.art==='upload'&&job.fehler_code==='tombstone_konflikt'){
+      this.state.konflikte??=Object.create(null);this.state.konflikte![job.pfad]={pfad:job.pfad,art:'tombstone',hinweis:'Share gelöscht, lokale Datei erhalten; Entscheidung offen.'};
+     }
      this.fehlschlaege++;this.letzterFehler=String(err.message??err).slice(0,200);
      job.gesperrt=e instanceof AssetApiFehler&&!e.wiederholbar&&!['finalisierung_laeuft','transfer_laeuft','revision_offen'].includes(e.code);
      job.naechster=Date.now()+Math.min(this.optionen.retryMs*Math.pow(2,Math.min(job.versuche-1,6)),this.optionen.retryMs*64);
      // P22-T240: Obergrenze statt Endlosschleife: Download/Loeschen nach maxVersuche parken (sichtbar, kein Cursor-Block),
      // danach nur noch alle parkRetryMs ein Versuch. Ein neues Delta fuer den Pfad oder die eigene neue Revision hebt das Parken auf.
      const max=this.optionen.maxVersuche??ASSET_PARK_MAX_VERSUCHE;
-     if(job.art!=='upload'&&max>0&&job.versuche>=max){
+     if(max>0&&job.versuche>=max){
       if(!job.geparkt){job.geparkt=true;job.geparkt_seit=new Date().toISOString();
        console.error('[asset-transfer] '+this.scope.ziel_ref+': '+job.art+' '+job.pfad+' nach '+job.versuche+' Versuchen geparkt: '+err.message);}
       job.naechster=Date.now()+(this.optionen.parkRetryMs??ASSET_PARK_RETRY_MS);
@@ -493,11 +515,63 @@ export class AssetTransferQueue {
    }
   });}finally{this.draining=false;}
  }
+ private starteTombstone(job:Auftrag):void{
+  if(this.tombstoneAktiv.has(job.pfad)||!job.meta?.deleted_at)return;
+  const meta={...job.meta},pfad=job.pfad;
+  const arbeit=(async()=>{
+   try{
+    const target=await this.local(pfad,true);
+    let current:Awaited<ReturnType<AssetTransferQueue['hash']>>|undefined;
+    try{current=await this.hash(pfad);}catch(e){if(!missing(e))throw e;}
+    if(this.stopped||this.paused||!this.optionen.tombstoneZustellung)return;
+    if(current&&current.sha256===meta.sha256){
+     const st=await fs.lstat(target,{bigint:true});
+     if(st.isSymbolicLink()||signature(st)!==current.signatur)error('lokaler_konflikt',409,'Datei vor Tombstone-Zustellung verändert.');
+     const retained=path.join(this.dir,'deleted-'+randomUUID());await fs.rename(target,retained);
+     try{
+      const check=await hasheStabil(retained,{maxDateiBytes:this.optionen.maxDateiBytes,chunkBytes:this.optionen.chunkBytes,signal:this.abort.signal});
+      if(check.sha256!==meta.sha256)error('lokaler_konflikt',409,'Datei bei Tombstone-Zustellung verändert.');
+     }catch(e){try{await fs.link(retained,target);await fs.unlink(retained);}catch{/* Sicherung bleibt erhalten */}throw e;}
+    }
+    await this.locked(async()=>{
+     if(!this.state.auftraege.includes(job)||job.meta?.revision!==meta.revision||job.meta?.asset_id!==meta.asset_id)return;
+     if(current&&current.sha256!==meta.sha256){
+      let upload=this.state.auftraege.find(x=>x.art==='upload'&&x.pfad===pfad);
+      if(!upload){upload={id:randomUUID(),art:'upload',pfad,versuche:0,naechster:0};this.state.auftraege.push(upload);}
+      upload.basis=meta.revision!;upload.id=randomUUID();upload.upload=undefined;upload.gesperrt=false;upload.geparkt=false;
+      upload.versuche=0;upload.naechster=0;delete upload.fehler;delete upload.fehler_code;
+     }else{
+      // Eine nach der Sicherung neu angelegte Datei ist ein neues Ereignis und darf nicht verloren gehen.
+      let erneutVorhanden=false;
+      try{await fs.lstat(target);erneutVorhanden=true;}catch(e){if(!missing(e))throw e;}
+      if(!erneutVorhanden)this.state.auftraege=this.state.auftraege.filter(x=>!(x!==job&&x.art==='upload'&&x.pfad===pfad));
+     }
+     this.state.bekannt[pfad]=meta;delete this.state.marker[pfad];if(this.state.konflikte)delete this.state.konflikte[pfad];
+     this.state.auftraege=this.state.auftraege.filter(x=>x!==job);
+     this.erledigt++;this.letzterErfolgMs=Date.now();await this.save();
+    });
+   }catch(e){
+    await this.locked(async()=>{
+     if(!this.state.auftraege.includes(job)||this.stopped)return;
+     const err=e as Error;job.fehler=String(err.message??err);job.versuche++;
+     this.fehlschlaege++;this.letzterFehler=job.fehler.slice(0,200);
+     const max=this.optionen.maxVersuche??ASSET_PARK_MAX_VERSUCHE;
+     if(max>0&&job.versuche>=max){job.geparkt=true;job.geparkt_seit??=new Date().toISOString();job.naechster=Date.now()+(this.optionen.parkRetryMs??ASSET_PARK_RETRY_MS);}
+     else job.naechster=Date.now()+Math.min(this.optionen.retryMs*Math.pow(2,Math.min(job.versuche-1,6)),this.optionen.retryMs*64);
+     await this.save();
+    });
+   }
+  })().finally(()=>{
+   this.tombstoneAktiv.delete(pfad);
+   if(!this.stopped&&!this.paused)void this.abarbeiten().catch(()=>undefined);
+  });
+  this.tombstoneAktiv.set(pfad,arbeit);
+ }
  pause(){this.paused=true;if(this.wake){clearInterval(this.wake);this.wake=undefined;}}
  start(){
   if(this.stopped)return;this.paused=false;if(this.wake)return;
   this.wake=setInterval(()=>{void this.abarbeiten().catch(e=>console.error('[asset-transfer] Zustand nicht verfügbar:',(e as Error).message));},this.optionen.retryMs);
   this.wake.unref();void this.abarbeiten().catch(e=>console.error('[asset-transfer] Start fehlgeschlagen:',(e as Error).message));
  }
- async stop(){this.stopped=true;if(this.wake)clearInterval(this.wake);this.abort.abort();await this.serial;}
+ async stop(){this.stopped=true;if(this.wake)clearInterval(this.wake);this.abort.abort();await Promise.allSettled([...this.tombstoneAktiv.values()]);await this.serial;}
 }

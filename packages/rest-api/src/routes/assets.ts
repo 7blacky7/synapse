@@ -2,12 +2,14 @@
 import type {FastifyInstance,FastifyRequest,FastifyReply} from 'fastify';
 import {AssetKonfliktKern,AssetUploadKern,AssetManifestKern,assetProjektNutztShare,setzeAssetInspektionsModus,normalisiereSpeicherPfad,assetArt,AssetUploadFehler,AssetSpeicherFehler,API_CONTRACT_HEADER,apiCapabilitiesForClient,isProjectEnabled,ladeAssetProjektoptionen,leseAssetTransferGenerisch,meldeAssetQuellenFehlen,getAssetKonfiguration,loeseAssetProjektoptionen,
   meldeAssetPcStand,assetPcZustellung,pcZustellungFuerAsset,leseAssetPcZustellungSchalter,pruefePublishSperre,leseAssetPublishRecoverySchalter,
-  inventarProjektIntern,raeumeReverseAltbestandAuf,leseAssetInternAufraeumenSchalter} from '@synapse/core';
-import type {AssetMutationEingang,AssetUploadSitzung,AssetUploadEingang,AssetUploadKontext,AssetDownloadRange} from '@synapse/core';
+  getPool,leseProfilProduktSchalter} from '@synapse/core';
+import type {AssetMutationEingang,AssetUploadSitzung,AssetUploadEingang,AssetUploadKontext,AssetDownloadRange,AssetUploadDb} from '@synapse/core';
 import {validateToken} from '../services/auth.js';
 import type {AuthTokenRow} from '../services/auth.js';
 
 export interface AssetRouteAbhaengigkeiten {
+  /** P22-T252: injizierbare PG-Lesestelle fuer die begrenzte Vorschau. */
+  inventarDb?:Pick<AssetUploadDb,'query'>;
   upload?:AssetUploadKern;
   manifest?:AssetManifestKern;
   konflikte?:AssetKonfliktKern;
@@ -24,7 +26,7 @@ export interface AssetRouteAbhaengigkeiten {
 }
 export function assetSitzungAntwort(s:AssetUploadSitzung){
   return {id:s.id,bereich:s.bereich,ziel_ref:s.ziel_ref,logischer_pfad:s.logischer_pfad,groesse:s.groesse,sha256:s.sha256,
-    offset:s.offset,status:s.status,lease_bis:s.lease_bis,...(s.ergebnis?{asset_id:s.ergebnis.asset_id,revision:s.ergebnis.revision,
+    offset:s.offset,status:s.status,lease_bis:s.lease_bis,...((s.status==='fehler'||s.status==='abgebrochen')&&s.ergebnis&&typeof (s.ergebnis as unknown as {fehler?:unknown}).fehler==='string'?{fehler:(s.ergebnis as unknown as {fehler:string}).fehler,bereinigung_offen:(s.ergebnis as unknown as {bereinigung_offen?:number}).bereinigung_offen??0}:{}),...(s.status==='finalisiert'&&s.ergebnis?{asset_id:s.ergebnis.asset_id,revision:s.ergebnis.revision,
       ...(s.ergebnis.konflikt?{konflikt:s.ergebnis.konflikt}:{})}:{})};
 }
 export function assetRange(header:string|undefined):AssetDownloadRange|undefined {
@@ -105,13 +107,15 @@ export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyIns
       const c=await kontext(req,req.params.projekt,false),cfg=getAssetKonfiguration();
       const entry=await ladeAssetProjektoptionen(req.params.projekt),effective=entry?.wirksam??loeseAssetProjektoptionen(cfg,{});
       const generisch=await leseAssetTransferGenerisch(req.params.projekt);
+      const tombstone=await leseProfilProduktSchalter('asset_tombstone_zustellung',req.params.projekt);
       return {success:true,contractVersion:1,host:c.host_id,richtung:effective.richtung,policyRevision:entry?.policyRevision??0,
         chunkBytes:cfg.speicher.chunkBytes,parallelTransfers:cfg.speicher.parallelTransfers,timeoutMs:cfg.speicher.timeoutMs,retryMs:cfg.sync.retryIntervallMs,
         scanMs:cfg.sync.scanIntervallMs,maxDateiBytes:effective.maxDateiBytes,
         // P22-T238: ohne Einschraenkung KEINE Liste (Daemon nimmt dann jedes erkannte Format); generischeFormate = Schalter
         // asset_transfer_generisch (Formate ohne Inspector), generisch_debug zeigt Quelle/Ablauf/Lesefehler.
         ...(effective.alleTypen?{}:{erlaubteTypen:effective.erlaubteTypen}),alleTypen:effective.alleTypen,
-        generischeFormate:generisch.aktiv,generisch_debug:{quelle:generisch.quelle,bis:generisch.bis,letzter_fehler:generisch.letzter_fehler}};
+        generischeFormate:generisch.aktiv,generisch_debug:{quelle:generisch.quelle,bis:generisch.bis,letzter_fehler:generisch.letzter_fehler},
+        tombstone_zustellung:tombstone.aktiv&&!tombstone.letzter_fehler,tombstone_debug:{quelle:tombstone.quelle,letzter_fehler:tombstone.letzter_fehler}};
     }));
     // P22-T236: Daemon meldet lokal entfernte Assets ohne Share-Bytes (legacy_local), auch bei Asset-Sync AUS. Nur mit
     // Produkt-Schalter asset_index_wirklichkeit (sonst success:false funktion_aus); Share-Assets loescht der Transferweg.
@@ -163,26 +167,38 @@ export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyIns
     // P22-T206: Publikationssperre pruefen (GET, nur lesen) bzw. loesen (POST). Loesen nur mit User-Token, Schalter
     // asset_publish_recovery EIN, bestaetigt:true und grund (>= 10 Zeichen); eine Alt-Sperre ohne Besitzerangabe zusaetzlich nur
     // mit ohne_besitzer_nachweis:true (USER-FREIGABE). Die PG-Pruefung (keine aktive Finalisierung) gilt immer.
-    // P22-T241: Inventar des Projekt-.intern (Ordner, Staging/Journal/Revisionen nach Herkunft, fremde Ordner). Nur lesen.
-    fastify.get<{Params:{projekt:string};Querystring:{journal_limit?:string}}>(base+'/intern-inventar',async(req,reply)=>run(reply,async()=>{
+    // P22-T252: bounded PG-keyset preview. Never enumerate .intern/staging or journal.
+    // Unknown filesystem orphans and journal states are explicitly not counted or classified safe.
+    const preview=async(project:string,nach:string|undefined,limit:number,reverse:boolean)=>{
+      if(nach&&!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nach))throw new AssetUploadFehler('cursor_ungueltig',400,'Ungültiger Cursor.');
+      const rows=(await (o.inventarDb??getPool()).query(`
+        SELECT s.id::text,s.logischer_pfad,s.host_id,s.status,s.lease_bis,
+               s.bestaetigte_bytes::text,s.groesse::text,
+               s.publish_operation IS NOT NULL AS publish_vorhanden,
+               (s.lease_bis<=clock_timestamp()) AS lease_abgelaufen,
+               (s.status IN ('offen','laeuft','fehler','abgebrochen') AND s.lease_bis<=clock_timestamp() AND s.publish_operation IS NULL) AS pruef_kandidat,
+               ARRAY(SELECT t.staging_id::text FROM asset_upload_teile t WHERE t.upload_id=s.id ORDER BY t.byte_offset LIMIT 16) AS staging_ids
+          FROM asset_upload_sitzungen s
+         WHERE s.bereich='projekt' AND s.ziel_ref=$1 AND ($2::uuid IS NULL OR s.id>$2::uuid)
+           AND (NOT $4::boolean OR s.host_id='reverse-api')
+         ORDER BY s.id LIMIT $3`,[project,nach??null,limit+1,reverse])).rows;
+      const mehr=rows.length>limit,seite=rows.slice(0,limit);
+      return {project,quelle:'pg_sitzungen',vollstaendig:false,hinweis:'Nur DB-bekannte Sitzungen und höchstens 16 Teil-IDs je Sitzung; pruef_kandidat ist keine sichere Löschfreigabe. Keine Dateisystemzählung.',
+        sitzungen:seite,naechster_cursor:mehr?String(seite.at(-1)?.id):null};
+    };
+    fastify.get<{Params:{projekt:string};Querystring:{nach?:string;limit?:string}}>(base+'/intern-inventar',async(req,reply)=>run(reply,async()=>{
       await kontext(req,req.params.projekt,false);
-      const limit=req.query.journal_limit===undefined?undefined:Number(req.query.journal_limit);
-      if(limit!==undefined&&(!Number.isSafeInteger(limit)||limit<0||limit>1_000_000))throw new AssetUploadFehler('limit_ungueltig',400,'journal_limit 0..1000000.');
-      return {success:true,inventar:await inventarProjektIntern(req.params.projekt,{journalLimit:limit})};
+      const limit=req.query.limit===undefined?100:Number(req.query.limit);
+      if(!Number.isSafeInteger(limit)||limit<1||limit>200)throw new AssetUploadFehler('limit_ungueltig',400,'limit 1..200.');
+      return {success:true,inventar:await preview(req.params.projekt,req.query.nach,limit,false)};
     }));
-    // P22-T241: Reverse-Altbestand im Projekt-.intern (nur Herkunft reverse_uebernehmen, abgeschlossene Sitzungen). Vorschau immer;
-    // Ausfuehren nur User-Token + Schalter asset_intern_aufraeumen + bestaetigt:true + grund (USER-FREIGABE).
-    fastify.post<{Params:{projekt:string};Body:{ausfuehren?:unknown;bestaetigt?:unknown;grund?:unknown}}>(base+'/reverse-altbestand',async(req,reply)=>run(reply,async()=>{
+    fastify.post<{Params:{projekt:string};Body:{ausfuehren?:unknown;nach?:string;limit?:number}}>(base+'/reverse-altbestand',async(req,reply)=>run(reply,async()=>{
       const c=await kontext(req,req.params.projekt,false),b=req.body??{};
-      if(!c.host_id.startsWith('user:'))throw new AssetUploadFehler('token_nicht_erlaubt',403,'Nur der User darf den Reverse-Altbestand bearbeiten.');
-      const ausfuehren=b.ausfuehren===true;
-      if(ausfuehren){
-        if(b.bestaetigt!==true||typeof b.grund!=='string'||b.grund.trim().length<10)throw new AssetUploadFehler('bestaetigung_fehlt',400,'bestaetigt:true und grund (mind. 10 Zeichen) erforderlich.');
-        if(!(await leseAssetInternAufraeumenSchalter(req.params.projekt)).aktiv)throw new AssetUploadFehler('schalter_aus',409,'Produkt-Schalter asset_intern_aufraeumen ist fuer dieses Projekt AUS.');
-      }
-      const bericht=await raeumeReverseAltbestandAuf(req.params.projekt,{ausfuehren,bestaetigt:b.bestaetigt===true});
-      if(bericht.ausgefuehrt)console.warn('[asset-intern] '+req.params.projekt+': Reverse-Altbestand entfernt ('+bericht.staging.dateien+' Staging, '+bericht.journal.dateien+' Journal): '+String(b.grund).slice(0,200));
-      return {success:true,bericht};
+      if(!c.host_id.startsWith('user:'))throw new AssetUploadFehler('token_nicht_erlaubt',403,'Nur der User darf die Vorschau sehen.');
+      if(b.ausfuehren===true)throw new AssetUploadFehler('nur_vorschau',409,'Ausführen ist für diesen Auftrag nicht freigegeben.');
+      const limit=b.limit??100;
+      if(!Number.isSafeInteger(limit)||limit<1||limit>200)throw new AssetUploadFehler('limit_ungueltig',400,'limit 1..200.');
+      return {success:true,bericht:{...(await preview(req.params.projekt,b.nach,limit,true)),ausgefuehrt:false}};
     }));
     fastify.get<{Params:{projekt:string}}>(base+'/publish-sperre',async(req,reply)=>run(reply,async()=>{
       await kontext(req,req.params.projekt,false);

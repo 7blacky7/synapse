@@ -106,6 +106,52 @@ test('2MiB actual HTTP upload chunk budget/full hash/ACK and metadata-only journ
  const journal=await fs.readFile(join(p,'.synapse/asset-sync',journals[0]),'utf8');assert.ok(!journal.includes(b.toString('base64')));
  assert.ok(f.state.requests.every(r=>r.auth==='Bearer fixture-only'&&r.contract==='1'));
 });
+// P22-T252: wiederholte unveränderte Scan-Ereignisse dürfen Tombstone-Konflikte nicht freigeben.
+test('P22-T252 Tombstone stoppt Upload-Retry für unveränderten Inhalt und bleibt sichtbar',async()=>{
+ const p=await dir(),f=await fake({onFinal:async(req,res,s,state,json)=>{json(res,{error:{code:'tombstone_konflikt',message:'Share gelöscht; Entscheidung offen.'}},409);return true;}});
+ await fs.writeFile(join(p,'a.png'),png(64));
+ const q=queue(p,f.api);await q.ereignis('a.png','add');q.start();
+ await until(async()=>Boolean((await q.status()).auftraege.find(j=>j.fehler_code==='tombstone_konflikt')),'P22-T252 Konflikt');
+ const first=await q.status(), job=first.auftraege.find(j=>j.fehler_code==='tombstone_konflikt');
+ assert.equal(job.gesperrt,true,'P22-T252 terminal'); assert.ok(first.konflikte.some(c=>c.art==='tombstone'),'P22-T252 Konflikt sichtbar');
+ const count=f.state.sessions.size;
+ await q.ereignis('a.png','change');await q.abarbeiten();
+ assert.equal(f.state.sessions.size,count,'P22-T252 unveränderter Inhalt erzeugt keine weitere Sitzung');
+ assert.ok((await q.status()).auftraege.find(j=>j.fehler_code==='tombstone_konflikt')?.gesperrt,'P22-T252 bleibt gesperrt');
+});
+// P22-T252, User 33045/33047/33049: Tombstone offline merken, gleiches PC-Asset sichern und
+// ein anderes Asset nach Wiederverbindung weiter übertragen; kein produktiver Daemon/Share.
+test('P22-T252 Tombstone offline speichern und andere Uploads weiter bearbeiten',async()=>{
+ const p=await dir(), same=png(64), other=png(128), f=await fake();
+ await fs.writeFile(join(p,'a.png'),same);await fs.writeFile(join(p,'b.png'),other);
+ let q=queue(p,f.api,{tombstoneZustellung:true});
+ await q.herunterladen({...meta(same,'a.png','2'),deleted_at:'2026-10-31T22:00:00Z'});
+ await q.ereignis('b.png','add');assert.equal(f.state.requests.length,0,'P22-T252 offline keine API');
+ await q.stop();q=queue(p,f.api,{tombstoneZustellung:true});q.start();
+ await until(async()=>!(await q.status()).auftraege.length,'P22-T252 Warteschlange');
+ await assert.rejects(fs.stat(join(p,'a.png')),e=>e.code==='ENOENT','P22-T252 gleicher Hash vom PC entfernt');
+ assert.ok((await fs.readdir(join(p,'.synapse/asset-sync'))).some(n=>n.startsWith('deleted-')),'P22-T252 Retention');
+ assert.ok(f.state.finals>=1,'P22-T252 anderes Asset veröffentlicht');
+});
+// P22-T252: langes Lesen eines Tombstones darf nicht die andere Datei aufhalten.
+test('P22-T252 wartender Tombstone blockiert anderen Upload nicht',async()=>{
+ const p=await dir(),same=png(64),f=await fake();await fs.writeFile(join(p,'a.png'),same);await fs.writeFile(join(p,'b.png'),png(128));
+ const q=queue(p,f.api,{tombstoneZustellung:true});
+ let release;const wait=new Promise(r=>{release=r;}),hash=q.hash.bind(q);
+ q.hash=async name=>{if(name==='a.png')await wait;return hash(name);};
+ await q.herunterladen({...meta(same,'a.png','2'),deleted_at:'2026-10-31T22:00:00Z'});await q.ereignis('b.png','add');q.start();
+ try{await until(()=>f.state.finals>0,'P22-T252 anderer Upload trotz wartender Löschung',3000);}
+ finally{release();}
+ await settled(q);
+});
+test('P22-T252 anderer PC-Hash bleibt erhalten und wird als Änderung eingereiht',async()=>{
+ const p=await dir(),local=png(64),deleted=png(65),f=await fake();await fs.writeFile(join(p,'a.png'),local);
+ const q=queue(p,f.api,{tombstoneZustellung:true});
+ await q.herunterladen({...meta(deleted,'a.png','2'),deleted_at:'2026-10-31T22:00:00Z'});q.start();
+ await settled(q);
+ assert.deepEqual(await fs.readFile(join(p,'a.png')),local,'P22-T252 anderer PC-Inhalt bleibt');
+ assert.ok([...f.state.sessions.values()].some(s=>s.input.basis_revision==='2'),'P22-T252 neue Änderung auf Tombstone-Basis');
+});
 test('Lost chunk ACK + stop/restart resumes same session at server-confirmed offset',async()=>{
  const p=await dir(),b=png(200000);await fs.writeFile(join(p,'a.png'),b);let fail=true;
  const f=await fake({onChunk:async(req,res,s,state,json)=>{if(fail){json(res,{error:{code:'offline',message:'offline'}},503);return true;}return false;}});

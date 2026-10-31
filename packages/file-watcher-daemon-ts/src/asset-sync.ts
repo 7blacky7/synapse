@@ -12,7 +12,7 @@ import {raeumeAssetSyncAuf} from './asset-sync-aufraeumen.js';
 
 interface Policy {success:boolean;host:string;richtung:AssetSyncRichtung;chunkBytes:number;timeoutMs:number;retryMs:number;scanMs:number;maxDateiBytes:number;erlaubteTypen?:string[];parallelTransfers?:number;
  /** P22-T238: Formate ohne Inspector freigegeben (Schalter asset_transfer_generisch); fehlt bei alter API = AUS. */
- generischeFormate?:boolean;alleTypen?:boolean;}
+ generischeFormate?:boolean;alleTypen?:boolean;tombstone_zustellung?:boolean;}
 interface Page {eintraege:AssetSyncMeta[];cursor:string|null;aenderungs_cursor:string;stand:string;vollstaendig:boolean;}
 interface Delta {eintraege:Array<{metadaten:AssetSyncMeta}>;cursor:string;stand:string;vollstaendig:boolean;fullscan_erforderlich?:boolean;}
 interface Bindung {p:ProjektConfig;mode:'offen'|'legacy'|'api';ready:Promise<void>;queue?:AssetTransferQueue;timer?:NodeJS.Timeout;busy:boolean;next:number;negotiated?:boolean;lauf?:Promise<void>;stopped?:boolean;abort:AbortController;
@@ -96,7 +96,7 @@ export class DaemonAssetSync {
   if(local!=='both'&&policy.richtung!=='both'&&local!==policy.richtung)throw new AssetApiFehler(403,'richtung_verboten','Richtungsfreigaben schneiden sich nicht.');
   const o:AssetTransferOptionen={richtung:local==='both'?policy.richtung:local,chunkBytes:Math.min(policy.chunkBytes,this.config().asset_sync?.chunk_bytes??policy.chunkBytes),
    retryMs:Math.max(policy.retryMs,this.config().asset_sync?.retry_ms??policy.retryMs),timeoutMs:policy.timeoutMs,maxDateiBytes:policy.maxDateiBytes,erlaubteTypen:policy.erlaubteTypen,parallelTransfers:policy.parallelTransfers,
-   generisch:policy.generischeFormate===true,
+   generisch:policy.generischeFormate===true,tombstoneZustellung:policy.tombstone_zustellung===true,
    // P22-T240: Parken statt Endlosschleife (Daemon-Config; ohne Angabe Code-Standard der Queue).
    ...(this.config().asset_sync?.max_versuche!==undefined?{maxVersuche:this.config().asset_sync!.max_versuche}:{}),
    ...(this.config().asset_sync?.park_retry_ms!==undefined?{parkRetryMs:this.config().asset_sync!.park_retry_ms}:{})};

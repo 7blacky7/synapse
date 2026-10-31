@@ -965,7 +965,7 @@ export class AssetSpeicher {
    * P22-T206: Staging einer gescheiterten Finalisierung (vor Prepare) verwerfen: Journal 'failed', Stagingbytes weg.
    * Nur 'staged' ohne laufende Operation in diesem Prozess; alles andere bleibt unberuehrt (kein Fehler).
    */
-  async verwerfeStaging(stage: AssetStaging,grund='finalisierung_vor_prepare_gescheitert'): Promise<boolean> {
+  async verwerfeStaging(stage: AssetStaging,grund='finalisierung_vor_prepare_gescheitert',journalEntfernen=false): Promise<boolean> {
     const k=await this.kontext(stage.adresse);
     let op: AssetOperation;
     try { op=await this.leseJournal(k,stage.id); } catch(e) { if(istCode(e,'ENOENT')) return false; throw e; }
@@ -974,6 +974,8 @@ export class AssetSpeicher {
     catch(e) { if(!istCode(e,'ENOENT')) throw e; }
     op.status='failed'; op.recovery={am:new Date().toISOString(),grund};
     await this.journal(k,op); await this.entferne(k,op.staging_key);
+    // P22-T252: nur fuer verifizierte, terminale eigene Stagings; keine Ordnerlisten.
+    if(journalEntfernen) await this.entferne(k,this.intern(k,'journal',op.id+'.json'));
     return true;
   }
   /**
