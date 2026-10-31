@@ -15,7 +15,7 @@ import { globaleSzene } from './netzwerk/globale-szene';
 import { sonnenEffekteWerte, sonnenEbenen, sonnenStern, sonnenNebel, effektSonnen, neuerSonnenZustand, merkeSonnenIndex, klingeSonneAb, sonnenEffektDebug, OHNE_TRABANTEN, SONNE_NEBEL_RADIUS, type SonnenSnapshot, type SonnenZustand } from './netzwerk/sonnen-effekte';
 import { ladeGlobalesNetzwerk, type GlobalesNetz } from '../api/uebersicht-netzwerk';
 // P22-T244: Bewegung in der Uebersicht (Umlauf um die eigene Sonne, Stoss/Nachschwingen, Drift), nie zur leeren Mitte.
-import { bewegungsWerte, neueBewegung, schritt as bewegungsSchritt, stoss, bahnPunkt, drift, energie, DRIFT_SONNE, DRIFT_FREI, type BewegungsZustand } from './netzwerk/sonnen-bewegung';
+import { bewegungsWerte, neueBewegung, schritt as bewegungsSchritt, stoss, bahnPunkt, drift, energie, DRIFT_SONNE, DRIFT_FREI, sonnenPunkt, rahmen, kameraImRahmen, type BewegungsZustand, type Rahmen } from './netzwerk/sonnen-bewegung';
 import '../agentennetzwerk.css';
 // P22-T172: Name + aktuelle Task an Agenten-Knoten (Etikett) und in der Knotenkarte (klickbar).
 import { AgentTaskMarke, useAktuelleTasks } from './AgentTaskMarke';
@@ -305,12 +305,11 @@ export default function Agentennetzwerk({ project, fallback, global }: {
    if (q === g.kern) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern', von: q.id, nach: q.id, dauer: w.animation_ms * 0.8 };
    // P22-T229: Ziel ist die Sonne des Projekts, auf das der Aufruf wirkt: Kern = angezeigtes Projekt, fremde Sonne = z. B. Heimat des
    // Visum-Agenten. Ohne fremde Sonnen (Schalter AUS) bleibt es beim Weg ueber die Eltern-Kette zum Kern.
-   const zp = g.fremd.length ? zielProjekt(e) : '', zs = zp && zp !== g.kern.project ? g.alias.get('projekt:' + zp) : undefined, zielK = zs?.rolle === 'sonne' ? zs : g.global && g.mitte && !zielProjekt(e) ? g.mitte : g.kern;
-   // P22-T196 (Abnahme 35d1ce22): in der globalen Uebersicht laufen projektlose Aufrufe (ziel_projekt null, z. B. Hauptagent global, Jev)
-   // zum Hauptagenten in der Mitte; ruft er selbst projektlos auf, pulsiert er an Ort und Stelle.
+   const zp = g.fremd.length ? zielProjekt(e) : '', zs = zp && zp !== g.kern.project ? g.alias.get('projekt:' + zp) : undefined, zielK = zs?.rolle === 'sonne' ? zs : g.kern;
+   // Ist der Aufrufer selbst das Ziel (z. B. Sonne ueber den Alias workspace:<projekt>), pulsiert er an Ort und Stelle.
    if (zielK === q) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern', von: q.id, nach: q.id, dauer: w.animation_ms * 0.8 };
-   // P22-T244: die unsichtbare Mitte der Uebersicht ist nie Ziel (kein Strich ins Leere): ein Ziel ohne Sonne bzw. ein projektloser
-   // Aufruf ohne Hauptagent pulsiert am Aufrufer selbst.
+   // P22-T244, P22-T247 Nachtrag (kein Hauptagent in der Uebersicht): die unsichtbare Mitte ist nie Ziel (kein Strich ins Leere): ein
+   // Ziel ohne Sonne bzw. ein projektloser Aufruf (ziel_projekt null, z. B. Jev) pulsiert am Aufrufer selbst.
    if (g.global && zielK === g.kern) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern', von: q.id, nach: q.id, dauer: w.animation_ms * 0.8 };
    const punkte: number[] = [], segmente: number[] = [];
    for (let k: Knoten = q; ; ) {
@@ -437,22 +436,27 @@ export default function Agentennetzwerk({ project, fallback, global }: {
    // Knoten gleiten an neue Plaetze; neue Zellen wachsen aus ihrem Elternknoten heraus.
    const ease = 1 - Math.exp(-dt * 3.2), ids = new Set<string>();
    // P22-T244: in der Uebersicht kreist jede Gruppe um IHRE Sonne (Kinder drehen mit dem Gruppenwinkel der Sonne), Aufrufe stossen
-   // Knoten an und sie schwingen nach; Sonnen, Hauptagent und freie Agenten driften. Der unsichtbare Anker (g.kern) bleibt aussen vor.
+   // Knoten an und sie schwingen nach; Sonnen und freie Agenten driften. Der unsichtbare Anker (g.kern) bleibt aussen vor.
    const bw = g.global ? bewegungsWerte(s.werte) : null, bwAn = !!bw?.aktiv, bwDt = still ? 0 : dt;
    const bewegtesZiel = (k: Knoten): Punkt | null => {
     if (!bwAn || !bw || k === g.kern) return null;
     const z = bewegungVon(k.id), ph = (hash(k.id) % 628) / 100;
     bewegungsSchritt(z, bwDt, bw, Math.min(1, hitze.get(k.id) ?? 0));
-    const e = k.eltern && k.eltern !== g.kern ? k.eltern : g.mitte && k !== g.mitte && k.rolle !== 'sonne' ? g.mitte : null;
+    // P22-T247: Sonnen bewegen sich selbst - die Konstellation kreist um den gemeinsamen Schwerpunkt, jede Sonne driftet spuerbar und
+    // schwingt nach einem Stoss radial nach (Kinder folgen ueber die Lage ihrer Sonne).
+    if (k.rolle === 'sonne') return sonnenPunkt(k.x * streckX, k.y * streckY, bewegungVon(g.kern.id).rot, z.dr, uhr, ph, bw.sonnenDrift);
+    const e = k.eltern && k.eltern !== g.kern ? k.eltern : null;
     if (!e) { const d = drift(uhr, ph, k.rolle === 'sonne' ? DRIFT_SONNE : DRIFT_FREI); return { x: k.x * streckX + d.x, y: k.y * streckY + d.y }; }
     const le = lage.current.get(e.id) ?? { x: e.x * streckX, y: e.y * streckY };
     return bahnPunkt(le, (k.x - e.x) * streckX, (k.y - e.y) * streckY, bewegungVon(e.id).rot, z.dr);
    };
+   // P22-T247: Konstellationswinkel (Zustand am unsichtbaren Anker, der selbst nie bewegt oder gezeichnet wird) je Bild weiterdrehen.
+   if (bwAn && bw) bewegungsSchritt(bewegungVon(g.kern.id), bwDt, { ...bw, omega: bw.kreisen }, 0);
    const stosse = (id: string, staerke: number) => { if (!bwAn || !bw) return; const kn = g.alias.get(id); if (kn && kn !== g.kern) stoss(bewegungVon(kn.id), staerke, bw); };
    // Ankunft an einer Sonne: ihre ganze Gruppe schwingt nach; sonst wird der Ziel-Knoten nach aussen gestossen.
    const bewegeAnkunft = (id: string) => {
     if (!bwAn || !bw) return; const kn = g.alias.get(id); if (!kn || kn === g.kern) return;
-    if (kn.rolle === 'sonne') { for (const c of g.knoten) if (c.eltern === kn) stoss(bewegungVon(c.id), 0.35, bw); } else stoss(bewegungVon(kn.id), 0.6, bw);
+    if (kn.rolle === 'sonne') { stoss(bewegungVon(kn.id), 0.5, bw); for (const c of g.knoten) if (c.eltern === kn) stoss(bewegungVon(c.id), 0.35, bw); } else stoss(bewegungVon(kn.id), 0.6, bw);
    };
    for (const k of g.knoten) {
     ids.add(k.id);
@@ -501,6 +505,15 @@ export default function Agentennetzwerk({ project, fallback, global }: {
     for (const [id, hz] of hitze) { const kn = g.alias.get(id); if (!kn || kn === g.kern) continue; const p = pos(kn); sx += p.x * hz; sy += p.y * hz; sw += hz; }
     if (sw > 0.2 && !reduz.matches) { tx = sx / sw * 0.26; ty = sy / sw * 0.26; tz = fit * 1.06; }
    } else { tx = v.x; ty = v.y; }
+   // P22-T247 Kamera Variante 3: in der Uebersicht folgt die Kamera der Aktivitaet nur so weit, dass alle Sonnen samt Nebel (und alle
+   // Agenten) im Bild bleiben - keine Sonne am Rand oder angeschnitten. Eigener Zoom/Zug des Users (modus user) bleibt unberuehrt.
+   let kameraRahmen: Rahmen | null = null;
+   if (g.global && v.modus === 'auto') {
+    const punkte: Array<{ x: number; y: number; r: number }> = [];
+    for (const kn of g.knoten) { if (kn === g.kern) continue; const l = lage.current.get(kn.id); if (!l) continue; punkte.push({ x: l.x, y: l.y, r: kn.rolle === 'sonne' ? (kn.umlauf ?? 80) * SONNE_NEBEL_RADIUS + 24 : 28 }); }
+    kameraRahmen = rahmen(punkte);
+    if (kameraRahmen) { const c = kameraImRahmen(kameraRahmen, tx, ty, tz, w, h); tx = c.x; ty = c.y; tz = c.zoom; }
+   }
    const ke = reduz.matches ? 1 : 1 - Math.exp(-dt * 1.1);
    if (k.fit !== fit && Math.abs(k.zoom - fit) / fit > 0.5) { k.zoom = tz; k.x = tx; k.y = ty; }
    k.x += (tx - k.x) * ke; k.y += (ty - k.y) * ke; k.zoom += (tz - k.zoom) * ke; k.fit = fit;
@@ -933,10 +946,14 @@ export default function Agentennetzwerk({ project, fallback, global }: {
    // P22-T229: Debug/Abnahme der Visum-Sonnen (welche fremden Sonnen, warum, bis wann, Ausblendstand, Ankuenfte je Sonne).
    el.dataset.fremdSonnen = JSON.stringify(g.fremd.map(f => ({ projekt: f.projekt, agenten: f.agenten, grund: f.grund, zugang: f.zugang, ende: new Date(f.ende).toISOString(), fade: Number(sonnenFade(f, jetzt).toFixed(2)), heimat_aufrufe: f.heimatAufrufe, aufrufe: f.aufrufe })));
    // P22-T244: Debug der Bewegung (an, Tempo, bewegte Knoten, Stoesse, Energie je Sonne inkl. ihrer Gruppe, Gruppenwinkel).
-   if (bw) { const jeSonne: Record<string, { energie: number; stoesse: number; rot: number }> = {}; let n = 0, st = 0;
+   if (bw) { const jeSonne: Record<string, { energie: number; stoesse: number; rot: number; dr?: number; vr?: number }> = {}; let n = 0, st = 0;
     for (const kn of g.knoten) { const z = bewegung.get(kn.id); if (!z) continue; n++; st += z.stoesse; const so = kn.rolle === 'sonne' ? kn : kn.eltern?.rolle === 'sonne' ? kn.eltern : null;
      if (so) { const e = jeSonne[so.project] ??= { energie: 0, stoesse: 0, rot: Number((bewegung.get(so.id)?.rot ?? 0).toFixed(3)) }; e.energie = Number((e.energie + energie(z)).toFixed(2)); e.stoesse += z.stoesse; } }
-    el.dataset.bewegung = JSON.stringify({ aktiv: bwAn, omega: bw.omega, still, knoten: n, stoesse: st, je_sonne: jeSonne }); } else el.dataset.bewegung = '';
+    // P22-T247: je Sonne ihr eigener Ausschlag/Geschwindigkeit, Konstellationswinkel/-tempo, Kamera-Rahmen und Zoom.
+    for (const kn of g.knoten) if (kn.rolle === 'sonne') { const z = bewegung.get(kn.id), e = jeSonne[kn.project]; if (z && e) { e.dr = Number(z.dr.toFixed(2)); e.vr = Number(z.vr.toFixed(2)); } }
+    const r2 = (x: number) => Math.round(x);
+    el.dataset.bewegung = JSON.stringify({ aktiv: bwAn, omega: bw.omega, still, knoten: n, stoesse: st, je_sonne: jeSonne, konstellation: { rot: Number((bewegung.get(g.kern.id)?.rot ?? 0).toFixed(3)), omega: bw.kreisen, drift: bw.sonnenDrift },
+     kamera: kameraRahmen ? { min_x: r2(kameraRahmen.minX), max_x: r2(kameraRahmen.maxX), min_y: r2(kameraRahmen.minY), max_y: r2(kameraRahmen.maxY), x: r2(k.x), y: r2(k.y), zoom: Number(k.zoom.toFixed(3)) } : null }); } else el.dataset.bewegung = '';
    el.dataset.sonnenZiel = JSON.stringify(sonnenZiel); el.dataset.global = g.global ? '1' : '0'; el.dataset.visumSonnen = s.visum_sonnen?.aktiv ? '1' : '0';
    // P22-T239: Debug je Projektsonne der Uebersicht (voll = Trabanten/Nebel, Stern, Index, Puls, Ankuenfte, Commits, Wellen, Reaktion).
    el.dataset.sonnenEffekte = se ? JSON.stringify({ aktiv: se.aktiv, max: se.max, sonnen: g.fremd.map(f => { const eb = sonnenEb.get(f.projekt) ?? OHNE_TRABANTEN; return sonnenEffektDebug(f.projekt, zustandVon(f.projekt), eb, sonnenVoll.has(f.projekt), sonnenNebel(eb), g.knoten.filter(k => k.plan && k.project === f.projekt).length); }) }) : '';

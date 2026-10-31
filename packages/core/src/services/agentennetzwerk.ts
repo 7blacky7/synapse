@@ -93,6 +93,12 @@ export const NETZWERK_EINSTELLUNGEN = {
  sonnen_bewegung: { standard: 1, min: 0, max: 1 },
  sonnen_bewegung_mrad_s: { standard: 70, min: 0, max: 2000 },
  sonnen_bewegung_stoss: { standard: 60, min: 0, max: 400 },
+ // P22-T247 (User 31.10.2026 ~21:02 "warum die so weit weg sind und starr"): Luft zwischen den Agentenbahnen benachbarter Sonnen
+ // (Weltpunkte; Ring nur so gross wie noetig), Umlauf der Sonnen um ihren gemeinsamen Schwerpunkt (mrad/s; 40 = eine Runde in etwa
+ // 2,6 min) und Drift-Amplitude der Sonnen (Weltpunkte). Stoss/Nachschwingen der Sonne ueber sonnen_bewegung_stoss.
+ sonnen_abstand: { standard: 30, min: 0, max: 400 },
+ sonnen_kreisen_mrad_s: { standard: 40, min: 0, max: 2000 },
+ sonnen_drift: { standard: 18, min: 0, max: 120 },
 } as const;
 export type NetzwerkEinstellung = keyof typeof NETZWERK_EINSTELLUNGEN;
 export type NetzwerkWerte = Record<NetzwerkEinstellung, number>;

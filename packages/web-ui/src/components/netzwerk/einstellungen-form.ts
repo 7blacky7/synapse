@@ -40,6 +40,9 @@ export const NETZWERK_LABELS: Record<string, string> = {
  // P22-T244
  sonnen_bewegung: 'Übersicht: Agenten kreisen um ihre Sonne, Stoß und Nachschwingen (1 an, 0 = starr)',
  sonnen_bewegung_mrad_s: 'Übersicht: Umlauftempo um die Sonne (mrad/s)', sonnen_bewegung_stoss: 'Übersicht: Stoß je Aufruf (Weltpunkte/s)',
+ // P22-T247
+ sonnen_abstand: 'Übersicht: Luft zwischen benachbarten Sonnen (Weltpunkte)', sonnen_kreisen_mrad_s: 'Übersicht: Sonnen kreisen um den gemeinsamen Schwerpunkt (mrad/s)',
+ sonnen_drift: 'Übersicht: Drift der Sonnen (Weltpunkte)',
 };
 
 export const NETZWERK_GRUPPEN: ReadonlyArray<{ titel: string; namen: readonly string[] }> = [
@@ -56,7 +59,7 @@ export const NETZWERK_GRUPPEN: ReadonlyArray<{ titel: string; namen: readonly st
  // P22-T156: Effekte je Ergebnisart (falsch aufgerufen, gesperrt, nicht gefunden, Konflikt, Serverfehler, wartet).
  { titel: 'Ergebnis-Effekte', namen: ['fehler_effekte', 'fehler_effekt_ms', 'wartet_halte_ms'] },
  // P22-T229: Visum-Sonnen (Schalter netzwerk_visum_sonnen); sichtbar bis Zugangsende aus den Ausweis-Fristen.
- { titel: 'Projekt-Sonnen', namen: ['fremd_sonne_ausblend_sekunden', 'sonnen_effekte', 'sonnen_effekte_max', 'sonnen_bewegung', 'sonnen_bewegung_mrad_s', 'sonnen_bewegung_stoss'] },
+ { titel: 'Projekt-Sonnen', namen: ['fremd_sonne_ausblend_sekunden', 'sonnen_effekte', 'sonnen_effekte_max', 'sonnen_bewegung', 'sonnen_bewegung_mrad_s', 'sonnen_bewegung_stoss', 'sonnen_abstand', 'sonnen_kreisen_mrad_s', 'sonnen_drift'] },
  { titel: 'Server', namen: ['index_cache_ms', 'index_cache_schnell_ms', 'index_billig_ms'] },
 ];
 

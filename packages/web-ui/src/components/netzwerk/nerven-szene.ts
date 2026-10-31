@@ -87,8 +87,6 @@ export interface Szene {
  fremd: FremdSonne[]; fremdOhneSonne: number;
  /** P22-T196: Szene der globalen Uebersicht (globale-szene.ts): Kern = unsichtbarer Anker, keine Projektsonne/Trabanten/Nebel. */
  global?: boolean;
- /** P22-T196: Hauptagent in der Mitte der globalen Uebersicht; Ziel projektloser Aufrufe (ziel_projekt null). */
- mitte?: Knoten;
 }
 
 const PHI = 0.6180339887, TAU = Math.PI * 2;

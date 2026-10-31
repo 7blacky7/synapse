@@ -80,7 +80,7 @@ try {
   'C keine Bahn vom Anker, kein Impuls zum Anker (Puls am Aufrufer)');
  ok(tsx.includes("o = amKern ? { x: 0, y: 0 } : lage.current.get(i.von) ?? { x: 0, y: 0 }") && tsx.includes('if (amKern) { kernPuls = Math.min(1.5, kernPuls + 0.35); welle(zeit, i.farbe); }'), 'C Puls am Ort des Aufrufers; Kern-Verhalten im Arbeitsraum unveraendert');
  ok(tsx.includes('stosse(i.von, -0.8)') && (tsx.match(/bewegeAnkunft\(i\.(nach|von)\)/g) || []).length === 3 && tsx.includes('bwDt = still ? 0 : dt') && tsx.includes('lage.current.delete(id); bewegung.delete(id);'), 'C Stoesse bei Start und Ankunft, Pause/reduced motion steht still, Zustand wird aufgeraeumt');
- ok(tsx.includes('el.dataset.bewegung = JSON.stringify({ aktiv: bwAn, omega: bw.omega, still, knoten: n, stoesse: st, je_sonne: jeSonne })'), 'C Debug dataset.bewegung (je Sonne Energie, Stoesse, Gruppenwinkel)');
+ ok(tsx.includes('el.dataset.bewegung = JSON.stringify({ aktiv: bwAn, omega: bw.omega, still, knoten: n, stoesse: st, je_sonne: jeSonne,'), /* P22-T247: erweitert um konstellation/kamera */ 'C Debug dataset.bewegung (je Sonne Energie, Stoesse, Gruppenwinkel)');
  ok(tsx.includes("g.global && g.mitte && !zielProjekt(e) ? g.mitte : g.kern") && /const zp = [^\n]*?zielK = [^\n]*?;\n/.test(tsx) && tsx.includes("if (zielK === q) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern'")
   && /ebenen = indexEbenen\(s\); merkeIndex\(s, zeit\); \}/.test(tsx) && tsx.includes('welle(zeit, fc); orbitFlare'), 'C Proben T196/T229/T149/T152 bleiben');
  const rueckfall = [...tsx.matchAll(/nwWert\([^,()]+, '(\w+)', (\d+)\)/g), ...tsx.matchAll(/milli\('(\w+)', (\d+)\)/g)];
