@@ -398,11 +398,12 @@ export interface ChannelMessage {
 /**
  * Holt den Feed eines Channels
  */
-export async function getChannelFeed(project: string, channel: string, limit?: number): Promise<ChannelMessage[]> {
+export async function getChannelFeed(project: string, channel: string, limit?: number, beforeId?: number): Promise<ChannelMessage[]> {
   const params = new URLSearchParams();
   if (limit) {
     params.set('limit', limit.toString());
   }
+  if (beforeId) params.set('before_id', String(beforeId));
   const response = await apiFetch(
     `${API_BASE}/projects/${encodeURIComponent(project)}/channels/${encodeURIComponent(channel)}/feed?${params}`
   );

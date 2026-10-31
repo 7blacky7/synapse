@@ -1164,6 +1164,9 @@ CREATE TABLE IF NOT EXISTS specialist_channels (
   UNIQUE(name, project)
 );
 
+-- P22-T254: Lesestand des einzelnen Users, getrennt von Agent-Mitgliedschaften.
+ALTER TABLE specialist_channels ADD COLUMN IF NOT EXISTS user_last_read_message_id BIGINT NOT NULL DEFAULT 0;
+
 CREATE TABLE IF NOT EXISTS specialist_channel_members (
   channel_id INTEGER REFERENCES specialist_channels(id) ON DELETE CASCADE,
   agent_name TEXT NOT NULL,

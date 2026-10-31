@@ -104,6 +104,24 @@ export async function recordChannelRead(
   }
 }
 
+/** P22-T254: User ist keine Agentenidentität. GET verändert keinen Lesestand. */
+export async function userChannelUngelesen(project: string): Promise<Array<{channel: string; ungelesen: number}>> {
+  const { rows } = await getPool().query<{channel: string; ungelesen: number}>(
+    `SELECT c.name AS channel, count(m.id)::int AS ungelesen FROM specialist_channels c
+     LEFT JOIN specialist_channel_messages m ON m.channel_id=c.id AND m.id>c.user_last_read_message_id
+       AND m.sender <> 'user' AND (c.archiv_bis_nachricht_id IS NULL OR m.id>c.archiv_bis_nachricht_id)
+     WHERE c.project=$1 GROUP BY c.id`, [project]);
+  return rows;
+}
+/** Nur explizit sichtbare Nachrichten dieses Channels markieren, niemals einen fremden Channel. */
+export async function userChannelGelesen(project: string, channel: string, bisId: number): Promise<boolean> {
+  const { rowCount } = await getPool().query(
+    `UPDATE specialist_channels c SET user_last_read_message_id=GREATEST(c.user_last_read_message_id,m.id)
+     FROM specialist_channel_messages m WHERE c.project=$1 AND c.name=$2 AND m.channel_id=c.id AND m.id=$3`,
+    [project, channel, bisId]);
+  return (rowCount ?? 0) > 0;
+}
+
 /** Zaehlt fremde ungelesene Posts und beansprucht jeden neuesten Stand atomisch einmal. */
 export async function claimUnreadChannelHints(agentId: string): Promise<UnreadChannelHint[]> {
   if (!agentId) return []

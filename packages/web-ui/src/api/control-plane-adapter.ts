@@ -240,6 +240,12 @@ export async function loadChannelMessageViewModels(
   }
 }
 
+/** P22-T254: ältere Beiträge desselben Channels über den bestehenden REST-Feed. */
+export async function loadAeltereChannelMessages(project: string, channel: string, beforeId: number): Promise<ChannelMessageViewModel[]> {
+  const rows = await getChannelFeed(project, channel, 100, beforeId);
+  return rows.map(row => ({ id: row.id, sender: channelAbsender(row.sender, row.metadata), senderAnzeige: archivAnzeige(row.absenderArchiv), content: row.content, createdAt: row.createdAt, source: 'api' as const }));
+}
+
 async function apiJson<T>(path: string, label: string): Promise<T> {
   const response = await apiFetch(path);
   const data = await response.json().catch(() => ({})) as T & {

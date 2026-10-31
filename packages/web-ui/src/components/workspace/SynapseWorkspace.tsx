@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 
 import GraphView from '../../components/GraphView';
+import Agentennetzwerk from '../../components/Agentennetzwerk';
+import { ChannelFensterProvider } from '../../components/ChannelFenster';
+import { ChannelSuche } from '../../components/ChannelSuche';
+import { leseArbeitsbereichSchalter, type ArbeitsbereichSchalter } from '../../api/arbeitsbereich-schalter';
 import { MeineInbox } from '../../components/MeineInbox';
 import { AnmerkungSammelkorb } from '../../components/QuellenAnmerkungen';
 import { InfrastructureView } from '../../components/InfrastructureView';
@@ -20,7 +24,7 @@ import { ChannelsView } from '../../views/channels/ChannelsView';
 import { ProjectAgentTeamView } from '../../views/projekt/ProjectAgentTeamView';
 import { EntityView } from '../../views/entitaeten/EntityView';
 import { loadChannelMemberViewModels, PERSOENLICHES_PROJEKT, loadChannelMessageViewModels, loadChannelViewModels, loadProjectViewModels, sendChannelMessage } from '../../api/control-plane-adapter';
-import { defaultSettings, navigation } from '../../mock/ui-control-plane';
+import { defaultSettings, navigation, navigationArbeitsbereich } from '../../mock/ui-control-plane';
 import type { Area, ChannelMemberViewModel, ChannelMessageViewModel, ChannelViewModel, ProjectViewModel, SettingsViewModel } from '../../control-plane/view-model';
 import type { SendeZitat } from '../../components/zitat-logik';
 import { MOBIL_ABFRAGE } from './workspace-konstanten';
@@ -36,7 +40,10 @@ import '../../hauptagent-verlauf.css';
 import '../../ui-version.css';
 import '../../workspace-mobil.css';
 
-export default function SynapseWorkspace({ project: initialProject, onLogout }: Props) {
+export default function SynapseWorkspace(props: Props) {
+  return <ChannelFensterProvider><Arbeitsraum {...props} /></ChannelFensterProvider>;
+}
+function Arbeitsraum({ project: initialProject, onLogout }: Props) {
   const [theme, setTheme] = useState<Theme>('dark');
   const [area, setArea] = useState<Area>('main-agent');
   // P22-T68: Deep-Link zur Ausweis-Verwaltung (Agententeam, Channel-Chips): Projekt setzen und Einstellungen oeffnen.
@@ -84,6 +91,17 @@ export default function SynapseWorkspace({ project: initialProject, onLogout }: 
   }, [mobileNavOffen]);
   const [projects, setProjects] = useState<ProjectViewModel[]>([]);
   const [selectedProject, setSelectedProject] = useState(initialProject);
+  const [arbeitsbereich, setArbeitsbereich] = useState<ArbeitsbereichSchalter | null>(null);
+  const [channelSuche, setChannelSuche] = useState<ArbeitsbereichSchalter | null>(null);
+  useEffect(() => { let aktiv=true; const lesen=()=>void leseArbeitsbereichSchalter(selectedProject,'web_ui_channel_suche').then(s=>{if(aktiv)setChannelSuche(s);}); lesen(); const t=window.setInterval(lesen,60000); return()=>{aktiv=false;window.clearInterval(t);}; },[selectedProject]);
+  useEffect(() => { const navigiere=(e:Event)=>{const d=(e as CustomEvent<{project:string;area:Area}>).detail;if(d?.project)setSelectedProject(d.project);if(d?.area)setArea(d.area);}; window.addEventListener('synapse:channel-navigation',navigiere);return()=>window.removeEventListener('synapse:channel-navigation',navigiere);},[]);
+  useEffect(() => {
+    let aktiv = true;
+    const lesen = () => void leseArbeitsbereichSchalter(selectedProject).then(s => { if (aktiv) setArbeitsbereich(s); });
+    lesen(); const timer = window.setInterval(lesen, 60000);
+    return () => { aktiv = false; window.clearInterval(timer); };
+  }, [selectedProject]);
+  const nav = arbeitsbereich?.aktiv ? navigationArbeitsbereich : navigation;
   // Jede Navigation schliesst die Schublade.
   useEffect(() => setMobileNavOffen(false), [area, selectedProject]);
   const [channels, setChannels] = useState<ChannelViewModel[]>([]);
@@ -214,7 +232,9 @@ export default function SynapseWorkspace({ project: initialProject, onLogout }: 
   };
 
   const renderArea = () => {
-    if (area === 'main-agent') return null;
+    if (area === 'main-agent') return arbeitsbereich?.aktiv
+      ? <VerweisFensterProvider><div className="standard-page"><Agentennetzwerk project={selectedProject} fallback={<p>Das Projektnetzwerk ist derzeit ausgeschaltet.</p>} /></div></VerweisFensterProvider>
+      : null;
     if (area === 'overview') {
       return (
         <OverviewView
@@ -223,10 +243,12 @@ export default function SynapseWorkspace({ project: initialProject, onLogout }: 
           channels={channels}
           onSelectProject={setSelectedProject}
           onOpen={setArea}
+          hauptagentNurRechts={arbeitsbereich?.aktiv}
         />
       );
     }
     if (area === 'channels') {
+      if (channelSuche?.aktiv) return <div className="standard-page"><p>Channels über die Suche in der Seitenleiste öffnen.</p></div>;
       return (
         <ChannelsView
           project={selectedProject}
@@ -280,6 +302,10 @@ export default function SynapseWorkspace({ project: initialProject, onLogout }: 
     <div
       className={'synapse-control' + (settings.compactDensity ? ' compact' : '') + (eingeklappt ? ' sidebar-collapsed' : '') + (mobileNavOffen ? ' mobile-nav-open' : '')}
       data-theme={theme}
+      data-arbeitsbereich={arbeitsbereich?.aktiv ? 'ein' : 'aus'}
+      data-arbeitsbereich-quelle={arbeitsbereich?.quelle ?? 'laden'}
+      data-arbeitsbereich-fehler={arbeitsbereich?.fehler ?? undefined}
+      data-channel-suche={channelSuche?.aktiv ? 'ein' : 'aus'} data-channel-suche-quelle={channelSuche?.quelle ?? 'laden'} data-channel-suche-fehler={channelSuche?.fehler ?? undefined}
       data-animations={settings.animationsEnabled ? 'on' : 'off'}
       style={{
         '--accent': settings.accentColor,
@@ -308,10 +334,10 @@ export default function SynapseWorkspace({ project: initialProject, onLogout }: 
         />
 
         <nav>
-          {navigation.map((group) => (
-            <section key={group.label}>
-              <label>{group.label}</label>
-              {group.items.map((item) => (
+          {nav.map((group) => (
+            <section key={group.label || 'uebersicht'}>
+              {group.label && <label>{group.label}</label>}
+              {group.items.map((item) => item.area === 'channels' && channelSuche?.aktiv ? <ChannelSuche key={item.area} project={selectedProject} eingeklappt={eingeklappt} /> : (
                 <button
                   type="button"
                   className={area === item.area ? 'active' : ''}
@@ -346,10 +372,10 @@ export default function SynapseWorkspace({ project: initialProject, onLogout }: 
       <main className="control-main">
         <header className="mobile-bar">
           <button type="button" className="mobile-nav-toggle" onClick={() => setMobileNavOffen(true)} aria-label="Navigation öffnen" aria-controls="synapse-seitenleiste" aria-expanded={mobileNavOffen}>☰</button>
-          <div><strong>{area === 'settings' ? 'Einstellungen' : navigation.flatMap((group) => group.items).find((item) => item.area === area)?.label ?? 'Synapse'}</strong><small>{selectedProject || 'Projekt wählen'}</small></div>
+          <div><strong>{area === 'settings' ? 'Einstellungen' : nav.flatMap((group) => group.items).find((item) => item.area === area)?.label ?? 'Synapse'}</strong><small>{selectedProject || 'Projekt wählen'}</small></div>
         </header>
         <div className="control-content">{renderArea()}</div>
-        <MainAgentView theme={theme} project={selectedProject} showDashboard={area === 'main-agent'} />
+        {arbeitsbereich && <MainAgentView theme={theme} project={selectedProject} showDashboard={area === 'main-agent' && !arbeitsbereich.aktiv} nurKnopf={arbeitsbereich.aktiv} />}
         <ProjectCoordinatorDock />
         <MainAgentAssistantDock />
       </main>

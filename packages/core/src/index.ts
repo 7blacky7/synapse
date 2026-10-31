@@ -1,4 +1,6 @@
 export * from './services/api-agent-auswahl.js';
+export { userChannelUngelesen, userChannelGelesen } from './services/channel-unread.js';
+export { leseUiProduktSchalter } from './services/agent-profil-admin.js';
 
 // P22-T172: aktuelle Task je Agent (Schalter agent_aktuelle_task, Einstellwert fenster_stunden in agent_aktuelle_task_einstellungen).
 // P22-T194 Stufe2: Cache-Telemetrie ohne automatische Laufsteuerung.

@@ -34,6 +34,9 @@ export function ChannelsView({
   onReload,
   onSend,
   onOpen,
+  fensterModus = false,
+  onUntenGesehen,
+  onAeltere,
 }: {
   project: string;
   channels: ChannelViewModel[];
@@ -47,6 +50,9 @@ export function ChannelsView({
   onReload: () => void;
   onSend: (content: string, zitate?: SendeZitat[]) => Promise<void>;
   onOpen: (area: Area) => void;
+  fensterModus?: boolean;
+  onUntenGesehen?: (id: number) => void;
+  onAeltere?: () => void;
 }) {
   const [content, setContent] = useState('');
   const [channelFiles, setChannelFiles] = useState<MockChatAttachment[]>([]);
@@ -58,6 +64,10 @@ export function ChannelsView({
   const [openAgentWindows, setOpenAgentWindows] = useState<ChannelAgentWindowState[]>([]);
   const messageListRef = useRef<HTMLDivElement>(null);
   const channel = channels.find((item) => item.name === selectedChannel);
+  const meldeUnten = () => {
+    const el = messageListRef.current, letzte = messages[messages.length - 1];
+    if (fensterModus && el && letzte && document.visibilityState === 'visible' && el.getClientRects().length && el.scrollHeight - el.scrollTop - el.clientHeight <= 8) onUntenGesehen?.(letzte.id);
+  };
   // P22-T170: das Channel-Fenster ist Herkunft seiner Lesefenster - Zitate und Pins landen als Kaertchen im Entwurf DIESES Channels
   // (je Projekt/Channel) und gehen als Block im Post an den ganzen Channel. Schalter chat_zitate im Projekt.
   const channelZitat = useZitatAnhaenge({ chat: 'channel:' + project + ':' + selectedChannel, empfaenger: '#' + (selectedChannel || 'channel'), project: project || null });
@@ -66,7 +76,8 @@ export function ChannelsView({
     const list = messageListRef.current;
     if (!list) return;
     const frame = window.requestAnimationFrame(() => {
-      list.scrollTop = list.scrollHeight;
+      if (!fensterModus || (messages.length > 0 && list.dataset.initialisiert !== selectedChannel)) { list.scrollTop = list.scrollHeight; list.dataset.initialisiert = selectedChannel; }
+      meldeUnten();
     });
     return () => window.cancelAnimationFrame(frame);
   }, [selectedChannel, messages.length]);
@@ -131,18 +142,18 @@ export function ChannelsView({
   return (
     <VerweisFensterProvider zitat={channelZitat.anbieter}>
     <div className="standard-page channel-page" {...channelZitat.debug}>
-      <PageHeader
+      {!fensterModus && <PageHeader
         eyebrow="GoTray-Funktion · echte API"
         title="Channels"
         description="Projektbezogene Channels lesen, live aktualisieren und direkt über den GoTray-Datenweg schreiben."
         action={<><StatusChip stand="live" /><button type="button" className="secondary-action" onClick={onReload}>Aktualisieren</button></>}
-      />
+      />}
       <section className="channel-layout">
-        <aside className="channel-rail">
+        {!fensterModus && <aside className="channel-rail">
           <header><h2>{project || 'Kein Projekt'}</h2><span>{channels.length}</span></header>
           <ChannelRailListe channels={channels} selectedChannel={selectedChannel} onSelectChannel={onSelectChannel} />
           {!channels.length && <p className="empty-state">Keine Channels für dieses Projekt.</p>}
-        </aside>
+        </aside>}
         <div className="channel-project-stage">
           <LesefensterOhneHerkunft><ChannelProjectSurface project={project} channels={channels} onOpen={onOpen} /></LesefensterOhneHerkunft>
           <section className={'channel-thread channel-drawer' + (channelCollapsed ? ' is-collapsed' : '')} style={{ '--channel-height': channelHeight + '%' } as CSSProperties}>
@@ -184,7 +195,8 @@ export function ChannelsView({
             />
           ))}
           {error && <div className="inline-error">{error}</div>}
-          <div className="channel-messages" ref={messageListRef}>
+          <div className="channel-messages" ref={messageListRef} onScroll={meldeUnten}>
+            {fensterModus && onAeltere && <button type="button" onClick={onAeltere}>↑ Ältere Nachrichten laden</button>}
             {messages.map((message) => (
               <article key={message.id} onContextMenu={(event) => channelZitat.beiKontextmenue(event, 'channel:' + message.id, project)}>
                 <div className="message-avatar">{message.sender.slice(0, 2).toUpperCase()}</div>
