@@ -32,6 +32,7 @@ import {
   createComputeAdmission,
   parseUnparsedFiles,
   projekteMitBacklog,
+  meldeParserTick,
   context7AutomatikTick,
   initContext7Automatik,
   imHintergrund,
@@ -371,14 +372,16 @@ export class ParserWorker {
     // laeuft frueher oder spaeter wieder auseinander; deshalb genau eine.
     // Der Registry- und enabled-Guard steckt ebenfalls in projekteMitBacklog().
     // P14-T2: Schalter parser -> das Parsen ruht. Backlog-Embedding und Context7 oben haben eigene Schalter.
-    if (await schalterHaeltAn('parser', 'parser-worker')) return { schalter_parser: true };
+    // P27-T7: jeder Tick meldet seinen Stand an den Stau-Waechter (parser-tick-stand.ts), statt dass dieser selbst misst.
+    if (await schalterHaeltAn('parser', 'parser-worker')) { meldeParserTick({ ruht: 'schalter' }); return { schalter_parser: true }; }
     // P15-T12: Prozess-Pause des Parsers (intern worker_pausieren)
     const pause = workerPausiert('parser');
-    if (pause) return { pausiert: pause };
+    if (pause) { meldeParserTick({ ruht: 'pausiert' }); return { pausiert: pause }; }
 
     const projekte = await projekteMitBacklog(this.cfg.maxPerTick);
 
     if (projekte.length === 0) {
+      meldeParserTick({ projekte, dateien: 0 });
       // Stale init-jobs aufraeumen (15 Min-Cutoff) — kostet nichts wenn nichts da.
       await expirePendingProjectInitJobs(900).catch(() => 0);
       return { projekte: 0, dateien: 0 };
@@ -398,6 +401,7 @@ export class ParserWorker {
       }
     }
     if (dateien > 0) meldeWorkerArbeit('parser');
+    meldeParserTick({ projekte, dateien });
     return { projekte: projekte.length, dateien };
   }
 }

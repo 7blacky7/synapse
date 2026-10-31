@@ -41,6 +41,10 @@ const H = await import('../dist/services/warteschlangen-stau-hinweis.js');
 const K = await import('../dist/services/hinweis-katalog.js');
 
 let ok = 0;
+// P27-T7 (t224 #32): erhebeZustand/mitGrenze nutzen unref-Timer (Server darf daran nicht haengen). Im Test wartet sonst
+// nur ein nie erfuellter Promise -> Node beendet mit 'unsettled top-level await' (Exit 13). Ein Lebenszeichen haelt die
+// Schleife bis zum Ende offen; ein Fehlschlag beendet den Prozess trotzdem sofort (abgelehntes top-level await).
+const lebenszeichen = setInterval(() => {}, 60_000);
 async function pruefe(name, fn) {
   try { await fn(); ok++; console.log('OK  ' + name); }
   catch (err) { console.error(`DEBUG ${name} | ${err?.message ?? err}`); throw err; }
@@ -313,4 +317,5 @@ await pruefe('A1 Architektur: Hinweisweg ohne I/O, Katalog und Produzent', () =>
   assert.equal(K.standardFuerStufe(e, 'minimal'), false, 'im Profil abwaehlbar (minimal)');
 });
 
+clearInterval(lebenszeichen);
 console.log(`\nwarteschlangen-stau-p27: ${ok} Pruefungen gruen`);

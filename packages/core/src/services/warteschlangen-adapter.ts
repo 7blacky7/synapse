@@ -18,8 +18,9 @@
  * AUSSCHLUESSE (begruendet, Inventar 675edb08): reverse_auftraege (Planung; die Arbeit steckt in work_jobs, dort mit
  *   Reverse-Teilfortschritt), agent_events (bestehende Drei-Warnungen-Eskalation events.ts zustaendig), Container-messageQueue
  *   (agents/process.ts, eigener Prozess im Runtime-Container, ausserhalb der API-Sicht).
- * GRENZEN: work_jobs/Queues ohne Klassen-Aufteilung je Prioritaet (Details zeigen nur Summen); parser liest max(parsed_at)
- *   ueber code_files (kein Index -> Koordinator entscheidet bei Last); agent_zustellungen ohne Quittungsstufe.
+ * GRENZEN: work_jobs/Queues ohne Klassen-Aufteilung je Prioritaet (Details zeigen nur Summen); parser liest seit P27-T7
+ *   den letzten Stand des Parser-Workers (parser-tick-stand.ts, keine eigene PG-Abfrage; EXPLAIN 5ebd42d8);
+ *   agent_zustellungen ohne Quittungsstufe.
  */
 
 import type { QueryConfig } from 'pg';
@@ -29,7 +30,7 @@ import { workerLebenszeichen } from './worker-steuerung.js';
 import { buildNachlaufZustand } from './build-pruefung.js';
 import { chunkEmbeddingFortschritt } from './embedding-claims.js';
 import { nachzugFortschritt, zaehleOffeneEmbeddings } from './embed-backlog.js';
-import { projekteMitBacklog } from './code.js';
+import { leseParserTickStand } from './parser-tick-stand.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
 import { leseVerlaufEinbettSchalter } from './verlauf-einbetten.js';
 import {
@@ -332,30 +333,30 @@ const ID_PROJEKT = `(SELECT i.project FROM agent_identitaeten i WHERE i.id = t.i
 export const STAU_KOHORTEN: readonly KohortenDef[] = [
   {
     name: 'shell_jobs', beschreibung: 'shell-Auftraege an den lokalen Daemon', tabelle: 'shell_jobs', idSpalte: 'id', idTyp: 'uuid',
-    projektSql: 't.project', statusSql: 't.status::text', offen: "t.status::text IN ('pending','running')",
-    faellig: `t.status::text = 'pending' AND ${HB_PROJEKT('t.project')}`, zurueck: `t.status::text = 'pending' AND NOT ${HB_PROJEKT('t.project')}`,
-    laufend: "t.status::text = 'running'",
-    frist: "t.status::text = 'running' AND t.claimed_at + (COALESCE(t.timeout_ms, 30000) + 120000) * interval '1 millisecond' < now()",
+    projektSql: 't.project', statusSql: 't.status::text', offen: "t.status IN ('pending','running')",
+    faellig: `t.status = 'pending' AND ${HB_PROJEKT('t.project')}`, zurueck: `t.status = 'pending' AND NOT ${HB_PROJEKT('t.project')}`,
+    laufend: "t.status = 'running'",
+    frist: "t.status = 'running' AND t.claimed_at + (COALESCE(t.timeout_ms, 30000) + 120000) * interval '1 millisecond' < now()",
     wartAb: 't.created_at', laufAb: 't.claimed_at', ordnung: 't.created_at, t.id',
     // Ein fehlgeschlagenes Kommando ist verarbeitet (Exit != 0 ist kein Stau); nur timeout zaehlt als Fehler.
-    erfolg: "t.status::text IN ('done','failed','rejected')", fehler: "t.status::text = 'timeout'",
+    erfolg: "t.status IN ('done','failed','rejected')", fehler: "t.status = 'timeout'",
     // Teilfortschritt: Stream-Zeilen laufender Jobs (Index shell_stream_chunks(job_id, chunk_index)).
-    teil: "CASE WHEN t.status::text = 'running' THEN (SELECT count(*) FROM shell_stream_chunks c WHERE c.job_id = t.id) ELSE 0 END",
+    teil: "CASE WHEN t.status = 'running' THEN (SELECT count(*) FROM shell_stream_chunks c WHERE c.job_id = t.id) ELSE 0 END",
     betriebsart: 'ereignisgetrieben',
   },
   {
     name: 'specialist_jobs', beschreibung: 'Spezialisten-Auftraege an den lokalen Daemon', tabelle: 'specialist_jobs', idSpalte: 'id', idTyp: 'uuid',
-    projektSql: 't.project', statusSql: 't.status::text', offen: "t.status::text IN ('pending','running')",
-    faellig: `t.status::text = 'pending' AND ${HB_PROJEKT('t.project')}`, zurueck: `t.status::text = 'pending' AND NOT ${HB_PROJEKT('t.project')}`,
-    laufend: "t.status::text = 'running'", wartAb: 't.created_at', laufAb: 't.claimed_at', ordnung: 't.created_at, t.id',
-    erfolg: "t.status::text IN ('done','failed','rejected')", fehler: "t.status::text = 'timeout'", betriebsart: 'ereignisgetrieben',
+    projektSql: 't.project', statusSql: 't.status::text', offen: "t.status IN ('pending','running')",
+    faellig: `t.status = 'pending' AND ${HB_PROJEKT('t.project')}`, zurueck: `t.status = 'pending' AND NOT ${HB_PROJEKT('t.project')}`,
+    laufend: "t.status = 'running'", wartAb: 't.created_at', laufAb: 't.claimed_at', ordnung: 't.created_at, t.id',
+    erfolg: "t.status IN ('done','failed','rejected')", fehler: "t.status = 'timeout'", betriebsart: 'ereignisgetrieben',
   },
   {
     name: 'project_init_jobs', beschreibung: 'Projekt-Anlage/Restore durch den lokalen Daemon', tabelle: 'project_init_jobs', idSpalte: 'id', idTyp: 'uuid',
-    projektSql: 't.name', statusSql: 't.status::text', offen: "t.status::text IN ('pending','running')",
-    faellig: `t.status::text = 'pending' AND ${HB_HOST('t.hostname')}`, zurueck: `t.status::text = 'pending' AND NOT ${HB_HOST('t.hostname')}`,
-    laufend: "t.status::text = 'running'", wartAb: 't.created_at', laufAb: 't.claimed_at', ordnung: 't.created_at, t.id',
-    erfolg: "t.status::text IN ('done','failed','rejected')", fehler: "t.status::text = 'timeout'", betriebsart: 'ereignisgetrieben',
+    projektSql: 't.name', statusSql: 't.status::text', offen: "t.status IN ('pending','running')",
+    faellig: `t.status = 'pending' AND ${HB_HOST('t.hostname')}`, zurueck: `t.status = 'pending' AND NOT ${HB_HOST('t.hostname')}`,
+    laufend: "t.status = 'running'", wartAb: 't.created_at', laufAb: 't.claimed_at', ordnung: 't.created_at, t.id',
+    erfolg: "t.status IN ('done','failed','rejected')", fehler: "t.status = 'timeout'", betriebsart: 'ereignisgetrieben',
   },
   {
     name: 'compute_admission', beschreibung: 'Compute-Zulassung (R2.2) je Ressourcendomain', tabelle: 'compute_admission_requests', idSpalte: 'id', idTyp: 'uuid',
@@ -442,13 +443,16 @@ async function codeChunksZustand(): Promise<WarteschlangenZustand> {
 }
 
 async function parserZustand(): Promise<WarteschlangenZustand> {
-  const projekte = await projekteMitBacklog(200);
-  const wartend = projekte.reduce((s, p) => s + (Number(p.faellig) || 0), 0);
-  // Semantischer Checkpoint: zuletzt geparste Datei (auch vom Daemon geparst). Ohne Index = Scan von code_files (siehe Kopf).
-  const [z] = await abfrage<{ z: Date | null }>('SELECT max(parsed_at) AS z FROM code_files');
+  // P27-T7 (Entscheidung Koordinator, EXPLAIN 5ebd42d8): kein eigenes projekteMitBacklog/max(parsed_at) je Takt mehr
+  // (~420 ms, ~600 MB Pufferzugriffe alle 15 s) - der Parser-Worker meldet seinen letzten Tick. Bleibt der Tick aus,
+  // steht wartend weiter und der Fortschritt altert -> Stau wird trotzdem erkannt; Worker-Ausfall meldet zusaetzlich 'worker'.
+  const t = leseParserTickStand();
+  if (!t) return { ...LEER, nicht_zutreffend: 'parser_worker_noch_kein_tick' };
   return {
-    wartend, aeltester_wartend_s: null, laufend: 0, aeltester_laufend_s: null,
-    fortschritt_zuletzt: z?.z ? new Date(z.z).toISOString() : null, betriebsart: 'periodisch', takt_s: 30, details: { projekte: projekte.length },
+    wartend: t.faellig, aeltester_wartend_s: null, laufend: 0, aeltester_laufend_s: null,
+    fortschritt_zuletzt: iso(t.fortschritt_ms), fortschritt_zaehler: t.geparst_gesamt,
+    aktivierung: t.status === 'gelaufen' ? 'aktiviert' : 'pausiert', betriebsart: 'periodisch', takt_s: 30,
+    details: { projekte: t.projekte, stand_von: iso(t.zeit_ms), letzter_tick_dateien: t.dateien, quelle: 'parser_worker' },
   };
 }
 

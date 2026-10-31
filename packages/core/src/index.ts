@@ -9,6 +9,8 @@ export * from './services/artefakt-katalog.js';
 export * from './services/shell-log-strom.js';
 // P22-T243 (+P22-T208): volle Shell-Ausgabe in Teilen, gedeckelte Abrufe (Schalter shell_ausgabe_voll).
 export * from './services/shell-ausgabe.js';
+// P27-T7: letzter Stand des Parser-Workers fuer den Stau-Waechter (statt eigener PG-Abfragen je Takt).
+export * from './services/parser-tick-stand.js';
 export {ShellAusgabePuffer} from './services/shell-ausgabe-puffer.js';
 export * from './services/artefakt-dateien.js';
 export * from './services/artefakt-ueberlauf.js';
