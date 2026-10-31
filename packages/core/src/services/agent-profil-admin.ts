@@ -309,7 +309,7 @@ async function fuehreAusweisAktionAus(action: AusweisAktion, args: Args, akteur:
 /** P22-T253: Status zeigt den befristeten Debug-Override nur bei aktivem intern-Tool. */
 export async function leseUiProduktSchalter(f: Parameters<typeof leseProfilProduktSchalter>[0], project: string) {
   const produkt = await leseProfilProduktSchalter(f, project);
-  if (f !== 'web_ui_arbeitsbereich' && f !== 'web_ui_channel_suche' && f !== 'web_ui_netzwerk_details') return produkt;
+  if (f !== 'web_ui_arbeitsbereich' && f !== 'web_ui_channel_suche' && f !== 'web_ui_netzwerk_details' && f !== 'web_ui_live_artefakte') return produkt;
   const { internToolAktiv } = await import('./intern-tool-aktiv.js');
   if (!internToolAktiv()) return produkt;
   try {

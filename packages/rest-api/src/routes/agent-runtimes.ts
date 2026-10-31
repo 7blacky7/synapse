@@ -15,7 +15,7 @@ import {
   leseHauptagentHeartbeat, setzeHauptagentHeartbeat, hauptagentIdentitaetsId, leseVerbrauchSchalter, setzeVerbrauchSchalter, leseAgentVerbrauch,
   bucheAgentVerbrauch, HAUPTAGENT_PROJEKT, HAUPTAGENT_AGENT_ID,
   leseRuntimeUeberwachung, setzeRuntimeUeberwachungSchalter, setzeRuntimeUeberwachungEinstellungen, markiereRuntimeAngehalten,
-  listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls, postToInbox, mitAgentAufrufKontext, leseAgentBezugModus,
+  leseUiProduktSchalter, listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls, postToInbox, mitAgentAufrufKontext, leseAgentBezugModus,
   leseCliModelleSchalter, pruefeModellFuerRuntime, leseUserModellWahl, synapseModellId, CLI_MODELL_RUNTIMES, type CliModellRuntime,
   pruefeEffortFuerModell, leseEffortWahl, listModels, setzeCliKontextQuelle,
   leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent, rendereToolBild,
@@ -735,6 +735,56 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       reply.raw.end();
     }
   });
+
+  // P22-T164: Das bestehende Auth-Modell hat genau einen interaktiven User (TOTP Single-Row).
+  // Deshalb ist 'user' stabil über Geräte/Sitzungen; niemals Session-Token als Benutzer-ID benutzen.
+  const liveBoardSchalter = () => leseUiProduktSchalter('web_ui_live_artefakte', 'synapse');
+  fastify.get<{ Querystring: { nach_id?: string; nach_projekt?: string } }>('/api/main-agent/live-artefakte', async (request, reply) => {
+    const schalter = await liveBoardSchalter();
+    if (!schalter.aktiv || schalter.letzter_fehler) return { success: true, aktiv: false, schalter, eintraege: [], naechste: null };
+    const id = request.query.nach_id ?? '', projekt = request.query.nach_projekt ?? '';
+    if (id && !/^[0-9a-f-]{36}$/i.test(id)) return reply.code(400).send({success:false,error:'cursor_ungueltig'});
+    const rows = await getPool().query(`
+      WITH paare AS (
+        SELECT id AS artefakt_id, standard_project AS project FROM agent_artifacts
+        WHERE modus='live' AND vorlage IS NOT NULL AND standard_project IS NOT NULL AND standard_project <> ''
+        UNION
+        SELECT a.id, r.project FROM agent_artifacts a JOIN artefakt_renderungen r ON r.artefakt_id=a.id
+        WHERE a.modus='live' AND a.vorlage IS NOT NULL AND r.project <> ''
+      )
+      SELECT p.artefakt_id::text AS id, p.project, a.title, a.updated_at,
+        l.x,l.y,l.breite,l.hoehe,l.revision AS layout_revision
+      FROM paare p JOIN agent_artifacts a ON a.id=p.artefakt_id
+      LEFT JOIN user_live_artefakt_layout l ON l.user_key='user' AND l.artefakt_id=p.artefakt_id AND l.project=p.project
+      WHERE (p.artefakt_id::text,p.project)>($1,$2)
+      ORDER BY p.artefakt_id::text,p.project LIMIT 101`, [id,projekt]);
+    const mehr=rows.rows.length>100, eintraege=rows.rows.slice(0,100), z=eintraege.at(-1);
+    const skripte = await artefaktSkripteSchalter();
+    return {success:true,aktiv:true,schalter,skripte_aktiv:skripte.aktiv && !skripte.letzter_fehler,eintraege,naechste:mehr&&z?{id:z.id,project:z.project}:null};
+  });
+  fastify.put<{ Params: { id: string }; Body: { project?: unknown; x?: unknown; y?: unknown; breite?: unknown; hoehe?: unknown; revision?: unknown } }>('/api/main-agent/live-artefakte/:id/layout', async (request, reply) => {
+    const schalter=await liveBoardSchalter();
+    if (!schalter.aktiv || schalter.letzter_fehler) return reply.code(403).send({success:false,error:'funktion_aus',schalter});
+    const {id}=request.params, b=request.body ?? {}, vals=[b.x,b.y,b.breite,b.hoehe,b.revision];
+    if (!/^[0-9a-f-]{36}$/i.test(id) || typeof b.project!=='string' || !b.project.trim()
+      || vals.some(v=>typeof v!=='number'||!Number.isFinite(v)) || !Number.isSafeInteger(b.revision) || Number(b.revision)<0
+      || Number(b.x)<0 || Number(b.x)>99 || Number(b.y)<0 || Number(b.breite)<10 || Number(b.breite)>100 || Number(b.hoehe)<100)
+      return reply.code(400).send({success:false,error:'layout_ungueltig'});
+    const p=getPool();
+    const r=await p.query(`
+      INSERT INTO user_live_artefakt_layout(user_key,artefakt_id,project,x,y,breite,hoehe)
+      SELECT 'user',a.id,$2,$3,$4,$5,$6 FROM agent_artifacts a
+      WHERE a.id=$1::uuid AND a.modus='live' AND a.vorlage IS NOT NULL
+        AND (a.standard_project=$2 OR EXISTS(SELECT 1 FROM artefakt_renderungen ar WHERE ar.artefakt_id=a.id AND ar.project=$2))
+        AND ($7::bigint=0 OR EXISTS(SELECT 1 FROM user_live_artefakt_layout l WHERE l.user_key='user' AND l.artefakt_id=a.id AND l.project=$2))
+      ON CONFLICT(user_key,artefakt_id,project) DO UPDATE SET x=EXCLUDED.x,y=EXCLUDED.y,breite=EXCLUDED.breite,hoehe=EXCLUDED.hoehe,
+        revision=user_live_artefakt_layout.revision+1,aktualisiert=NOW()
+      WHERE user_live_artefakt_layout.revision=$7::bigint
+      RETURNING revision`,[id,b.project,b.x,b.y,b.breite,b.hoehe,b.revision]);
+    if (!r.rows.length) return reply.code(409).send({success:false,error:'layout_konflikt_oder_artefakt_fehlt'});
+    return {success:true,revision:Number(r.rows[0].revision)};
+  });
+
   // P8-T25: HTML-Artefakte des Hauptagenten (agent_artifacts) fuer "Persoenliche Artefakte" – nur lesend.
   fastify.get<{ Querystring: { limit?: string } }>('/api/main-agent/artefakte', async (request, reply) => {
     try {

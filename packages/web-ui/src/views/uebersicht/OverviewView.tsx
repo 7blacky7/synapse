@@ -7,6 +7,8 @@ import { leseUebersichtSchalter, setzeUebersichtSchalter, type UebersichtSchalte
 import type { Area, ChannelViewModel, ProjectViewModel } from '../../control-plane/view-model';
 import { buehnenHoehe } from './uebersicht-layout';
 import '../../uebersicht-netzwerk.css';
+import { LiveArtefakte } from '../../components/LiveArtefakte';
+import { leseArbeitsbereichSchalter, type ArbeitsbereichSchalter } from '../../api/arbeitsbereich-schalter';
 
 /**
  * Uebersicht. P22-T196 (User 31.10.2026 ~14:55): mit Produkt-Schalter uebersicht_netzwerk EIN entfallen Kopf "Control Plane",
@@ -35,6 +37,10 @@ export function OverviewView({
   const [schalter, setSchalter] = useState<UebersichtSchalter | null>(null);
   const [schalterFehler, setSchalterFehler] = useState('');
   const [busy, setBusy] = useState(false);
+  const [liveStand, setLiveStand] = useState<ArbeitsbereichSchalter>({aktiv:false,quelle:'standard',fehler:null});
+  const [liveOffen, setLiveOffen] = useState(false);
+  useEffect(() => { let lebt=true; void leseArbeitsbereichSchalter('synapse','web_ui_live_artefakte').then(s=>{if(lebt)setLiveStand(s);}); return()=>{lebt=false;}; }, []);
+  const liveKnopf = liveStand.aktiv && <button type="button" title={'Quelle: '+liveStand.quelle+(liveStand.fehler?' · '+liveStand.fehler:'')} aria-pressed={liveOffen} onClick={()=>setLiveOffen(v=>!v)}>{liveOffen?'Übersicht':'Live-Artefakte'}</button>;
   useEffect(() => {
     let ende = false;
     leseUebersichtSchalter(schalterProjekt)
@@ -67,7 +73,7 @@ export function OverviewView({
     inhalt.observe(el, { childList: true, subtree: true });
     planen();
     return () => { groesse.disconnect(); inhalt.disconnect(); if (bild) window.cancelAnimationFrame(bild); };
-  }, [schalter?.aktiv]);
+  }, [schalter?.aktiv, liveOffen]);
   const umschalten = async (aktiv: boolean) => {
     setBusy(true);
     try {
@@ -96,11 +102,13 @@ export function OverviewView({
     onOpen('main-agent');
   };
 
+  if (liveStand.aktiv && liveOffen) return <div className="standard-page" data-live-artefakte={liveStand.quelle}><header className="uebersicht-kopf-aktion">{liveKnopf}</header><LiveArtefakte/></div>;
   if (schalter?.aktiv) {
     return (
       <div ref={netzRef} className="standard-page uebersicht-netz" data-uebersicht-netzwerk="1" data-schalter-quelle={schalter.quelle}>
         <section className="overview-strip uebersicht-leiste" aria-label="Kennzahlen">
           {kennzahlen}
+          {liveKnopf}
           <button type="button" className="uebersicht-schalter" disabled={busy} title={debug} onClick={() => void umschalten(false)}>Bisherige Übersicht</button>
         </section>
         {schalterFehler && <p className="uebersicht-fehler" role="alert">{schalterFehler}</p>}
@@ -122,6 +130,7 @@ export function OverviewView({
         action={(
           <div className="uebersicht-kopf-aktion">
             <StatusChip stand="live" />
+            {liveKnopf}
             {schalter && <button type="button" className="uebersicht-schalter" disabled={busy} title={debug} onClick={() => void umschalten(true)}>Netzwerk-Übersicht</button>}
           </div>
         )}
