@@ -26,9 +26,10 @@ import { REVERSE_NULL_FELDER } from './reverse-tool.js';
 import { getUnreadChatHint } from './chat-unread.js';
 import { claimUnreadChannelHints } from './channel-unread.js';
 import { claimShellJobHints, markShellJobSeenForToolCall } from './shell-hints.js';
-import { hinweisAktiv } from './agent-zuschnitt-kontext.js';
+import { aktuellerZuschnittSnapshot, hinweisAktiv } from './agent-zuschnitt-kontext.js';
 import { holeBuildNachlaufHinweise } from './build-pruefung.js';
 import { gleicheAusweisChannelsImAufrufAb } from './ausweis-channels.js';
+import { holeStauHinweise } from './warteschlangen-stau-hinweis.js';
 
 const HINWEIS_JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -111,6 +112,15 @@ export async function ergaenzeToolHinweise(
   // P16-T23: Ergebnis der eigenen grossen Pruefung nach dem commit (Nachlauf) - genau einmal, bei jedem Tool.
   const nachlauf = hinweisAktiv('build_nachlauf', agentId) ? holeBuildNachlaufHinweise(agentId) : [];
   if (nachlauf.length > 0) extras.build_nachlauf = nachlauf;
+  // P27-T3: Info-Hinweis Warteschlangen-Stau NUR aus dem Schnappschuss des Waechters (synchron, kein I/O). Profil-Entscheidung
+  // VOR dem Abholen (AUS verbraucht nichts). Reichweite: wie alle Extras nur mit Agent-ID und Objekt-/Listenantwort, auch bei
+  // fachlichen Fehlerantworten; ein Fehler hier aendert die fachliche Antwort nie.
+  if (hinweisAktiv('warteschlangen_stau', agentId)) {
+    try {
+      const stau = holeStauHinweise(agentId, project || aktuellerZuschnittSnapshot()?.project || null);
+      if (stau.length > 0) extras.warteschlangen_stau = stau;
+    } catch { /* Info-Hinweis darf die Antwort nie kippen. */ }
+  }
   if (Object.keys(extras).length === 0) return result;
   // Eine fachliche Liste bleibt vollständig; nur bei echten Hinweisen braucht sie eine Hülle.
   return Array.isArray(result) ? { result, ...extras } : { ...result, ...extras };
