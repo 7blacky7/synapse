@@ -24,6 +24,8 @@ const PROJECT = 'grundidee-test';
 const batch = await import(join(dist, 'services', 'file-batch.js'));
 const res = await import(join(dist, 'services', 'file-reservations.js'));
 const events = await import(join(dist, 'services', 'events.js'));
+// P22-T199: Aktivitaetsfenster des Ready-Gates ist die PG-Einstellung coedit_aktiv_sekunden (Env SYNAPSE_COEDIT_AKTIV_MIN entfaellt).
+const fristen = await import(join(dist, 'services', 'agent-ausweis-fristen.js'));
 const { getPool } = await import(join(dist, 'db', 'client.js'));
 const pool = getPool();
 
@@ -82,13 +84,13 @@ try {
   const p1c = await batch.planBatch({ project: PROJECT, agent_id: 'gi-o1b', ops: [rl('src/e2.ts', 1, 'f1', 'F1')] });
   await batch.planBatch({ project: PROJECT, agent_id: 'gi-weg', ops: [rl('src/e2.ts', 4, 'f4', 'WEG4')] });
   await aktiv('gi-weg');
-  const vorher = process.env.SYNAPSE_COEDIT_AKTIV_MIN;
-  process.env.SYNAPSE_COEDIT_AKTIV_MIN = '0.05';
+  // P22-T199: kleinstes erlaubtes Fenster (10 s) nur fuer dieses Testprojekt setzen, danach wieder entfernen.
+  await fristen.setzeAusweisFristen({ ebene: 'projekt', project: PROJECT, werte: { coedit_aktiv_sekunden: 10 }, grund: 'Test grundidee E1 (P22-T199)' }, { wer: 'test', setter_identity_id: null });
   t0 = Date.now();
   const c1c = await versuch(() => batch.commitBatch({ plan_id: p1c.plan_id, agent_id: 'gi-o1b', wait_seconds: 15 }));
   const dauer = ms(t0);
-  if (vorher === undefined) delete process.env.SYNAPSE_COEDIT_AKTIV_MIN; else process.env.SYNAPSE_COEDIT_AKTIV_MIN = vorher;
-  pruefe(c1c.success === true && dauer >= 1500 && dauer < 9000, 'E1: wartender commit schreibt, sobald der Aktive inaktiv wird (kein toter Blocker)', { success: c1c.success, status: c1c.status, ms: dauer });
+  await fristen.setzeAusweisFristen({ ebene: 'projekt', project: PROJECT, entfernen: ['coedit_aktiv_sekunden'], grund: 'Test grundidee E1 (P22-T199) Ende' }, { wer: 'test', setter_identity_id: null });
+  pruefe(c1c.success === true && dauer >= 7000 && dauer < 14500, 'E1: wartender commit schreibt, sobald der Aktive inaktiv wird (kein toter Blocker; Fenster coedit_aktiv_sekunden=10 s)', { success: c1c.success, status: c1c.status, ms: dauer });
 
   // ===== V1 Nachfolge-Events statt stillem Quittieren =====
   await anlegen('src/v1.ts', zehn('g'));

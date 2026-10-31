@@ -6,6 +6,10 @@
  * synapse_test:5433, eigener Projektbereich, kein Browser/LLM/Prod/Dateisystem-Write.
  * Fall 6 misst tatsächlich 300 s Standard-Inaktivität ohne Zeitstempel-Manipulation.
  * Tabellenzeilen enthalten erwartet/ist, Plan-IDs, Dauer und parallelen Laststand.
+ * P22-T199 (t215): derselbe Lauf je Methode, T199_METHODE=aus (Standard, Ready-Gate; Frist jetzt PG-Einstellung
+ * coedit_aktiv_sekunden, Standard 60 s statt Env 5 min) bzw. =ein (Produkt-Schalter coedit_ohne_gate fuer dieses
+ * Testprojekt: kein Gate, Teilcommit mit eigener batch_id, Op-Zustaende). Zusaetzliche EIN-Faelle S, E1, E2, E4/E6, E8,
+ * E11, E12 (Entwurf 7efece9b Abschnitt 6) und Messung der Beitragsdauer je Op (T-M1) im Lastteil.
  */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -16,7 +20,16 @@ delete process.env.SYNAPSE_DATABASE_URL;
 const inheritedWindow=process.env.SYNAPSE_COEDIT_AKTIV_MIN;
 delete process.env.SYNAPSE_COEDIT_AKTIV_MIN; // eigens gemessener Code-Standard, kein globaler Schalter-Write
 Object.assign(process.env,{SYNAPSE_SKIP_EMBEDDINGS:'1',SYNAPSE_SHELL_JOB:'1'});
+const METHODE=(process.env.T199_METHODE??'aus').toLowerCase(),EIN=METHODE==='ein';
+assert.ok(['aus','ein'].includes(METHODE),'T199_METHODE aus|ein');
 const B=await import('../dist/services/file-batch.js');
+const F=await import('../dist/services/agent-ausweis-fristen.js');
+const CM=await import('../dist/services/coedit-methode.js');
+const {COEDIT_OHNE_GATE_SCHEMA_SQL}=await import('../dist/db/coedit-ohne-gate-schema.js');
+const {AGENT_AUSWEIS_FRISTEN_SCHEMA_SQL}=await import('../dist/db/agent-ausweis-fristen-schema.js');
+const addMs=[];
+// t215: Syntaxpruefer wie im Serverstart (rest-api/mcp-server registriereStandardSyntaxPruefer); sonst keine_pruefer im Testprozess.
+const SP=await import('../dist/services/syntax-pruefer/index.js');SP.registriereStandardSyntaxPruefer({threads:1});
 const R=await import('../dist/services/file-reservations.js');
 const D=await import('../dist/db/client.js'),pool=D.getPool();
 const {mcpRoutes}=await import('../../rest-api/dist/routes/mcp.js');
@@ -81,14 +94,17 @@ async function load(){
   for(let i=0;i<N;i+=5)await Promise.all(Array.from({length:5},(_,j)=>i+j).map(async k=>{
    const a=project+'last-'+k,op=sr(f,'ZEILE-'+String((k+1)*900).padStart(6,'0'),'[LAST-'+k+']');
    const c=await plan(a,[op]);ok(!!c.coedit_waits?.length,'Last Wait '+k,c);
-   const z=await add(p.plan_id,a,[op]);ok(z.success&&!z.overlap_warnings?.length,'Last disjunkt '+k,z);
+   const t0=Date.now(),z=await add(p.plan_id,a,[op]);addMs.push(Date.now()-t0);ok(z.success&&!z.overlap_warnings?.length,'Last disjunkt '+k,z);
+   if(EIN&&z.eigene_op_zustaende?.[0]?.zustand!=='gueltig')ok(false,'EIN Last-Beitrag sofort gueltig '+k,{appended_ops:z.appended_ops,already_consumed_ops:z.already_consumed_ops,coedit_methode:z.coedit_methode,eigene:z.eigene_op_zustaende,methode_jetzt:await CM.leseCoeditMethode(project)});
+   else if(EIN)checks++;
    ok((await ready(p.plan_id,a)).success,'Last Ready '+k);loadDone++;
   }));
   await casesFinished;
   const cm=await commit(p.plan_id,project+'last-0');ok(cm.success,'Last Owner-Absturz blockiert nicht',cm);
   const text=await read(f);for(const m of ['[LAST-OWNER]',...Array.from({length:N},(_,i)=>'[LAST-'+i+']')])ok(occurrences(text,m)===1,'Last Marke genau einmal '+m);
   ok(text.split('\n').length===100001,'Last 100000 Zeilen erhalten');
-  rows.push({fall:'100 Beitragende / 100000 Zeilen',expected:'101 Marken genau einmal, Owner-Absturz blockiert nicht',actual:{plan_id:p.plan_id,markers:101,actors:N,lines:100000},verdict:'PASS',ms:Date.now()-start});
+  const sorted=[...addMs].sort((x,y)=>x-y),p95=sorted[Math.floor(sorted.length*0.95)]??null;
+  rows.push({fall:'100 Beitragende / 100000 Zeilen ('+METHODE+')',expected:'101 Marken genau einmal, Owner-Absturz blockiert nicht'+(EIN?', Teilcommit ohne Gate':''),actual:{plan_id:p.plan_id,batch_id:cm.batch_id,coedit_methode:cm.coedit_methode??'ready_gate',markers:101,actors:N,lines:100000,coedit_add_ms:{n:sorted.length,avg:Math.round(sorted.reduce((s,x)=>s+x,0)/Math.max(1,sorted.length)),p95,max:sorted.at(-1)??null}},verdict:'PASS',ms:Date.now()-start});
  }catch(e){errors++;evidence({fall:'LAST FEHLER',error:e.stack,plan_id:p.plan_id});}
  finally{loadRunning=false;}
 }
@@ -96,11 +112,24 @@ let loadJob,crashJob;
 try{
  ok((await pool.query('SELECT current_database() db')).rows[0].db==='synapse_test','DB-Ziel');
  await pool.query('INSERT INTO projects(name,hostname,path) VALUES($1,$2,$3)',[project,'t198-agentenfehler','/tmp']);
+ // P22-T199: Schema 168 und Fristen-CHECK additiv/idempotent; Schalter nur fuer DIESES Testprojekt (Projektebene).
+ await pool.query(COEDIT_OHNE_GATE_SCHEMA_SQL);await pool.query(AGENT_AUSWEIS_FRISTEN_SCHEMA_SQL);
+ if(EIN)await pool.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('projekt',$1,'coedit_ohne_gate',true,'P22-T199 Testphase t215 EIN','test')",[project]);
+ ok((await CM.leseCoeditMethode(project)).wirksam===(EIN?'ohne_gate':'ready_gate'),'Methode '+METHODE+' wirksam');
  loadJob=load();await loadStarted;
  // User-Zusatz Fall6: echte Standard-Zeit, SQL-Zeitstempel nur lesen, kein Zurückdatieren.
  if(process.env.T198_300S_REFERENZ_JOB)console.log('REFERENZ P22-T198 unveränderte 300s-Grenze bereits real gemessen in Job '+process.env.T198_300S_REFERENZ_JOB);
- else crashJob=test('6b Beitragender stürzt vor Ready ab; volle Standardfrist',
-  '300 s seit letzter Tool-Aktivität; davor begrenzte Warteantwort; danach beide Marken erhalten',async()=>{
+ else if(EIN)crashJob=test('E1 (EIN) Beitragender stürzt vor Ready ab; kein Warten',
+  'commit sofort (<5 s) erfolgreich ohne Frist, Beitrag mitgeschrieben, beide Marken genau einmal',async()=>{
+   const s=await scenario();ok((await add(s.p.plan_id,s.w,[s.op])).success,'Absturz-Beitrag eingereicht');
+   const ts=await active(s.w),started=Date.now(),cm=await commit(s.p.plan_id,s.o,2),ms=Date.now()-started;
+   ok(cm.success&&cm.coedit_methode==='ohne_gate'&&ms<5000,'EIN: kein Gate, sofort geschrieben',{cm,ms});
+   const text=await read(s.f);for(const m of ['[OWNER-'+s.n+']','[BEITRAG-'+s.n+']'])ok(occurrences(text,m)===1,'Absturz-Beitrag mitcommittet '+m,text);
+   return {plan_id:s.p.plan_id,batch_id:cm.batch_id,last_activity:ts,commit_ms:ms,plan_offen:cm.plan_offen};
+  });
+ else crashJob=test('6b Beitragender stürzt vor Ready ab; volle Standardfrist (P22-T199: coedit_aktiv_sekunden)',
+  'Frist aus PG-Einstellung coedit_aktiv_sekunden (Standard 60 s, Quelle standard) seit letzter Tool-Aktivität; davor begrenzte Warteantwort; danach beide Marken erhalten',async()=>{
+   const frist=await F.coeditAktivFrist(project);ok(frist.sekunden===60&&frist.quelle==='standard','Frist 60 s Standard aus PG-Lesestelle',frist);
    const s=await scenario();ok((await add(s.p.plan_id,s.w,[s.op])).success,'Absturz-Beitrag eingereicht');
    const ts=await active(s.w),started=Date.now();
    const first=await commit(s.p.plan_id,s.o,2),firstMs=Date.now()-started;
@@ -109,15 +138,15 @@ try{
    evidence({fall:'6b erste Warteantwort',plan_id:s.p.plan_id,last_activity:ts,firstMs,reply:first});
    const unrelated='andere-datei.txt';await seed(unrelated,'UNABHAENGIG\n');
    ok(await read(unrelated)==='UNABHAENGIG\n','andere Datei während Gate nutzbar');
-   const deadline=new Date(ts).getTime()+300000;
+   const deadline=new Date(ts).getTime()+frist.ms;
    await new Promise(r=>setTimeout(r,Math.max(0,deadline-Date.now()-2000)));
    const before=await commit(s.p.plan_id,s.o);
-   ok(before.status==='waiting_for_contributors','Gate kurz vor 300 s noch zu',before);
+   ok(before.status==='waiting_for_contributors','Gate kurz vor Fristende noch zu',before);
    await new Promise(r=>setTimeout(r,Math.max(0,deadline-Date.now()+100)));
    const cm=await commit(s.p.plan_id,s.o),text=await read(s.f),elapsed=Date.now()-new Date(ts).getTime();
-   ok(cm.success&&elapsed>=300000&&elapsed<310000,'Gate nach realen 300 s offen',{cm,elapsed});
+   ok(cm.success&&elapsed>=frist.ms&&elapsed<frist.ms+10000,'Gate nach realer Frist offen',{cm,elapsed});
    for(const m of ['[OWNER-'+s.n+']','[BEITRAG-'+s.n+']'])ok(occurrences(text,m)===1,'Absturz-Beitrag mitcommittet '+m,text);
-   return {plan_id:s.p.plan_id,setting:'SYNAPSE_COEDIT_AKTIV_MIN',source:'Code-Standard ohne Env; keine PG-Lesestelle',default_minutes:5,last_activity:ts,elapsed_ms:elapsed,first_wait_ms:firstMs,before:before.status,after:cm.status??cm.success,contribution:'mitcommittet genau einmal',other_file:'sofort nutzbar',gate};
+   return {plan_id:s.p.plan_id,setting:'coedit_aktiv_sekunden',source:frist.quelle,default_seconds:frist.sekunden,last_activity:ts,elapsed_ms:elapsed,first_wait_ms:firstMs,before:before.status,after:cm.status??cm.success,contribution:'mitcommittet genau einmal',other_file:'sofort nutzbar',gate};
   });
  await test('1 alte plan_id nach plan_update',
   'neue ID zuerst; alte ID lesbar als ersetzt/geschlossen und nicht committbar',async()=>{
@@ -223,6 +252,15 @@ try{
   'coedit_conflict atomar; nach Rückzug bleibt Owner-Marke einmal',async()=>{
    const s=await scenario();await B.cancelBatch(s.c.plan_id,s.w);s.op=sr(s.f,'[OWNER-'+s.n+']','[KOLLISION]');await plan(s.w,[s.op]);
    const a=await add(s.p.plan_id,s.w,[s.op]);ok(a.success,'kollidierende Op tatsächlich eingereicht',a);await ready(s.p.plan_id,s.w);const cm=await commit(s.p.plan_id,s.o);
+   if(EIN){
+    ok(a.overlap_warnings?.length&&cm.success&&cm.plan_offen===true&&cm.offen?.[0]?.zustand==='konflikt','EIN: Kollision markiert, gueltige Owner-Op geschrieben, Plan offen',{a,cm});
+    const t=await read(s.f);ok(occurrences(t,'[OWNER-'+s.n+']')===1&&occurrences(t,'[KOLLISION]')===0,'EIN: Konflikt-Op nicht geschrieben',t);
+    await B.bewerteOffenePlanOps(s.p.plan_id);const st=await B.getBatchPlan(s.p.plan_id);
+    ok(st.offen?.[0]?.zustand==='konflikt','EIN: Konflikt bleibt nach Teilcommit beim Autor (nicht still gueltig)',st.offen);
+    const z=await B.cancelBatch(s.p.plan_id,s.w),after=await state(s.p.plan_id);ok(after.status!=='open','EIN: Autor zieht zurueck, keine Leiche',{z,after});
+    ok(occurrences(await read(s.f),'[OWNER-'+s.n+']')===1&&occurrences(await read(s.f),'[KOLLISION]')===0,'EIN: Owner-Marke bleibt einmal');
+    return {plan_id:s.p.plan_id,batch_id:cm.batch_id,offen:cm.offen,withdraw:z.mode,methode:'ein'};
+   }
    ok(a.overlap_warnings?.length&&!cm.success&&cm.error==='coedit_conflict','echte Kollision',cm);
    ok((await read(s.f)).startsWith('OBEN'),'Konflikt schreibt nichts');
    const withdraw=await B.cancelBatch(s.p.plan_id,s.w);ok(withdraw.mode==='withdrawn','kollidierende eigene Op zurückgezogen',withdraw);
@@ -236,6 +274,13 @@ try{
    await B.replanBatch({project,plan_id:s.p.plan_id,agent_id:s.o,op_index:0,ops:[{action:'insert_after',file_path:s.f,after_line:1,anchor_text:'OBEN',content:'[FREMD-EINGEFUEGT]'}]});
    s.op=sr(s.f,'[FREMD-EINGEFUEGT]','[ERSETZT]');await plan(s.w,[s.op]);
    const a=await add(s.p.plan_id,s.w,[s.op]);await ready(s.p.plan_id,s.w);const cm=await commit(s.p.plan_id,s.o);
+   if(EIN){
+    ok(a.overlap_warnings?.length&&cm.success&&cm.offen?.[0]?.zustand==='konflikt','EIN: Fremdtext-Ersetzung als Konflikt markiert, Owner-Op geschrieben',{a,cm});
+    await B.bewerteOffenePlanOps(s.p.plan_id);const st=await B.getBatchPlan(s.p.plan_id);ok(st.offen?.[0]?.zustand==='konflikt','EIN: bleibt Konflikt',st.offen);
+    const z=await B.cancelBatch(s.p.plan_id,s.w),after=await state(s.p.plan_id);ok(after.status!=='open','EIN: Rueckzug ohne Leiche',{z,after});
+    const t=await read(s.f);ok(occurrences(t,'[FREMD-EINGEFUEGT]')===1&&occurrences(t,'[ERSETZT]')===0,'EIN: eingefuegte Marke bleibt einmal',t);
+    return {plan_id:s.p.plan_id,batch_id:cm.batch_id,offen:cm.offen,methode:'ein'};
+   }
    ok(a.overlap_warnings?.length&&!cm.success,'Fremdtext-Konflikt bleibt',cm);
    await B.cancelBatch(s.p.plan_id,s.w);ok((await commit(s.p.plan_id,s.o)).success,'Fremdtext-Rest committbar');
    ok(occurrences(await read(s.f),'[FREMD-EINGEFUEGT]')===1,'eingefügte Marke bleibt einmal');return {plan_id:s.p.plan_id,error:cm.error};
@@ -299,6 +344,75 @@ try{
    for(const m of ['[EIGEN-0]','[EIGEN-1]','[EIGEN-2]'])ok(occurrences(await read(f),m)===1,'eigene parallele Marke einmal '+m);
    return {plan_id:first.plan_id,merged:two.map(x=>x.merged_into),ops:st.ops.length,forced_target_lock_ms:1000,elapsed_ms:Date.now()-lockedAt};
   });
+ if(EIN){
+  await test('S/E11 (EIN) Schalter-Quelle, plan_status, ready- und wait_seconds-Hinweis',
+   'Methode ohne_gate aus Produkt-Schalter Projekt; plan_status coedit_methode+offen, kein commit_wartet_auf; ready/wait_seconds nennen: keine Commit-Bedingung',async()=>{
+    const m=await CM.leseCoeditMethode(project);ok(m.wirksam==='ohne_gate'&&m.quelle==='produkt-schalter'&&m.ebene==='projekt','Methode und Quelle',m);
+    const s=await scenario();ok((await add(s.p.plan_id,s.w,[s.op])).success,'Beitrag');
+    const st=await B.getBatchPlan(s.p.plan_id);ok(st.coedit_methode==='ohne_gate'&&st.offen?.length===2&&!st.commit_wartet_auf,'plan_status ohne Gate',st);
+    const r=await ready(s.p.plan_id,s.w);ok(r.success&&r.coedit_methode==='ohne_gate'&&/keine Commit-Bedingung/.test(r.hinweis??''),'ready-Hinweis',r);
+    const cm=await commit(s.p.plan_id,s.o,5);ok(cm.success&&/wait_seconds wird bei Schalter coedit_ohne_gate EIN ignoriert/.test(cm.message??''),'wait_seconds-Hinweis',cm);
+    const t=await read(s.f);for(const mm of ['[OWNER-'+s.n+']','[BEITRAG-'+s.n+']'])ok(occurrences(t,mm)===1,'Marke einmal '+mm,t);
+    return {methode:m,plan_id:s.p.plan_id,batch_id:cm.batch_id,ready_hinweis:r.hinweis,commit_message:cm.message};
+   });
+  await test('E2 (EIN) fehlerhafte Fremd-Op (Syntax)',
+   'Beitrag angenommen und fehlerhaft markiert; commit schreibt gueltige Owner-Op als Teilcommit (eigene batch_id), gleiche plan_id bleibt offen; nach Korrektur geschrieben, Plan geschlossen',async()=>{
+    const n=++seq,f='e2-'+n+'.ts',o=project+'e2o'+n,w=project+'e2w'+n;await seed(f,'export const a = 1;\nexport const b = 1;\nexport const c = 1;\n');
+    const p=await plan(o,[sr(f,'export const a = 1;','export const a = 2; // [OWNER-E2]')]);
+    const bad=sr(f,'export const b = 1;','export const b = (;'),c=await plan(w,[bad]);ok(!!c.coedit_waits?.length,'Wait',c);
+    const z=await add(p.plan_id,w,[bad]);ok(z.success&&z.eigene_op_zustaende?.[0]?.zustand==='fehlerhaft','angenommen und markiert',z);
+    // Rest-Ops auf geschriebenen Dateien werden nach dem Teilcommit neu bewertet (Hintergrund, 97779713): Antwort fehlerhaft|unbewertet.
+    const cm=await commit(p.plan_id,o);ok(cm.success&&cm.batch_id!==p.plan_id&&cm.plan_offen===true&&['fehlerhaft','unbewertet'].includes(cm.offen?.[0]?.zustand),'Teilcommit, Rest offen',cm);
+    await B.bewerteOffenePlanOps(p.plan_id);ok((await B.getBatchPlan(p.plan_id)).offen?.[0]?.zustand==='fehlerhaft','Rest nach Neubewertung weiter fehlerhaft');
+    let t=await read(f);ok(occurrences(t,'[OWNER-E2]')===1&&t.includes('export const b = 1;'),'nur gueltige Op geschrieben',t);
+    const st=await B.getBatchPlan(p.plan_id);ok(st.status==='open'&&st.teilcommits?.length===1&&st.teilcommits[0].batch_id===cm.batch_id,'gleiche plan_id offen, Teilcommit gelistet',st);
+    const v=(await pool.query('SELECT count(*)::int n FROM file_versions WHERE project=$1 AND batch_id=$2::bigint',[project,cm.batch_id])).rows[0].n;ok(v>=1,'file_versions unter eigener batch_id',v);
+    await B.replanBatch({project,plan_id:p.plan_id,agent_id:w,op_index:0,ops:[sr(f,'export const b = 1;','export const b = 2; // [BEITRAG-E2]')]});
+    const cm2=await commit(p.plan_id,w);ok(cm2.success,'korrigierter Rest geschrieben',cm2);
+    t=await read(f);ok(occurrences(t,'[OWNER-E2]')===1&&occurrences(t,'[BEITRAG-E2]')===1,'beide Marken genau einmal',t);
+    ok((await state(p.plan_id)).status==='committed','Plan geschlossen');
+    return {plan_id:p.plan_id,teilcommit:cm.batch_id,zweiter:cm2.batch_id,offen:cm.offen,versionen:v};
+   });
+  await test('E4/E6 (EIN) Gruppe teilweise ungueltig + Zeilen-Umrechnung nach Teilcommit',
+   'Gruppe haelt nur sich zurueck (wartet_gruppe/fehlerhaft), Owner-Op geschrieben; Rest-Zeilen-Op 4->6 umgerechnet; nach Korrektur trifft sie die richtige Zeile',async()=>{
+    const n=++seq,f='e4-'+n+'.ts',o=project+'e4o'+n,w=project+'e4w'+n;
+    await seed(f,['export const k1 = 1;','export const k2 = 1;','export const k3 = 1;','export const k4 = 1;','export const k5 = 1;','export const k6 = 1;',''].join('\n'));
+    const p=await plan(o,[{file_path:f,action:'insert_after',after_line:0,content:'// [OWNER-E4-A]\n// [OWNER-E4-B]'}]);
+    const g1={file_path:f,action:'replace_lines',line_start:4,line_end:4,content:'export const k4 = 4; // [BEITRAG-E4]',gruppe:'g'};
+    const g2={...sr(f,'export const k6 = 1;','export const k6 = (;'),gruppe:'g'};
+    const c=await plan(w,[g1,g2]);ok(!!c.coedit_waits?.length,'Wait',c);
+    const z=await add(p.plan_id,w,[g1,g2]),zs=(z.eigene_op_zustaende??[]).map(x=>x.zustand);
+    ok(z.success&&zs[0]==='wartet_gruppe'&&zs[1]==='fehlerhaft','Gruppe haelt nur sich zurueck',z);
+    const cm=await commit(p.plan_id,o);ok(cm.success&&cm.offen?.length===2&&cm.geschriebene_op_indices?.length===1,'nur Owner-Op geschrieben',cm);
+    await B.bewerteOffenePlanOps(p.plan_id);const st=await B.getBatchPlan(p.plan_id);
+    const restG1=st.ops.find(op=>op.action==='replace_lines');ok(restG1?.line_start===6&&restG1?.line_end===6,'Zeilen-Op umgerechnet 4->6',st.ops);
+    ok(st.offen?.map(x=>x.zustand).join()==='wartet_gruppe,fehlerhaft','Zustaende nach Teilcommit',st.offen);
+    let t=await read(f);ok(t.startsWith('// [OWNER-E4-A]\n// [OWNER-E4-B]\nexport const k1')&&!t.includes('[BEITRAG-E4]'),'Gruppe nicht geschrieben',t);
+    const idx=st.ops.findIndex(op=>op.action==='search_replace');
+    await B.replanBatch({project,plan_id:p.plan_id,agent_id:w,op_index:idx,ops:[{...sr(f,'export const k6 = 1;','export const k6 = 6; // [BEITRAG-E4-2]'),gruppe:'g'}]});
+    const cm2=await commit(p.plan_id,w);ok(cm2.success,'Gruppe nach Korrektur geschrieben',cm2);
+    t=await read(f);const zl=t.split('\n');
+    ok(zl[5]==='export const k4 = 4; // [BEITRAG-E4]'&&occurrences(t,'[BEITRAG-E4-2]')===1&&occurrences(t,'[OWNER-E4-A]')===1,'umgerechnete Zeile trifft k4, alle Marken einmal',t);
+    return {plan_id:p.plan_id,teilcommit:cm.batch_id,zweiter:cm2.batch_id,zustaende_nach_add:zs,rest_zeile:restG1?.line_start};
+   });
+  await test('E8 (EIN) zwei gleichzeitige commits',
+   'genau einer schreibt; der andere meldet bereits_committet (bzw. already_committed); Marken genau einmal',async()=>{
+    const s=await scenario();ok((await add(s.p.plan_id,s.w,[s.op])).success,'Beitrag');
+    const [c1,c2]=await Promise.all([attempt(()=>commit(s.p.plan_id,s.o)),attempt(()=>commit(s.p.plan_id,s.w))]);
+    const schreiber=[c1,c2].filter(c=>c.success&&c.committed>0),zweiter=[c1,c2].find(c=>!(c.success&&c.committed>0));
+    ok(schreiber.length===1&&(!!zweiter?.bereits_committet||zweiter?.error==='already_committed'),'genau einer schreibt',{c1,c2});
+    const t=await read(s.f);for(const m of ['[OWNER-'+s.n+']','[BEITRAG-'+s.n+']'])ok(occurrences(t,m)===1,'Marke einmal '+m,t);
+    return {plan_id:s.p.plan_id,schreiber:schreiber[0]?.batch_id,zweiter:zweiter?.bereits_committet??zweiter?.error};
+   });
+  await test('E12 (EIN) Ein-Autor-Plan bleibt atomar',
+   'eigener Plan mit Syntaxfehler: commit gesperrt (pruef_befunde, kein coedit_methode), nichts geschrieben',async()=>{
+    const n=++seq,f='e12-'+n+'.ts',a=project+'e12-'+n;await seed(f,'export const x = 1;\nexport const y = 1;\n');
+    const p=await plan(a,[sr(f,'export const x = 1;','export const x = 2; // [E12-OK]'),sr(f,'export const y = 1;','export const y = (;')]);
+    const cm=await attempt(()=>commit(p.plan_id,a));ok(!cm.success&&cm.error==='pruef_befunde'&&!cm.coedit_methode,'atomar gesperrt',cm);
+    ok(!(await read(f)).includes('[E12-OK]'),'nichts geschrieben');await B.cancelBatch(p.plan_id,a);
+    return {plan_id:p.plan_id,error:cm.error};
+   });
+ }
  releaseLoad();await loadJob;await crashJob;
  await test('Endzustand vor Fixture-Cleanup',
   'keine offenen/conflict Pläne, keine ungelösten Waits; Tabellenfälle liefen unter Last',async()=>{
@@ -314,12 +428,13 @@ try{
 }catch(e){errors++;evidence({fall:'ABBRUCH',error:e.stack});}
 finally{
  releaseLoad?.();if(loadJob)await loadJob.catch(()=>{});if(crashJob)await crashJob.catch(()=>{});
- console.log('ERGEBNIS_TABELLE '+JSON.stringify(rows));
+ console.log('ERGEBNIS_TABELLE_'+METHODE.toUpperCase()+' '+JSON.stringify(rows));
+ await pool.query('DELETE FROM agent_profil_schalter WHERE project=$1',[project]);
  await pool.query('DELETE FROM agent_event_acks WHERE event_id IN(SELECT id FROM agent_events WHERE project=$1)',[project]);
  for(const t of ['file_batch_waits','file_batch_plans','file_reservations','file_versions','code_files','agent_events','tool_calls'])await pool.query('DELETE FROM '+t+' WHERE project=$1',[project]);
  await pool.query('DELETE FROM plans WHERE project=$1',[project]);await pool.query('DELETE FROM projects WHERE name=$1',[project]);
- await app.close();await D.closePool();
+ await app.close();await SP.beendeSyntaxPool();await D.closePool();
  if(inheritedWindow!==undefined)process.env.SYNAPSE_COEDIT_AKTIV_MIN=inheritedWindow;
 }
-console.log((errors?'FEHLER ':'BESTANDEN ')+checks+' P22-T198 Agentenfehler checks; Fehler='+errors);
+console.log((errors?'FEHLER ':'BESTANDEN ')+checks+' P22-T198/T199 Agentenfehler checks (Methode '+METHODE+'); Fehler='+errors);
 process.exit(errors?1:0);

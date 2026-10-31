@@ -113,7 +113,9 @@ const W1B_AKTIONEN=[
 const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','zustand','erwartete_revision','ziel_revision','korrektur','profil_patch','typ_id','typ_schluessel','typ_inhalt',
  'typ_revision','profil_scope','persona_name','persona_inhalt','persona_vorlage_id','persona_version','user_auftrag','user_zustimmung','anlass','agent_name','rolle','startart','bindung_task_id','bindung_art','bindung_identity_ids',
  // P22-T45: Ausweis-Fristen-Parameter (im Schema vor den Hauptagent-Parametern)
- 'schatten_stunden','erstnutzung_minuten','visum_minuten','arbeitsfreigabe_stunden','anmeldung_plaene_minuten','files_plan_stunden','shell_hinweis_minuten','files_plan_ablauf_aktiv','frist_namen',
+ 'schatten_stunden','erstnutzung_minuten','visum_minuten','arbeitsfreigabe_stunden','anmeldung_plaene_minuten','files_plan_stunden','shell_hinweis_minuten',
+ // P22-T199: additiver Fristwert coedit_aktiv_sekunden (Co-Edit Ready-Gate, Schalter coedit_ohne_gate AUS).
+ 'coedit_aktiv_sekunden','files_plan_ablauf_aktiv','frist_namen',
  // P22-T173: identitaet_umbenennen (direkt nach den Fristen)
  'neuer_name',
  // P22-T93: additive Netzwerkparameter zwischen Fristen und Hex.

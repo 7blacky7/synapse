@@ -282,6 +282,10 @@ export const filesTool: ConsolidatedTool = {
                 type: 'string',
                 description: '(optional): Wie anchor_text, aber Substring-Match statt Exact. Nuetzlich wenn Zeile zusaetzliche Zeichen enthalten darf.',
               },
+              gruppe: {
+                type: 'string',
+                description: '(optional, P22-T199, nur bei Schalter coedit_ohne_gate EIN wirksam): zusammengehoerige eigene Ops; eine Gruppe wird nur vollstaendig und gueltig committet und haelt nur sich selbst zurueck. Ohne gruppe ist jede Op eigenstaendig.',
+              },
             },
             required: ['file_path', 'action'],
           },

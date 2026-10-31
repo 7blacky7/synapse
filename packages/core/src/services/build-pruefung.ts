@@ -79,6 +79,7 @@ import type { PruefDatei } from './plan-befunde.js';
 import type { FehlerBefund } from './fehlermuster-pruefung.js';
 import { typenBestand, typenZustand, TYPEN_LOCKFILES, type TypenBestand, type TypenInfo } from './build-typen.js';
 import { leseSchalter } from './intern-schalter.js';
+import { lesePlanPruefEinstellungen, leerePlanPruefCache, planPruefBereich, PLAN_PRUEF_ZAHLEN } from './plan-pruef-einstellungen.js';
 
 // ─── Vertrag zum Pruefcontainer (rest-api pruef-container.ts, pruefer_tsbuild.py) ───────────────────────────
 
@@ -286,6 +287,12 @@ interface Werte {
   nachlauf?: boolean;
   /** P16-T23: Sammelzeit vor einem Nachlauf in ms (nur global; Standard NACHLAUF_BUENDEL_MS). */
   nachlauf_buendel_ms?: number;
+  /** P22-T199: nur bereich 'plan_pruefung[:projekt:<name>]' (plan-pruef-einstellungen.ts); aktiv heisst dort Plan-Pruefung an. */
+  typen_ms?: number;
+  gueltig_ms?: number;
+  /** P22-T201: Schattenstand-Puffer fuer Co-Edit ohne Gate (plan-pruef-einstellungen.ts). */
+  schatten_puffer_mb?: number;
+  schatten_puffer_min_zeilen?: number;
 }
 
 interface EinstellungsZeile {
@@ -1893,7 +1900,12 @@ export const BUILD_PARAMETER: Record<string, Record<string, unknown>> = {
   plan_id: { type: 'string', description: 'build_pruefen (P16-T23): geschriebener Plan, dessen Stand projektweit im Hintergrund geprueft wird (Aufruf steht fertig in der commit-Antwort); offener Plan -> erst committen' },
   nachlauf: { type: 'boolean', description: 'build_einstellungen setzen (P16-T23): commit schreibt sofort, die projektweite Pruefung laeuft danach gebuendelt im Hintergrund, Ergebnis als Hinweis build_nachlauf beim naechsten Tool-Aufruf (statt Warteschlange) - mit project fuer dieses Projekt, ohne global. Standard aus.' },
   nachlauf_buendel_s: { type: 'number', description: 'build_einstellungen setzen (P16-T23): Sammelzeit in s vor einem Nachlauf (0..120, global, Standard 3)' },
-  zuruecksetzen: { type: 'string', enum: ['projekt', 'global', 'budget'], description: 'build_einstellungen setzen: Eintrag entfernen (projekt braucht project) - danach gilt die naechste Ebene bzw. Env' },
+  plan_pruefung_aktiv: { type: 'boolean', description: 'build_einstellungen setzen (P22-T199): kleine Plan-Pruefung und commit-Sperre an/aus (mit project = Projektebene, sonst global; Standard an, Rueckfall Env FEHLERPRUEFUNG_PLAN)' },
+  plan_pruefung_typen_ms: { type: 'number', description: 'build_einstellungen setzen (P22-T199): Zeitbudget der Typstufe je Plan-Pruefung in ms (0..120000, Standard 5000, Rueckfall Env FEHLERPRUEFUNG_TYPEN_MS)' },
+  plan_pruefung_gueltig_ms: { type: 'number', description: 'build_einstellungen setzen (P22-T199): Wiederverwendung einer Plan-Pruefung bei unveraendertem Endstand in ms (0..3600000, Standard 60000, Rueckfall Env FEHLERPRUEFUNG_GUELTIG_MS)' },
+  plan_pruefung_schatten_puffer_mb: { type: 'number', description: 'build_einstellungen setzen (P22-T201): Grenze des Schattenstand-Puffers fuer Co-Edit ohne Gate je Prozess in MB (0..4096, Standard 64, 0 = Puffer aus)' },
+  plan_pruefung_schatten_puffer_min_zeilen: { type: 'number', description: 'build_einstellungen setzen (P22-T201): Schattenstand-Puffer erst ab dieser Zeilenzahl der Datei (0..10000000, Standard 2000)' },
+  zuruecksetzen: { type: 'string', enum: ['projekt', 'global', 'budget', 'plan_pruefung'], description: 'build_einstellungen setzen: Eintrag entfernen (projekt braucht project; plan_pruefung mit project = Projektebene, sonst global) - danach gilt die naechste Ebene bzw. Env' },
 };
 
 export function istBuildAction(action: string | undefined): boolean {
@@ -1931,6 +1943,7 @@ async function einstellungenAnzeige(project: string | undefined): Promise<Record
     budget: await wirksamesBuildBudget(),
     sprachen_wirksam: await sprachenAktiv(project),
     nachlauf: await buildNachlaufAktiv(project),
+    plan_pruefung: await lesePlanPruefEinstellungen(project ?? null, { frisch: true }),
     ...(anbindung ? { container_jetzt: anbindung.budget() } : {}),
     env: { BUILD_PRUEFUNG: process.env.BUILD_PRUEFUNG ?? null },
     ...(einstellungsCache?.fehler ? { tabelle_fehler: einstellungsCache.fehler } : {}),
@@ -2008,14 +2021,28 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
         if (falsch.length > 0) fehler.push(`sprachen nur ${ALLE_SPRACHEN.join(' | ')} | keine (unbekannt: ${falsch.join(', ')})`);
         else sprachen = [...new Set(liste)];
       }
+      // P22-T199: Werte der kleinen Plan-Pruefung (plan-pruef-einstellungen.ts), eigener bereich je Projekt/global.
+      const planWerte: Werte = {};
+      const planAktiv = args.plan_pruefung_aktiv === true || args.plan_pruefung_aktiv === 'true' ? true : args.plan_pruefung_aktiv === false || args.plan_pruefung_aktiv === 'false' ? false : undefined;
+      const planTypen = zahl(args.plan_pruefung_typen_ms, 'plan_pruefung_typen_ms', PLAN_PRUEF_ZAHLEN.typen_ms.min, PLAN_PRUEF_ZAHLEN.typen_ms.max, fehler);
+      const planGueltig = zahl(args.plan_pruefung_gueltig_ms, 'plan_pruefung_gueltig_ms', PLAN_PRUEF_ZAHLEN.gueltig_ms.min, PLAN_PRUEF_ZAHLEN.gueltig_ms.max, fehler);
+      if (planAktiv !== undefined) planWerte.aktiv = planAktiv;
+      if (planTypen !== undefined) planWerte.typen_ms = planTypen;
+      if (planGueltig !== undefined) planWerte.gueltig_ms = planGueltig;
+      // P22-T201: Schattenstand-Puffer (Co-Edit ohne Gate).
+      const pufferMb = zahl(args.plan_pruefung_schatten_puffer_mb, 'plan_pruefung_schatten_puffer_mb', PLAN_PRUEF_ZAHLEN.schatten_puffer_mb.min, PLAN_PRUEF_ZAHLEN.schatten_puffer_mb.max, fehler);
+      const pufferZeilen = zahl(args.plan_pruefung_schatten_puffer_min_zeilen, 'plan_pruefung_schatten_puffer_min_zeilen', PLAN_PRUEF_ZAHLEN.schatten_puffer_min_zeilen.min, PLAN_PRUEF_ZAHLEN.schatten_puffer_min_zeilen.max, fehler);
+      if (pufferMb !== undefined) planWerte.schatten_puffer_mb = pufferMb;
+      if (pufferZeilen !== undefined) planWerte.schatten_puffer_min_zeilen = pufferZeilen;
       const zurueck = text(args.zuruecksetzen);
-      if (zurueck && !['projekt', 'global', 'budget'].includes(zurueck)) fehler.push('zuruecksetzen nur projekt | global | budget');
+      if (zurueck && !['projekt', 'global', 'budget', 'plan_pruefung'].includes(zurueck)) fehler.push('zuruecksetzen nur projekt | global | budget | plan_pruefung');
       if (zurueck === 'projekt' && !project) fehler.push('zuruecksetzen projekt braucht project');
-      if (aktiv === undefined && sprachen === undefined && nachlauf === undefined && buendelS === undefined && Object.keys(budget).length === 0 && !zurueck) fehler.push('nichts zu setzen (aktiv, sprachen, nachlauf, nachlauf_buendel_s, speicher_mb, tmpfs_mb, heap_mb, zeitlimit_s oder zuruecksetzen)');
+      if (Object.keys(planWerte).length === 0 && aktiv === undefined && sprachen === undefined && nachlauf === undefined && buendelS === undefined && Object.keys(budget).length === 0 && !zurueck) fehler.push('nichts zu setzen (aktiv, sprachen, nachlauf, nachlauf_buendel_s, speicher_mb, tmpfs_mb, heap_mb, zeitlimit_s oder zuruecksetzen)');
       if (fehler.length > 0) return { success: false, error: 'ungueltig', message: fehler.join('; '), fehler };
       const geaendert: string[] = [];
       if (zurueck) {
-        const bereich = zurueck === 'projekt' ? 'projekt:' + project : zurueck === 'global' ? 'global' : 'pruefcontainer';
+        const bereich = zurueck === 'projekt' ? 'projekt:' + project : zurueck === 'global' ? 'global'
+          : zurueck === 'plan_pruefung' ? planPruefBereich(project ?? null) : 'pruefcontainer';
         await getPool().query('DELETE FROM build_pruefung_einstellungen WHERE bereich = $1', [bereich]);
         geaendert.push(`${bereich} entfernt`);
       }
@@ -2042,7 +2069,13 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
         await zeileSchreiben('pruefcontainer', budget, agent, grund);
         geaendert.push(`pruefcontainer: ${JSON.stringify(budget)}`);
       }
+      if (Object.keys(planWerte).length > 0) {
+        const bereich = planPruefBereich(project ?? null);
+        await zeileSchreiben(bereich, planWerte, agent, grund);
+        geaendert.push(`${bereich}: ${JSON.stringify(planWerte)}`);
+      }
       einstellungsCache = null;
+      leerePlanPruefCache();
       const neustart = await synchronisiereBuildBudget(true);
       return {
         success: true, modus, geaendert,

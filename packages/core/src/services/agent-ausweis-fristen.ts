@@ -14,6 +14,13 @@
  *                        (Status expired, nichts geschrieben; Standard 48 h). Laufende Plaene messen gegen den aktuellen Wert.
  *   shell_hinweis_minuten  shell_activity (P23-T3, User 20.10.2026): beendete Shell-Jobs ALLER Agenten werden bis so viele
  *                        Minuten nach Abschluss als Fertig-Hinweis zugestellt, laufende immer (Standard 60; vorher fest 8).
+ *   coedit_aktiv_sekunden  Co-Edit Ready-Gate (P22-T199, User-Entscheidung bf31526a E5): so lange haelt echte Tool-Aktivitaet
+ *                        einen noch nicht bereiten Beitragenden "aktiv" (commit wartet auf ihn). Nur bei Produkt-Schalter
+ *                        coedit_ohne_gate AUS wirksam; bei EIN gibt es keine Frist. t223-Nachbesserung (D0 2445a89d): ohne
+ *                        PG-Wert gilt exakt das Live-Verhalten, also die Env SYNAPSE_COEDIT_AKTIV_MIN (Minuten, je Aufruf
+ *                        gelesen) bzw. Standard 300 s (5 min). Die User-Entscheidung E5 (60 s) wird als PG-Wert gesetzt
+ *                        (admin ausweis_fristen coedit_aktiv_sekunden=60), kein stiller Wechsel. Einzige Env-Ausnahme dieser
+ *                        Datei, nur als Rueckfall in coeditAktivFrist (Quelle 'env').
  * QUELLE: PG-Tabelle agent_ausweis_fristen (Schema 117), je Wert projekt > global > Standard. KEINE Env (die fruehere
  *   Env-Variable fuer die Erstnutzung entfaellt). Lesefehler (z. B. vor Schema 117) -> Standard mit letzter_fehler.
  * EINE LESESTELLE: leseAusweisFristen (und die Kurzformen schattenFristMs/erstnutzungFristMs). Diese Datei importiert
@@ -28,10 +35,10 @@
 import { getPool } from '../db/client.js';
 import { kernTtlMs } from './agent-profil-schalter.js';
 
-export const AUSWEIS_FRIST_NAMEN = ['schatten_stunden', 'erstnutzung_minuten', 'visum_minuten', 'arbeitsfreigabe_stunden', 'anmeldung_plaene_minuten', 'files_plan_stunden', 'shell_hinweis_minuten'] as const;
+export const AUSWEIS_FRIST_NAMEN = ['schatten_stunden', 'erstnutzung_minuten', 'visum_minuten', 'arbeitsfreigabe_stunden', 'anmeldung_plaene_minuten', 'files_plan_stunden', 'shell_hinweis_minuten', 'coedit_aktiv_sekunden'] as const;
 export type AusweisFristName = typeof AUSWEIS_FRIST_NAMEN[number];
 export type AusweisFristQuelle = 'standard' | 'global' | 'projekt';
-type Einheit = 'stunden' | 'minuten';
+type Einheit = 'stunden' | 'minuten' | 'sekunden';
 
 interface FristDefinition { standard: number; einheit: Einheit; min: number; max: number; wirkung: string }
 /** Code-Standard und zulaessiger Bereich je Wert. Der Standard gilt nur, wenn weder Projekt- noch globaler Wert gesetzt ist. */
@@ -50,8 +57,10 @@ export const AUSWEIS_FRIST_DEFINITIONEN: Readonly<Record<AusweisFristName, Frist
     wirkung: 'files-Plaene (P6-T49): offener Plan ohne Aktivitaet laenger als diese Frist wird automatisch abgeschlossen (Status expired, nichts geschrieben, Ops bleiben lesbar)' },
   shell_hinweis_minuten: { standard: 60, einheit: 'minuten', min: 1, max: 1440,
     wirkung: 'shell_activity (P23-T3): beendete Shell-Jobs aller Agenten erscheinen bis so viele Minuten nach Abschluss als Fertig-Hinweis (laufende immer); aeltere fallen weg' },
+  coedit_aktiv_sekunden: { standard: 300, einheit: 'sekunden', min: 10, max: 3600,
+    wirkung: 'Co-Edit Ready-Gate (P22-T199, nur Schalter coedit_ohne_gate AUS): ein noch nicht bereiter Beitragender mit Tool-Aktivitaet in diesem Fenster haelt den commit des gemeinsamen Plans auf; danach gilt er als inaktiv, seine Ops werden mitgeschrieben' },
 };
-const EINHEIT_MS: Readonly<Record<Einheit, number>> = { stunden: 3_600_000, minuten: 60_000 };
+const EINHEIT_MS: Readonly<Record<Einheit, number>> = { stunden: 3_600_000, minuten: 60_000, sekunden: 1_000 };
 
 export interface AusweisFristWert {
   name: AusweisFristName;
@@ -145,6 +154,19 @@ export async function erstnutzungFristMs(project: string | null): Promise<number
 /** P6-T49: Ablauffrist offener files-Plaene (ohne Aktivitaet) in ms fuer das Projekt; Lesestelle leseAusweisFristen. */
 export async function filesPlanFristMs(project: string | null): Promise<number> {
   return (await leseAusweisFristen(project)).fristen.files_plan_stunden.ms;
+}
+/** P22-T199: Aktivitaetsfenster des Co-Edit Ready-Gates (nur Schalter coedit_ohne_gate AUS) mit Quelle; Lesestelle leseAusweisFristen. */
+export async function coeditAktivFrist(project: string | null): Promise<{ ms: number; sekunden: number; quelle: AusweisFristQuelle | 'env'; letzter_fehler: string | null }> {
+  const stand = await leseAusweisFristen(project);
+  const f = stand.fristen.coedit_aktiv_sekunden;
+  if (f.quelle === 'standard') {
+    // t223-Nachbesserung: ohne PG-Wert (auch bei Lesefehler) wie live: Env SYNAPSE_COEDIT_AKTIV_MIN je Aufruf, sonst 5 min.
+    const minuten = Number(process.env.SYNAPSE_COEDIT_AKTIV_MIN);
+    if (Number.isFinite(minuten) && minuten > 0) {
+      return { ms: minuten * 60_000, sekunden: minuten * 60, quelle: 'env', letzter_fehler: stand.letzter_fehler };
+    }
+  }
+  return { ms: f.ms, sekunden: f.wert, quelle: f.quelle, letzter_fehler: stand.letzter_fehler };
 }
 
 /**

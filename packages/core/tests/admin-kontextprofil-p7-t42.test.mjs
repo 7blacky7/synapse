@@ -54,6 +54,8 @@ const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id'
   'skill_rerank_budget_tokens', 'skill_rerank_timeout_ms',
   // P23-T3: additiver Fristwert (beendete Shell-Jobs in shell_activity).
   'shell_hinweis_minuten',
+  // P22-T199: additiver Fristwert (Aktivitaetsfenster Co-Edit Ready-Gate).
+  'coedit_aktiv_sekunden',
   // P22-T7: additive Parameter (Heartbeat-Takt, Verbrauchsmonat).
   'intervall_ms', 'monat',
   // P22-T8: additive Parameter des API-Agenten (Budget, Modelle, Einstellwerte).

@@ -6,11 +6,11 @@ import { apiFetch } from '../api/auth';
  * Echt angeschlossen: GET/PUT /api/projects/:project/agent-profile/ausweis-fristen (derselbe Core-Dispatcher wie
  * admin ausweis_fristen). Projektebene oder global (User und Koordinator); Wert + Quelle (standard|global|projekt) je Frist.
  */
-type FristName = 'schatten_stunden' | 'erstnutzung_minuten' | 'visum_minuten' | 'arbeitsfreigabe_stunden' | 'anmeldung_plaene_minuten' | 'files_plan_stunden' | 'shell_hinweis_minuten';
+type FristName = 'schatten_stunden' | 'erstnutzung_minuten' | 'visum_minuten' | 'arbeitsfreigabe_stunden' | 'anmeldung_plaene_minuten' | 'files_plan_stunden' | 'shell_hinweis_minuten' | 'coedit_aktiv_sekunden';
 interface FristWert {
   name: FristName;
   wert: number;
-  einheit: 'stunden' | 'minuten';
+  einheit: 'stunden' | 'minuten' | 'sekunden';
   quelle: 'standard' | 'global' | 'projekt';
   standard: number;
   global: number | null;
@@ -32,9 +32,10 @@ const NAMEN: Array<{ name: FristName; label: string }> = [
   { name: 'anmeldung_plaene_minuten', label: 'Eigene offene Pläne in der Anmeldung' },
   { name: 'files_plan_stunden', label: 'Offene files-Pläne laufen ab nach (ohne Aktivität)' },
   { name: 'shell_hinweis_minuten', label: 'Beendete Shell-Jobs in shell_activity zeigen bis' },
+  { name: 'coedit_aktiv_sekunden', label: 'Co-Edit: commit wartet auf aktive Beitragende hoechstens (nur Schalter coedit_ohne_gate AUS)' },
 ];
 const QUELLE: Record<FristWert['quelle'], string> = { standard: 'Standard', global: 'global', projekt: 'Projekt' };
-const einheit = (f: FristWert) => (f.einheit === 'stunden' ? 'Std.' : 'Min.');
+const einheit = (f: FristWert) => (f.einheit === 'stunden' ? 'Std.' : f.einheit === 'sekunden' ? 'Sek.' : 'Min.');
 
 function fehlerText(daten: unknown, status: number): string {
   const e = (daten as { error?: { code?: string } | string } | null)?.error;

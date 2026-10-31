@@ -12,6 +12,7 @@ import { getParserForFile } from '../parser/index.js';
 import { getReferences } from './code-intel.js';
 import type { PruefDatei, PruefDateiOp } from './plan-befunde.js';
 import type { FehlerBefund } from './fehlermuster-pruefung.js';
+import { lesePlanPruefEinstellungen } from './plan-pruef-einstellungen.js';
 
 export interface TypRohBefund extends FehlerBefund {
   op_index: number | null;
@@ -210,9 +211,8 @@ export function checkJsAusPg(file:string,quellen:Map<string,string>):boolean {
 export async function pruefePlanTypen(project: string, dateien: PruefDatei[], basisvergleich = true): Promise<TypPruefung | null> {
   if (!dateien.some(d => istTs(d.file_path))) return null;
   const start = Date.now();
-  const roh = process.env.FEHLERPRUEFUNG_TYPEN_MS;
-  const zahl = roh === undefined || roh.trim() === '' ? NaN : Number(roh);
-  const ms = Number.isFinite(zahl) && zahl >= 0 ? zahl : 5000;
+  // P22-T199: Budget aus der Einstellung typen_ms (projekt > global > Env FEHLERPRUEFUNG_TYPEN_MS > Standard 5000).
+  const ms = (await lesePlanPruefEinstellungen(project)).typen_ms.wert;
   let intel: Awaited<ReturnType<typeof intelStufe>> = { befunde:[],ziele:[] };
   try {
     // Keine Quelltexte aus dem FS: gleiches Ergebnis im API- und Daemon-Schreibweg.

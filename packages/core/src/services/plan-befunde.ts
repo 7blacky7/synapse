@@ -108,6 +108,8 @@ export async function pruefePlanDateien(
   project: string,
   dateien: PruefDatei[],
   vorher: PlanBefund[] = [],
+  /** P22-T199: ohneTypen = nur Syntax + Fehlermuster (Pruefung je Op bei Schalter coedit_ohne_gate EIN; Typen/Build nachgelagert). */
+  opt: { ohneTypen?: boolean } = {},
 ): Promise<PlanPruefung> {
   const t0 = Date.now();
   const quittiert = new Map(vorher.filter((b) => b.status === 'quittiert').map((b) => [befundSchluessel(b), b.quittiert_grund] as const));
@@ -156,7 +158,7 @@ export async function pruefePlanDateien(
       status = 'teilweise';
     }
   }
-  const typPruefung = await pruefePlanTypen(project, dateien);
+  const typPruefung = opt.ohneTypen ? null : await pruefePlanTypen(project, dateien);
   if (typPruefung) {
     if (typPruefung.status === 'zeitlimit' || typPruefung.status === 'nicht_verfuegbar') status = 'teilweise';
     altlasten += typPruefung.altlasten;
@@ -181,7 +183,7 @@ export async function pruefePlanDateien(
   // P16-T16 E1: projektweite Build-Pruefung (null = Schalter aus bzw. keine relevante Datei -> Antwort unveraendert).
   // Aus der Warteschlange wird auf das Resultat gewartet, sonst laeuft es im Hintergrund (status laeuft).
   // P16-T23: im Nachlauf-Modell keine Build-Stufe vor dem commit (sie laeuft danach, build-pruefung stosseBuildNachlaufAn).
-  const build = (await buildNachlaufAktiv(project)).aktiv ? null : await pruefeBuildFuerPlan(project, dateien, { warten: laeuftAusBuildWarteschlange() });
+  const build = opt.ohneTypen || (await buildNachlaufAktiv(project)).aktiv ? null : await pruefeBuildFuerPlan(project, dateien, { warten: laeuftAusBuildWarteschlange() });
   for (const roh of build?.befunde ?? []) {
     const ursache = roh.op_index !== null ? dateien.find((d) => d.ops.some((o) => o.op_index === roh.op_index)) : undefined;
     const ergebnisHash = hash(ursache?.ergebnis ?? '');
@@ -224,6 +226,22 @@ export async function ladePlanBefunde(planId: string): Promise<PlanPruefung | nu
 /** Offene error-Befunde, die den commit sperren (Altlasten und warnings nie). */
 export function blockierendeBefunde(befunde: PlanBefund[]): PlanBefund[] {
   return befunde.filter((b) => b.status === 'offen' && b.severity === 'error' && !b.altlast);
+}
+
+/**
+ * P22-T199 (Co-Edit ohne Gate, Schalter coedit_ohne_gate EIN; Freigabe bf31526a E3): Befunde, die eine EINZELNE Op ungueltig
+ * machen, je op_index - offene error-Befunde der Stufen Syntax und Fehlermuster. Typen und Build zaehlen hier bewusst nicht:
+ * die Typpruefung laeuft vorerst nachgelagert und entscheidet erst nach belegter Messung (Dauer je Op) mit. Ein
+ * Kombinationsfehler zaehlt an der Op, der opZuordnung ihn zuordnet (spaeteste beteiligte). Befunde ohne Op zaehlen nicht.
+ * Bei Schalter AUS gilt unveraendert commitSperre (ganzer Plan).
+ */
+export function opGateBefunde(befunde: PlanBefund[]): Map<number, PlanBefund[]> {
+  const je = new Map<number, PlanBefund[]>();
+  for (const b of blockierendeBefunde(befunde)) {
+    if (b.op_index === null || (b.quelle !== 'syntax' && b.quelle !== 'muster')) continue;
+    je.set(b.op_index, [...(je.get(b.op_index) ?? []), b]);
+  }
+  return je;
 }
 
 /** Antwort fuer einen gesperrten commit, oder null wenn nichts sperrt. */
