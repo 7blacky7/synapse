@@ -200,8 +200,9 @@ test('Feature-off retains legacy routing without policy/owner/transfer calls',as
  assert.equal(await n.sync.ereignis({project:n.project.name,path:'a.png',type:'add'}),false);
  assert.deepEqual(n.requests,['capability']);assert.deepEqual(n.project.asset_sync,{aktiv:true});await n.sync.stopAll();assert.equal(n.project.enabled,true);
 });
-test('Projekt ohne asset_sync.aktiv bleibt lokal und fragt die API nicht (P13-T44)',async()=>{
- const n=await negotiation();delete n.project.asset_sync;n.sync.starte(n.project);assert.equal(await n.sync.bereit(n.project.name),false);
+// P22-T238 (thought d59f32e8): Standard ist jetzt EIN; nur ausdruecklich aktiv:false bleibt lokal (vorher: fehlendes Feld).
+test('P22-T238 asset-sync.ts verhandle: asset_sync.aktiv:false (bewusst aus) bleibt lokal und fragt die API nicht',async()=>{
+ const n=await negotiation();n.project.asset_sync={aktiv:false};n.sync.starte(n.project);assert.equal(await n.sync.bereit(n.project.name),false);
  assert.equal(await n.sync.ereignis({project:n.project.name,path:'a.png',type:'add'}),false);
  assert.deepEqual(n.requests,[]);await n.sync.stopAll();
 });

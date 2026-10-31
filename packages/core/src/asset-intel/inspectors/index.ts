@@ -16,6 +16,8 @@ import { assetExeInspektoren } from './exe/index.js';
 import { assetMedienInspektoren } from './medien/index.js';
 import { assetDccInspektoren } from './dcc/index.js';
 import { assetUnrealInspektoren } from './unreal/index.js';
+// P22-T238 mit P4-T75 (thought 0e4c4c3f): Schriften TTF/OTF/TTC, WOFF, WOFF2, EOT.
+import { assetSchriftInspektoren } from './schrift/index.js';
 
 export {
   asset3dInspektoren,
@@ -25,6 +27,7 @@ export {
   assetMedienInspektoren,
   assetDccInspektoren,
   assetUnrealInspektoren,
+  assetSchriftInspektoren,
 };
 
 /** Alle echten Inspektoren (ohne den Platzhalter generic-binary). */
@@ -36,4 +39,5 @@ export const alleInspektoren: AssetInspector[] = [
   ...assetMedienInspektoren,
   ...assetDccInspektoren,
   ...assetUnrealInspektoren,
+  ...assetSchriftInspektoren,
 ];

@@ -34,11 +34,15 @@ test('P18-T26: Vorschau-Formate geben alle Formate mit echtem A14-Decoder frei (
   const c = ladeAssetKonfiguration({});
   assert.ok(Array.isArray(ANSICHT_RENDERER_FORMATE) && ANSICHT_RENDERER_FORMATE.includes('bmp'));
   for (const f of ANSICHT_RENDERER_FORMATE) assert.ok(c.vorschau.formate.includes(f), 'Vorschau-Standard ohne ' + f);
-  assert.ok(!c.speicher.transferFormate.includes('bmp'), 'Transfer-Katalog darf nicht still erweitert werden');
+  // P22-T238: transferFormate bleibt der Katalog BEKANNTER Formate; freigegeben ist ohne Betreiberliste trotzdem alles (transferAlle).
+  assert.ok(!c.speicher.transferFormate.includes('bmp'), 'Transfer-Katalog (bekannte Formate) wird nicht still erweitert');
+  assert.equal(c.speicher.transferAlle, true, 'P22-T238: ohne Betreiberliste sind alle Formate freigegeben');
   // Explizite Betreiberliste mit bmp ist gueltig, unbekannte Formate bleiben Fehler.
   assert.deepEqual(ladeAssetKonfiguration({ SYNAPSE_ASSET_PREVIEW_FORMATS: 'png,BMP' }).vorschau.formate, ['bmp', 'png']);
   assert.throws(() => ladeAssetKonfiguration({ SYNAPSE_ASSET_PREVIEW_FORMATS: 'bmp,svg' }), /nicht registrierte Formate: svg/);
-  assert.throws(() => ladeAssetKonfiguration({ SYNAPSE_ASSET_TRANSFER_FORMATS: 'bmp' }), /nicht registrierte Formate: bmp/);
+  // P22-T238 (User 31.10.2026, thought 54ff9ce7): Transfer haengt nicht mehr am Inspector-Katalog -> bmp als Betreiberliste gueltig.
+  assert.deepEqual(ladeAssetKonfiguration({ SYNAPSE_ASSET_TRANSFER_FORMATS: 'bmp' }).speicher.transferFormate, ['bmp']);
+  assert.throws(() => ladeAssetKonfiguration({ SYNAPSE_ASSET_TRANSFER_FORMATS: 'bmp,a b' }), /ungueltige Formatnamen: a b/);
 
   // Echter Decoder: 2x1-BMP (24 bit, BGR) -> PNG mit richtigen Abmessungen.
   const { execFileSync } = await import('node:child_process');
@@ -83,10 +87,13 @@ test('P13-T22: project overrides can tighten but never exceed operator ceilings'
     () => loeseAssetProjektoptionen(c, { maxDateiBytes: c.speicher.maxDateiBytes + 1 }),
     /Betreibergrenze/,
   );
+  // P22-T238: ohne Betreiberliste darf das Projekt jedes gueltige Format nennen; mit Betreiberliste bleibt es eine Teilmenge.
+  assert.deepEqual(loeseAssetProjektoptionen(c, { erlaubteTypen: ['not-a-registered-asset-format'] }).erlaubteTypen, ['not-a-registered-asset-format']);
   assert.throws(
-    () => loeseAssetProjektoptionen(c, { erlaubteTypen: ['not-a-registered-asset-format'] }),
+    () => loeseAssetProjektoptionen(ladeAssetKonfiguration({ SYNAPSE_ASSET_TRANSFER_FORMATS: 'png' }), { erlaubteTypen: ['not-a-registered-asset-format'] }),
     /nicht registrierte Formate/,
   );
+  assert.throws(() => loeseAssetProjektoptionen(c, { erlaubteTypen: ['Leer Zeichen'] }), /ungueltige Formatnamen/);
 });
 
 test('P13-T22: enabled storage requires the exact Projects root env with an absolute path', () => {

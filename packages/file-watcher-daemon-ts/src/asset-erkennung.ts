@@ -2,9 +2,11 @@
 import * as fs from 'node:fs/promises';
 import {constants} from 'node:fs';
 import * as path from 'node:path';
-import {assetArt,standardRegistry,loadGitignore,shouldIgnore,istGesperrt,normalisiereSpeicherPfad} from '@synapse/core';
-export interface LokalesAsset {format:string;groesse:number;signatur:string;}
-export async function pruefeLokalesAsset(root:string,project:string,pfad:string,o:{maxDateiBytes:number;erlaubteTypen?:string[]}):Promise<LokalesAsset|null>{
+import {assetArt,ermittleTransferFormat,loadGitignore,shouldIgnore,istGesperrt,normalisiereSpeicherPfad} from '@synapse/core';
+/** via (P22-T238): 'inspektor' = Format aus dem Inspector-Katalog, 'generisch' = Binaerdatei ohne Inspector (Endung als Format). */
+export interface LokalesAsset {format:string;groesse:number;signatur:string;via?:'inspektor'|'generisch';}
+/** generisch (P22-T238): API-Freigabe generischeFormate (Schalter asset_transfer_generisch); fehlt sie, gilt das Altverhalten. */
+export async function pruefeLokalesAsset(root:string,project:string,pfad:string,o:{maxDateiBytes:number;erlaubteTypen?:string[];generisch?:boolean}):Promise<LokalesAsset|null>{
  const rel=normalisiereSpeicherPfad(pfad);
  if(istGesperrt(rel,root,project)||shouldIgnore(loadGitignore(root,project),rel))return null;
  let parent=await fs.realpath(root);
@@ -20,8 +22,9 @@ export async function pruefeLokalesAsset(root:string,project:string,pfad:string,
   const head=Buffer.alloc(4096),read=await fd.read(head,0,head.length,0);
   const bytes=head.subarray(0,read.bytesRead);
   if(!assetArt(rel,bytes))return null;
-  const format=standardRegistry.detect(rel,bytes).format;
-  if(!format||o.erlaubteTypen&&!o.erlaubteTypen.includes(format))return null;
-  return {format,groesse:Number(s.size),signatur:[s.dev,s.ino,s.size,s.mtimeNs,s.ctimeNs].join(':')};
+  // P22-T238: Text/SVG kommt hier nie an (assetArt null); generisch nur fuer Binaerinhalt ohne Inspector.
+  const erkannt=ermittleTransferFormat(rel,bytes,o.generisch===true);
+  if(!erkannt||o.erlaubteTypen&&!o.erlaubteTypen.includes(erkannt.format))return null;
+  return {format:erkannt.format,via:erkannt.via,groesse:Number(s.size),signatur:[s.dev,s.ino,s.size,s.mtimeNs,s.ctimeNs].join(':')};
  }finally{await fd.close();}
 }

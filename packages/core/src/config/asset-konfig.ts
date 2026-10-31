@@ -9,6 +9,7 @@ import { standardRegistry } from '../asset-intel/registry.js';
 import { genericBinaryInspector } from '../asset-intel/generic-binary.js';
 import { alleInspektoren } from '../asset-intel/inspectors/index.js';
 import type { AssetLimits } from '../asset-intel/types.js';
+import { assetArt } from '../watcher/binary.js';
 // Nur ein Wert-Import ohne Rueckimport: der Renderer kennt asset-konfig nur als Typ.
 import { ANSICHT_RENDERER_FORMATE } from '../services/asset-ansicht-renderer.js';
 
@@ -47,7 +48,14 @@ export interface AssetKonfiguration {
     chunkBytes: number;
     parallelTransfers: number;
     timeoutMs: number;
+    /** Bekannte Transferformate (Inspector-Katalog) bzw. die ausdrueckliche Betreiberliste SYNAPSE_ASSET_TRANSFER_FORMATS. */
     transferFormate: string[];
+    /**
+     * P22-T238: true = keine Betreiber-Einschraenkung (SYNAPSE_ASSET_TRANSFER_FORMATS nicht gesetzt). Dann ist jedes gueltige
+     * Format freigegeben, auch ein generisches ohne Inspector (wirksam nur mit Schalter asset_transfer_generisch).
+     * Fehlt das Feld (alte Fixtures), gilt die Liste transferFormate wie bisher.
+     */
+    transferAlle?: boolean;
   };
   sync: {
     richtung: AssetSyncRichtung;
@@ -110,6 +118,8 @@ export interface WirksameAssetProjektoptionen {
   maxProjektBytes: number;
   maxProjektDateien: number;
   erlaubteTypen: string[];
+  /** P22-T238: true = keine Typ-Einschraenkung (weder Betreiber- noch Projektliste); erlaubteTypen zeigt dann nur den bekannten Katalog. */
+  alleTypen: boolean;
   maxObjekteJeDatei: number;
   vorschau: {
     maxPixel: number;
@@ -181,11 +191,17 @@ function unterordner(env: NodeJS.ProcessEnv, name: string, standard: string): st
   return wert;
 }
 
-function formate(env: NodeJS.ProcessEnv, name: string, katalog: string[]): string[] {
+/**
+ * nurKatalog=false (P22-T238, Transfer): jeder gueltige Formatname ist erlaubt, auch ohne Inspector (z. B. avif, woff2).
+ * nurKatalog=true (Vorschau): nur Formate mit Inspector bzw. Renderer.
+ */
+function formate(env: NodeJS.ProcessEnv, name: string, katalog: string[], nurKatalog = true): string[] {
   const roh = env[name];
   if (roh === undefined) return [...katalog];
   const angefragt = [...new Set(roh.split(',').map(s => s.trim().toLowerCase()).filter(Boolean))].sort();
-  const unbekannt = angefragt.filter(f => !katalog.includes(f));
+  const ungueltig = angefragt.filter(f => !gueltigerAssetFormatName(f));
+  if (ungueltig.length > 0) return fehler(name, `enthaelt ungueltige Formatnamen: ${ungueltig.join(', ')}`);
+  const unbekannt = nurKatalog ? angefragt.filter(f => !katalog.includes(f)) : [];
   if (unbekannt.length > 0) return fehler(name, `enthaelt nicht registrierte Formate: ${unbekannt.join(', ')}`);
   return angefragt;
 }
@@ -211,7 +227,8 @@ export function ladeAssetKonfiguration(env: NodeJS.ProcessEnv = process.env): As
   // P18-T26 (Blocker 238455c6): Vorschau-Formate sind der Inspector-Katalog PLUS die Formate, fuer die der
   // A14-Renderer einen echten Decoder hat (z. B. bmp, tga, mov, webm). Ohne das liess sich BMP weder per
   // Standard noch per SYNAPSE_ASSET_PREVIEW_FORMATS freigeben, obwohl der Renderer es sicher dekodiert.
-  // Transfer-Formate bleiben unveraendert am Inspector-Katalog.
+  // P22-T238 (User 31.10.2026, thoughts 4d6e67d6/54ff9ce7): Transfer haengt NICHT mehr am Inspector-Katalog. Ohne
+  // Betreiberliste ist jedes gueltige Format freigegeben (transferAlle); der Katalog bleibt die Liste bekannter Formate.
   const vorschauKatalog = [...new Set([...katalog, ...ANSICHT_RENDERER_FORMATE])].sort();
   const maxDateiBytes = zahl(env, 'SYNAPSE_ASSET_MAX_FILE_BYTES', 2 * GIB, 1, Number.MAX_SAFE_INTEGER);
   const maxProjektBytes = zahl(env, 'SYNAPSE_ASSET_MAX_PROJECT_BYTES', 20 * GIB, maxDateiBytes, Number.MAX_SAFE_INTEGER);
@@ -256,7 +273,8 @@ export function ladeAssetKonfiguration(env: NodeJS.ProcessEnv = process.env): As
       chunkBytes: zahl(env, 'SYNAPSE_ASSET_CHUNK_BYTES', 8 * MIB, 1, 64 * MIB),
       parallelTransfers: zahl(env, 'SYNAPSE_ASSET_PARALLEL', 2, 1, 16),
       timeoutMs: zahl(env, 'SYNAPSE_ASSET_TIMEOUT_MS', 120_000, 1, 3_600_000),
-      transferFormate: formate(env, 'SYNAPSE_ASSET_TRANSFER_FORMATS', katalog),
+      transferFormate: formate(env, 'SYNAPSE_ASSET_TRANSFER_FORMATS', katalog, false),
+      transferAlle: env.SYNAPSE_ASSET_TRANSFER_FORMATS === undefined,
     },
     sync: {
       richtung: syncRichtung as AssetSyncRichtung,
@@ -319,8 +337,15 @@ export function loeseAssetProjektoptionen(
     return fehler('Projektoption erlaubteTypen', 'muss eine Liste nichtleerer Formatnamen sein');
   }
   const erlaubteTypen = [...new Set(angefragt.map(format => format.trim().toLowerCase()))].sort();
-  const unbekannt = erlaubteTypen.filter(format => !konfig.speicher.transferFormate.includes(format));
+  const ungueltig = erlaubteTypen.filter(format => !gueltigerAssetFormatName(format));
+  if (ungueltig.length > 0) return fehler('Projektoption erlaubteTypen', `enthaelt ungueltige Formatnamen: ${ungueltig.join(', ')}`);
+  // P22-T238: Ohne Betreiberliste darf ein Projekt jedes gueltige Format nennen (auch generische Endungsnamen wie avif);
+  // mit Betreiberliste bleibt erlaubteTypen eine Teilmenge davon. Ob ein Nicht-Katalog-Format wirklich uebertragen wird,
+  // entscheidet der Schalter asset_transfer_generisch an den Transferstellen (Upload, Konfliktuebernahme, Daemon).
+  const betreiberAlle = konfig.speicher.transferAlle === true;
+  const unbekannt = betreiberAlle ? [] : erlaubteTypen.filter(format => !konfig.speicher.transferFormate.includes(format));
   if (unbekannt.length > 0) return fehler('Projektoption erlaubteTypen', `enthaelt nicht registrierte Formate: ${unbekannt.join(', ')}`);
+  const alleTypen = betreiberAlle && optionen.erlaubteTypen === undefined;
   const offen = max('Projektoption vorschau.offenSekundenStandard', pv.offenSekundenStandard, konfig.vorschau.offenSekundenObergrenze, konfig.vorschau.offenSekundenStandard);
   if (offen === 0) return fehler('Projektoption vorschau.offenSekundenStandard', 'muss mindestens 1 sein');
   return {
@@ -330,6 +355,7 @@ export function loeseAssetProjektoptionen(
     maxProjektBytes: max('Projektoption maxProjektBytes', optionen.maxProjektBytes, konfig.speicher.maxProjektBytes, konfig.speicher.maxProjektBytes),
     maxProjektDateien: max('Projektoption maxProjektDateien', optionen.maxProjektDateien, konfig.speicher.maxProjektDateien, konfig.speicher.maxProjektDateien),
     erlaubteTypen,
+    alleTypen,
     maxObjekteJeDatei: max('Projektoption maxObjekteJeDatei', optionen.maxObjekteJeDatei, konfig.speicher.maxObjekteJeDatei, konfig.speicher.maxObjekteJeDatei),
     vorschau: {
       maxPixel: max('Projektoption vorschau.maxPixel', pv.maxPixel, konfig.vorschau.maxPixel, konfig.vorschau.maxPixel),
@@ -338,6 +364,46 @@ export function loeseAssetProjektoptionen(
       offenSekundenStandard: offen,
     },
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// P22-T238: Transferformat unabhaengig vom Inspector-Katalog (User-Grundsatz 31.10.2026, thoughts 4d6e67d6, 54ff9ce7,
+// 5eae0647). Inspector = Anreicherung, Renderer = Vorschau, Transfer = jede Binaerdatei innerhalb der Grenzen.
+// Textformate (SVG, .txt, .lock ...) sind Code und bekommen NIE ein generisches Format.
+// ---------------------------------------------------------------------------------------------
+
+/** Formatname fuer Betreiber-/Projektlisten und generische Formate: Kleinschrift, Ziffern, . _ + - (max. 32 Zeichen). */
+export function gueltigerAssetFormatName(format: unknown): format is string {
+  return typeof format === 'string' && /^[a-z0-9][a-z0-9._+-]{0,31}$/.test(format);
+}
+
+/** Generischer Formatname einer Datei ohne brauchbare Endung. */
+export const GENERISCHES_ASSET_FORMAT = 'binaer';
+
+/** Generischer Formatname = Endung in Kleinschrift (avif, woff2, bmp ...), sonst 'binaer'. Kein Inhaltsurteil. */
+export function generischesTransferFormat(dateiPfad: string): string {
+  const endung = path.extname(dateiPfad).slice(1).toLowerCase();
+  return gueltigerAssetFormatName(endung) ? endung : GENERISCHES_ASSET_FORMAT;
+}
+
+/** Typfreigabe der wirksamen Optionen: alleTypen (keine Einschraenkung) oder Format steht in erlaubteTypen. */
+export function assetFormatFreigegeben(w: { alleTypen?: boolean; erlaubteTypen: readonly string[] }, format: string | null | undefined): boolean {
+  if (!format) return false;
+  return w.alleTypen === true || w.erlaubteTypen.includes(format);
+}
+
+export interface TransferFormatErgebnis { format: string; via: 'inspektor' | 'generisch' }
+
+/**
+ * Transferformat einer lokalen Datei. Zuerst der Inspector-Katalog (Magic vor Endung). Ohne Treffer nur bei
+ * generisch=true (Schalter asset_transfer_generisch) und nur fuer Binaerinhalt (assetArt 'nur_asset' mit Dateikopf)
+ * ein generischer Name. generisch=false = Altverhalten (nur Formate mit Inspector).
+ */
+export function ermittleTransferFormat(dateiPfad: string, kopf: Uint8Array, generisch: boolean): TransferFormatErgebnis | null {
+  const erkannt = standardRegistry.detect(dateiPfad, kopf).format;
+  if (erkannt) return { format: erkannt, via: 'inspektor' };
+  if (!generisch || assetArt(dateiPfad, kopf) !== 'nur_asset') return null;
+  return { format: generischesTransferFormat(dateiPfad), via: 'generisch' };
 }
 
 let cache: AssetKonfiguration | null = null;

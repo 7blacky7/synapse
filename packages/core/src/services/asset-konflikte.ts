@@ -3,7 +3,8 @@ import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import {createHash,randomUUID} from 'node:crypto';
 import {getPool} from '../db/client.js';
 import {standardRegistry} from '../asset-intel/registry.js';
-import {getAssetKonfiguration,loeseAssetProjektoptionen} from '../config/asset-konfig.js';
+import {getAssetKonfiguration,loeseAssetProjektoptionen,assetFormatFreigegeben,generischesTransferFormat} from '../config/asset-konfig.js';
+import {leseAssetTransferGenerisch,leseAssetIndexWirklichkeit} from './asset-transfer-generisch.js';
 import type {AssetKonfiguration} from '../config/asset-konfig.js';
 import {AssetSpeicher,normalisiereSpeicherPfad} from './asset-speicher.js';
 import type {AssetAdresse,AssetStaging,AssetOperation} from './asset-speicher.js';
@@ -17,7 +18,10 @@ const iso=(v:unknown)=>v instanceof Date?v.toISOString():v??null;
 const version=(r:Row|null)=>r?{revision:String(r.revision),sha256:r.sha256??null,groesse:Number(r.groesse),zeit:iso(r.created_at),tombstone:r.tombstone===true}:null;
 export class AssetKonfliktKern {
  private readonly db:AssetUploadDb;private readonly cfg:AssetKonfiguration;private readonly speicher:AssetSpeicher;
- constructor(o:{db?:AssetUploadDb;konfiguration?:AssetKonfiguration;speicher?:AssetSpeicher}={}){
+ /** P22-T238: Schalter asset_transfer_generisch je Projekt (Tests ersetzen ihn ohne PG-Schaltertabellen). */
+ private readonly transferGenerisch:(project:string)=>Promise<boolean>;
+ constructor(o:{db?:AssetUploadDb;konfiguration?:AssetKonfiguration;speicher?:AssetSpeicher;transferGenerisch?:(project:string)=>Promise<boolean>}={}){
+  this.transferGenerisch=o.transferGenerisch??(async project=>(await leseAssetTransferGenerisch(project)).aktiv);
   this.db=o.db??getPool() as unknown as AssetUploadDb;this.cfg=o.konfiguration??getAssetKonfiguration();
   this.speicher=o.speicher??new AssetSpeicher({konfiguration:this.cfg});
  }
@@ -46,8 +50,11 @@ export class AssetKonfliktKern {
    maxDateiBytes:num(raw.max_datei_bytes),maxProjektBytes:num(raw.max_projekt_bytes),maxProjektDateien:num(raw.max_projekt_dateien),
    erlaubteTypen:raw.erlaubte_typen as string[]|undefined??undefined}:{});
   if(policy.richtung==='share_to_pc')return fail('richtung_verboten',403,'Projekt erlaubt keine PC-Übernahme.');
-  const format=standardRegistry.detect(String(row.file_path),new Uint8Array()).format;
-  if(!format||!policy.erlaubteTypen.includes(format))return fail('format_verboten',415,'Format nicht mehr freigegeben.');
+  // P22-T238: Formate ohne Inspector nur mit Schalter asset_transfer_generisch (wie AssetUploadKern.erstellen).
+  const erkannt=standardRegistry.detect(String(row.file_path),new Uint8Array()).format;
+  const generisch=!erkannt&&await this.transferGenerisch(project);
+  const format=erkannt??(generisch?generischesTransferFormat(String(row.file_path)):null);
+  if(!format||!assetFormatFreigegeben(policy,format))return fail('format_verboten',415,'Format nicht mehr freigegeben.');
   const pending=(await db.query("SELECT COALESCE(sum(groesse),0)::text AS bytes,count(*)::int AS n FROM asset_upload_sitzungen WHERE bereich='projekt' AND ziel_ref=$1 AND status IN('offen','laeuft','vollstaendig') AND lease_bis>clock_timestamp()",[project])).rows[0];
   const current=(await db.query('SELECT COALESCE(sum(file_size),0)::text AS bytes,count(*)::int AS n FROM asset_files WHERE project=$1 AND id<>$2 AND deleted_at IS NULL AND storage_key IS NOT NULL',[project,row.id])).rows[0];
   if(Number(pc.groesse)>policy.maxDateiBytes||BigInt(String(current.bytes))+BigInt(String(pending.bytes))+BigInt(String(pc.groesse))>BigInt(policy.maxProjektBytes)||
@@ -71,7 +78,10 @@ export class AssetKonfliktKern {
   if(!Number.isSafeInteger(limit)||limit<1||limit>this.cfg.speicher.maxObjekteJeDatei||!Number.isSafeInteger(offset)||offset<0||o.asset_id!==undefined&&!positive(o.asset_id))
    return fail('eingang_ungueltig',400,'Ungültige Konfliktfilter.');
   const p=o.file_path?normalisiereSpeicherPfad(o.file_path):null;
-  const rows=(await this.db.query("SELECT c.*,a.file_path,count(*) OVER() AS total FROM asset_konflikte c JOIN asset_files a ON a.id=c.asset_id WHERE a.project=$1 AND ($2::bigint IS NULL OR c.asset_id=$2) AND ($3::text IS NULL OR a.file_path=$3) AND ($4::boolean OR c.status='offen') ORDER BY c.id LIMIT $5 OFFSET $6",[project,o.asset_id??null,p,o.alle===true,limit,offset])).rows;
+  // P22-T236: offene Konflikte nur fuer vorhandene Assets (Schalter asset_index_wirklichkeit); alle:true bleibt die volle Historie.
+  let nur=false;
+  if(o.alle!==true){try{nur=(await leseAssetIndexWirklichkeit(project)).aktiv;}catch{nur=false;}}
+  const rows=(await this.db.query("SELECT c.*,a.file_path,count(*) OVER() AS total FROM asset_konflikte c JOIN asset_files a ON a.id=c.asset_id WHERE a.project=$1 AND ($2::bigint IS NULL OR c.asset_id=$2) AND ($3::text IS NULL OR a.file_path=$3) AND ($4::boolean OR c.status='offen') AND ($7::boolean IS NOT TRUE OR (a.deleted_at IS NULL AND a.status IS DISTINCT FROM 'quelle_nicht_gefunden')) ORDER BY c.id LIMIT $5 OFFSET $6",[project,o.asset_id??null,p,o.alle===true,limit,offset,nur])).rows;
   const total=Number(rows[0]?.total??0),konflikte=await Promise.all(rows.map(r=>this.pack(r)));
   return {konflikte,total,gekappt:offset+rows.length<total};
  }

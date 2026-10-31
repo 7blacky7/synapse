@@ -51,7 +51,8 @@ test('Endpunkt setzt aktiv, Fremdfelder bleiben, ohne laufenden Watcher kein Neu
  assert.deepEqual(f.calls,[]);
  const list=(await app.inject({method:'GET',url:'/projects'})).json().projekte;
  assert.equal(list.find(p=>p.name==='t45a').asset_sync_aktiv,true);
- assert.equal(list.find(p=>p.name==='t45b').asset_sync_aktiv,false);
+ // P22-T238 (thought d59f32e8): ohne asset_sync-Feld gilt Standard EIN.
+ assert.equal(list.find(p=>p.name==='t45b').asset_sync_aktiv,true);
 });
 
 test('laufender Watcher: nur die Asset-Bindung dieses Projekts startet neu, schnelle Klicks nacheinander',async()=>{

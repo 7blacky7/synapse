@@ -52,8 +52,9 @@ func t45Lesen(t *testing.T, pfad string) map[string]any {
 
 func TestT45SetzeAssetSyncAktivBehaeltFelder(t *testing.T) {
 	pfad := t45Config(t, t45Basis)
-	if leseAssetSyncAktiv(pfad, "a") || leseAssetSyncAktiv(pfad, "b") {
-		t.Fatal("Standard muss aus sein")
+	// P22-T238 (thought d59f32e8): ohne aktiv-Feld gilt Standard AN.
+	if !leseAssetSyncAktiv(pfad, "a") || !leseAssetSyncAktiv(pfad, "b") {
+		t.Fatal("Standard muss an sein")
 	}
 	if err := setzeAssetSyncAktiv(pfad, "a", true); err != nil {
 		t.Fatal(err)
@@ -81,7 +82,7 @@ func TestT45SetzeAssetSyncAktivBehaeltFelder(t *testing.T) {
 	if _, da := projekte[1].(map[string]any)["asset_sync"]; da {
 		t.Fatal("anderes Projekt darf nicht veraendert werden")
 	}
-	if !leseAssetSyncAktiv(pfad, "a") || leseAssetSyncAktiv(pfad, "b") {
+	if !leseAssetSyncAktiv(pfad, "a") || !leseAssetSyncAktiv(pfad, "b") {
 		t.Fatal("leseAssetSyncAktiv nach Setzen falsch")
 	}
 

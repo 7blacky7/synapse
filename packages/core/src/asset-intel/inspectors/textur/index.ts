@@ -8,7 +8,9 @@
  */
 
 import type { AssetInspector } from '../../types.js';
+import { bmpInspector } from './bmp.js';
 import { ddsInspector } from './dds.js';
+import { heifInspector } from './heif.js';
 import { exrInspector } from './exr.js';
 import { hdrInspector } from './hdr.js';
 import { icoInspector } from './ico.js';
@@ -28,6 +30,9 @@ export const assetTexturInspektoren: AssetInspector[] = [
   ktx2Inspector,
   exrInspector,
   hdrInspector,
+  // P22-T238 mit P4-T75 (thought 0e4c4c3f): BMP und AVIF/HEIC/HEIF mit Bildmetadaten wie PNG.
+  bmpInspector,
+  heifInspector,
 ];
 
-export { ddsInspector, exrInspector, hdrInspector, icoInspector, jpegInspector, ktxInspector, ktx2Inspector, pngInspector, webpInspector };
+export { bmpInspector, heifInspector, ddsInspector, exrInspector, hdrInspector, icoInspector, jpegInspector, ktxInspector, ktx2Inspector, pngInspector, webpInspector };

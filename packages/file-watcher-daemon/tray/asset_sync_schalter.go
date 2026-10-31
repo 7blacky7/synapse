@@ -2,8 +2,8 @@ package main
 
 // asset_sync_schalter.go — P13-T45: Schalter "Asset-Sync" je Projekt im Tray-Menue.
 //
-// Seit P13-T44 synct der Daemon nur Projekte mit projekte[].asset_sync.aktiv:true in
-// ~/.synapse/file-watcher/config.json (Standard aus). Der Tray setzt genau dieses eine
+// Seit P22-T238 (User 31.10.2026) synct der Daemon ALLE aktiven Projekte; nur projekte[].asset_sync.aktiv:false in
+// ~/.synapse/file-watcher/config.json schaltet eines bewusst ab (fehlt das Feld = AN). Der Tray setzt genau dieses eine
 // Feld. Alle anderen Felder — oben, im Projekt und im asset_sync-Objekt, auch solche,
 // die der Tray nicht kennt — bleiben als json.RawMessage erhalten (Muster wie
 // speichereApiToken in api_client.go). Geschrieben wird atomar ueber eine eigene
@@ -46,11 +46,11 @@ func assetSyncSchalterLabel(aktiv bool) string {
 }
 
 // leseAssetSyncAktiv liefert projekte[name].asset_sync.aktiv. Fehlt etwas oder ist die
-// Datei nicht lesbar, gilt der Standard: aus.
+// Datei nicht lesbar, gilt der Standard: AN (P22-T238, nur ausdruecklich false = aus).
 func leseAssetSyncAktiv(cfgPath, name string) bool {
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
-		return false
+		return true
 	}
 	var cfg struct {
 		Projekte []struct {
@@ -61,14 +61,14 @@ func leseAssetSyncAktiv(cfgPath, name string) bool {
 		} `json:"projekte"`
 	}
 	if json.Unmarshal(data, &cfg) != nil {
-		return false
+		return true
 	}
 	for _, p := range cfg.Projekte {
 		if p.Name == name {
-			return p.AssetSync != nil && p.AssetSync.Aktiv != nil && *p.AssetSync.Aktiv
+			return p.AssetSync == nil || p.AssetSync.Aktiv == nil || *p.AssetSync.Aktiv
 		}
 	}
-	return false
+	return true
 }
 
 // assetSyncAktivFuer: Wert vom Daemon (/projects liefert asset_sync_aktiv), bei aelterem
@@ -79,7 +79,7 @@ func assetSyncAktivFuer(p Project) bool {
 	}
 	pfad, err := trayConfigPfad()
 	if err != nil {
-		return false
+		return true
 	}
 	return leseAssetSyncAktiv(pfad, p.Name)
 }
