@@ -15,7 +15,11 @@ export interface NetzEreignis {
  ergebnis_art?:NetzErgebnisArt;
  /** P22-T156: normalisierter Fehlercode, null bei Erfolg; nie Rohtext. */
  fehler_code?:string|null;
+ /** P22-T232/T229: Heimatprojekt der Identitaet, Projekt, auf das der Aufruf wirkt, Zugang (visum|arbeitsfreigabe|frei|...) und wirksames Zugangsende; unbekannt = null. */
+ heimat_projekt?:string|null; ziel_projekt?:string|null; zugang?:string|null; visum_bis?:string|null;
 }
+/** P22-T232/T229: gueltiger Zugang einer fremden Identitaet im angezeigten Projekt (Visum bzw. Arbeitsfreigabe). */
+export interface NetzVisum { identity_id:string|null; agent:string; heimat_projekt:string; zugang?:string|null; visum_bis:string|null }
 /** P22-T156: Ergebnisarten (core agentennetzwerk-ergebnis.ts NETZ_ERGEBNIS_ARTEN). */
 export type NetzErgebnisArt='erfolg'|'leer'|'falsch_aufgerufen'|'gesperrt'|'nicht_gefunden'|'konflikt'|'serverfehler'|'wartet'|'sonstiges';
 /** P22-T95: offener (oder gerade committeter) files-Plan als Schattenplan-Knoten; nur Metadaten. */
@@ -29,6 +33,10 @@ export interface NetzSnapshot {
  index?:{dateien:number;chunks:number;stand:string}|null;
  /** P22-T155: Aufrufe im Fenster ohne agent_id und identity_id (kein Knoten, nur Zaehler). */
  ohne_absender?:number;
+ /** P22-T229: Produkt-Schalter netzwerk_visum_sonnen (Standard AUS = eine Projektsonne wie bisher). */
+ visum_sonnen?:{aktiv:boolean;quelle:string;letzter_fehler:string|null};
+ /** P22-T232: gueltige Zugaenge fremder Identitaeten in diesem Projekt. */
+ visa?:NetzVisum[];
 }
 async function json<T>(path:string, init?:RequestInit):Promise<T> {
  const r=await apiFetch(path,init), d=await r.json();

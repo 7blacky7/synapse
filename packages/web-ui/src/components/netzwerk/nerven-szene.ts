@@ -7,6 +7,8 @@ import {planFade,planFarbe,planZustand} from './plan-nachleuchten';
 import { indexEbenen } from './index-ebenen';
 import type { NetzAgent, NetzEreignis, NetzPlan, NetzSnapshot } from '../../api/agentennetzwerk';
 import { ergebnisArt, istErfolg } from './ergebnis-effekte';
+// P22-T229: fremde Projekt-Sonnen der Visum-Agenten (gemeinsame Sonnen-Logik mit P22-T196).
+import { fremdSonnen, sonnenFarbe, type FremdSonne, type SonnenGedaechtnis } from './sonnen';
 /** P22-T156: erfolgreich nach der Ergebnisart (ok allein sagt nichts). */
 const erfolg = (e: NetzEreignis) => istErfolg(ergebnisArt(e));
 
@@ -66,6 +68,8 @@ export interface Knoten {
  eltern?: Knoten; teilnehmer?: string[];
  /** P22-T95: Schattenplan-Metadaten; fade < 1 = gerade committet, leuchtet aus. */
  plan?: NetzPlan; fade?: number;
+ /** P22-T229: fremde Projekt-Sonne (rolle 'sonne'); fade folgt sonnenFade je Frame. */
+ sonne?: FremdSonne;
 }
 export interface Konstellation { name: string; x: number; y: number; winkel: number }
 export interface Szene {
@@ -77,6 +81,12 @@ export interface Szene {
  planVonAgent: Map<string, string>; plaene: number;
  /** P22-T149: Groessenfaktor des Projektsterns (linear aus den Dateien; 1 = 60.000 Dateien bzw. Rueckfall). */
  stern: number;
+ /** P22-T229: sichtbare fremde Sonnen (Schalter netzwerk_visum_sonnen; AUS = leer) und Aufrufe ohne passende Sonne (Debug). */
+ fremd: FremdSonne[]; fremdOhneSonne: number;
+ /** P22-T196: Szene der globalen Uebersicht (globale-szene.ts): Kern = unsichtbarer Anker, keine Projektsonne/Trabanten/Nebel. */
+ global?: boolean;
+ /** P22-T196: Hauptagent in der Mitte der globalen Uebersicht; Ziel projektloser Aufrufe (ziel_projekt null). */
+ mitte?: Knoten;
 }
 
 const PHI = 0.6180339887, TAU = Math.PI * 2;
@@ -95,7 +105,12 @@ function verteile(liste: Array<{ w: number }>, max: number) {
 
 interface Gruppe { project: string; koordinator?: NetzAgent; sichtbar: NetzAgent[]; versteckt: NetzAgent[]; spanne: number; mitte: number }
 
-export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
+export function netzwerkSzene(s: NetzSnapshot, jetzt: number, gedaechtnis?: SonnenGedaechtnis): Szene {
+ // P22-T229: mit Schalter netzwerk_visum_sonnen bringen Agenten mit fremder Heimat deren Sonne mit (sonnen.ts fremdSonnen).
+ const fremd = s.visum_sonnen?.aktiv ? fremdSonnen(s, jetzt, gedaechtnis) : null, sonnenProjekte = new Set(fremd?.sonnen.map(f => f.projekt) ?? []);
+ const heimatVon = (a: NetzAgent) => !fremd || a.rolle === 'main' ? undefined
+  : fremd.heimat.get(a.id) ?? (a.identity_id ? fremd.heimat.get(a.identity_id) : undefined) ?? fremd.heimat.get(a.agent) ?? fremd.heimat.get(a.name);
+ const gruppeVon = (a: NetzAgent) => heimatVon(a) ?? a.project;
  const aktiv = new Map<string, number>(), raten = new Map<string, number>(), letzterAufruf = new Map<string, NetzEreignis>();
  const agenten = new Map(s.agenten.map(a => [a.id, a])), namen = new Map<string, string>();
  for (const a of s.agenten) { namen.set(a.agent, a.id); namen.set(a.name, a.id); }
@@ -138,11 +153,11 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
  knoten.push(kern);
 
  // Gruppen: je Koordinator eine, dazu die Projektgruppe fuer Agenten ohne Start-/Kommunikationsbeleg.
- const projekte = [...new Set([s.project, ...koord.map(a => a.project), ...arbeiter.map(a => a.project)])].sort();
+ const projekte = [...new Set([s.project, ...koord.map(a => a.project), ...arbeiter.map(gruppeVon), ...sonnenProjekte])].sort();
  const gruppen: Gruppe[] = [];
  if (main) gruppen.push({ project: s.project, koordinator: main, sichtbar: [], versteckt: [], spanne: 0, mitte: 0 });
  for (const project of projekte) {
-  const kp = koord.filter(a => a.project === project), wp = arbeiter.filter(a => a.project === project);
+  const kp = koord.filter(a => a.project === project), wp = arbeiter.filter(a => gruppeVon(a) === project);
   const belegt = (a: NetzAgent) => kp.find(k => k.id === a.koordination?.koordinator_id);
   for (const k of kp) {
    const w = wp.filter(a => belegt(a)?.id === k.id).sort((a, b) => a.id.localeCompare(b.id));
@@ -166,11 +181,22 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
   winkel += i ? luft[i] + extra : 0;
   g.spanne = bedarf[i] * faktor * Math.min(dehnung, 2.6); g.mitte = winkel + g.spanne / 2; winkel += g.spanne;
  });
- const mehrere = projekte.length > 1, naben = new Map<string, Knoten>(), konstellationen: Konstellation[] = [];
+ // P22-T229: fremde Sonnen zaehlen nicht als Konstellation am Rand (eigenes Etikett an der Sonne).
+ const mehrere = projekte.filter(p => !sonnenProjekte.has(p)).length > 1, naben = new Map<string, Knoten>(), konstellationen: Konstellation[] = [];
+ const sonnenR = new Map<string, number>();
  for (const project of projekte) {
   const eigene = gruppen.filter(g => g.project === project);
   if (project === s.project) { naben.set(project, kern); konstellationen.push({ name: project, winkel: 0, ...polar(R0, 0) }); continue; }
   const w = eigene.length ? Math.atan2(eigene.reduce((n, g) => n + Math.sin(g.mitte), 0), eigene.reduce((n, g) => n + Math.cos(g.mitte), 0)) : 0;
+  const f = fremd?.sonnen.find(x => x.projekt === project);
+  if (f) {
+   // P22-T229: Heimat-Sonne abgesetzt HINTER ihren Agenten (Position nach der Zellenfuellung), mit Bahn zum Projektkern.
+   const sonne = merke({ id: 'projekt:' + project, name: project, rolle: 'sonne', project, x: 0, y: 0, radius: 22, winkel: w, farbe: sonnenFarbe(project), letzte: f.letzte, aufrufe: f.aufrufe,
+    avatar: agentAvatar(project), sonne: f, fade: f.fade, info: f.agenten.length + ' Agent' + (f.agenten.length === 1 ? '' : 'en') + ' mit ' + (f.zugang ?? 'Visum') + ' · ' + f.heimatAufrufe + ' von ' + f.aufrufe + ' Aufrufen im Heimatprojekt' },
+    ['projekt:' + project, 'workspace:' + project]);
+   knoten.push(sonne); naben.set(project, sonne); kanten.push([kern, sonne]);
+   continue;
+  }
   const p = mehrere ? polar(RK * 0.58, w) : { x: 0, y: 0 };
   const nabe = merke({ id: 'projekt:' + project, name: project, rolle: 'projekt', project, x: p.x, y: p.y, radius: 18, winkel: w, farbe: '#F97316', letzte: 0, aufrufe: 0, avatar: '' }, ['projekt:' + project, 'workspace:' + project]);
   knoten.push(nabe); naben.set(project, nabe);
@@ -190,8 +216,9 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
   g.sichtbar.forEach((a, i) => {
    const r = Math.sqrt(R0 * R0 + i * flaeche), w = g.mitte + (frac(i * PHI + 0.5) - 0.5) * breite, p = polar(r, w);
    const k = ausAgent(a, p.x, p.y, 8, w); k.eltern = eltern; knoten.push(k); kanten.push([eltern, k]);
-   k.zuordnung = g.koordinator && a.koordination ? (a.koordination.quelle === 'specialist_jobs.spawn' ? 'Gestartet von ' : 'Kommunikation mit ') + eltern.name + ' · ' + a.koordination.quelle + ' #' + a.koordination.beleg_id : 'Projekt · kein Start-/Kommunikationsbeleg';
-   aussen = Math.max(aussen, r);
+   k.zuordnung = nabe.sonne ? 'Heimat ' + g.project + ' · ' + (nabe.sonne.zugang ?? 'Visum') + ' in ' + s.project
+    : g.koordinator && a.koordination ? (a.koordination.quelle === 'specialist_jobs.spawn' ? 'Gestartet von ' : 'Kommunikation mit ') + eltern.name + ' · ' + a.koordination.quelle + ' #' + a.koordination.beleg_id : 'Projekt · kein Start-/Kommunikationsbeleg';
+   aussen = Math.max(aussen, r); if (nabe.sonne) sonnenR.set(g.project, Math.max(sonnenR.get(g.project) ?? R0, r));
   });
   if (g.versteckt.length) {
    const r = Math.sqrt(R0 * R0 + g.sichtbar.length * flaeche) + 44, p = polar(r, g.mitte);
@@ -199,9 +226,14 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
     letzte: jetzt, count: g.versteckt.length, avatar: String(g.versteckt.length), farbe: '#fdba74', eltern,
     aufrufe: g.versteckt.reduce((n, a) => n + (a.aufrufe_im_fenster ?? raten.get(a.id) ?? 0), 0), info: g.versteckt.length + ' aktive Agenten · gruppiert' };
    knoten.push(cluster); kanten.push([eltern, cluster]); verborgen += g.versteckt.length; aussen = Math.max(aussen, r + 20);
+   if (nabe.sonne) sonnenR.set(g.project, Math.max(sonnenR.get(g.project) ?? R0, r + 20));
    alias.set(cluster.id, cluster);
    for (const a of g.versteckt) for (const id of [a.id, a.agent, a.name]) alias.set(id, cluster);
   }
+ }
+ // P22-T229: fremde Sonnen stehen aussen hinter ihren Agenten (ohne Agenten, z. B. beim Ausblenden: knapp ausserhalb des Agentenrings).
+ for (const kn of knoten) if (kn.sonne) {
+  const p = polar((sonnenR.get(kn.project) ?? R0 - 30) + 78, kn.winkel); kn.x = p.x; kn.y = p.y; aussen = Math.max(aussen, Math.hypot(p.x, p.y) + 40);
  }
  // Channels sind Synapsen zwischen Kern und Koordinatoren, ausgerichtet auf ihre echten Teilnehmer.
  const kanalNamen = [...new Set(alleEreignisse.filter(e => erfolg(e) && e.channel && jetzt - Date.parse(e.zeit) <= schwelle).map(e => e.channel!))].sort();
@@ -247,7 +279,8 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
  // P22-T162: eine bis 200 % grosse Projektsonne bleibt beim Einpassen im Bild (sichtbarer Kernring ca. 168 * stern Weltpunkte).
  const radius = Math.max(R0 + 60, aussen + 56, 180 * stern);
  return { knoten, alias, kanten, projekte: mehrere ? konstellationen.map(k => ({ ...k, ...polar(radius - 18, k.winkel) })) : [], kern, radius, breite: radius * 2, hoehe: radius * 2,
-  verborgen, inaktiv: alle.length - (main ? 1 : 0) - koord.length - arbeiter.length, channels: kanalNamen.length, zelle: ZELLE, planVonAgent, plaene: planItems.length, stern };
+  verborgen, inaktiv: alle.length - (main ? 1 : 0) - koord.length - arbeiter.length, channels: kanalNamen.length, zelle: ZELLE, planVonAgent, plaene: planItems.length, stern,
+  fremd: fremd?.sonnen ?? [], fremdOhneSonne: fremd?.ohneSonne ?? 0 };
 }
 
 export interface Punkt { x: number; y: number }

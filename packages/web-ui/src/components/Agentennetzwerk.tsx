@@ -7,6 +7,11 @@ import { NETZWERK_LABELS, gruppiereEinstellungen, einstellungHilfe, geaenderteNe
 import {PlanNachleuchten,planZustand,planAnimation,planAbklingen,PLAN_FARBEN} from './netzwerk/plan-nachleuchten';
 import { ergebnisArt, istErfolg, halbStelle, knickAnteile, effektZeiten, effektPhase, abprallStelle, gegenstossStelle, farbeAusCss, zaehleErgebnisse, ERGEBNIS_NAMEN, ERGEBNIS_SYMBOL, ERGEBNIS_LEGENDE, FEHLER_ARTEN, type NetzErgebnisArt, type EffektZeiten } from './netzwerk/ergebnis-effekte';
 import { erstelleLicht, type Licht, type Kamera } from './netzwerk/nerven-renderer';
+// P22-T229: Visum-Agenten bringen ihre Heimat-Sonne mit; Impulse laufen zur Sonne des Zielprojekts (gemeinsame Sonnen-Logik mit P22-T196).
+import { zielProjekt, sonnenFade, sonnenDebug, ohneHeimatAufrufe, type SonnenGedaechtnis } from './netzwerk/sonnen';
+// P22-T196: Uebersicht als globales Agentennetzwerk (Prop global): eigene Szene, Daten ?umfang=global (P22-T232).
+import { globaleSzene } from './netzwerk/globale-szene';
+import { ladeGlobalesNetzwerk, type GlobalesNetz } from '../api/uebersicht-netzwerk';
 import '../agentennetzwerk.css';
 // P22-T172: Name + aktuelle Task an Agenten-Knoten (Etikett) und in der Knotenkarte (klickbar).
 import { AgentTaskMarke, useAktuelleTasks } from './AgentTaskMarke';
@@ -49,7 +54,7 @@ const nwWert = (w: Record<string, number>, name: string, std: number) => { const
 /** Beschriftungsreihenfolge: wichtige Knoten zuerst, Rest nur dort, wo Platz frei ist. */
 /** P22-T111: helle Schriftfarben der Textebene im hellen Design auf lesbare dunkle Gegenstuecke abbilden. */
 const TEXT_HELL: Record<string, string> = { '#cbd5e1': '#334155', '#fde3c8': '#9a3412', '#fed7aa': '#9a3412', '#ffedd5': '#7c2d12', '#fdba74': '#c2410c', '#d8ccff': '#5b21b6', '#94a3b8': '#475569', '#fde68a': '#a16207', '#fca5a5': '#b91c1c' };
-const RANG: Record<string, number> = { zentrum: 0, main: 1, koordinator: 1, plan: 2, channel: 2, 'channel-cluster': 2, cluster: 2, arbeitsagent: 3 };
+const RANG: Record<string, number> = { zentrum: 0, sonne: 1, main: 1, koordinator: 1, plan: 2, channel: 2, 'channel-cluster': 2, cluster: 2, arbeitsagent: 3 };
 
 /** Festes Dekor (konstanter Startwert): Sternenstaub auf drei Parallaxe-Ebenen und Nebelwolken. */
 function dekor(radius: number, anzahl = 420) {
@@ -61,7 +66,11 @@ function dekor(radius: number, anzahl = 420) {
  return { sterne, nebel: nebel.map(([x, y, g, f, a, t]) => ({ x: x * radius, y: y * radius, g: g * radius, f: rgb(f), a, t })) };
 }
 
-export default function Agentennetzwerk({ project, fallback }: { project: string; fallback: ReactNode }) {
+export default function Agentennetzwerk({ project, fallback, global }: {
+ project: string; fallback: ReactNode;
+ /** P22-T196: globale Uebersicht (alle Projekte mit Aktivitaet als Sonnen); Klick bzw. Enter auf eine Sonne oeffnet das Projekt. */
+ global?: { onSonne: (project: string) => void };
+}) {
  const [snapshot, setSnapshot] = useState<NetzSnapshot | null>(null), [fehler, setFehler] = useState(''), [status, setStatus] = useState('verbinden');
  const [pause, setPause] = useState(false), [einstellungen, setEinstellungen] = useState(false);
  const [erklaerungen, setErklaerungen] = useState(() => { try { return localStorage.getItem('synapse.agentennetzwerk.erklaerungen.v1') === '1'; } catch { return false; } });
@@ -75,6 +84,10 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
  const daten = useRef<NetzSnapshot | null>(null), partikel = useRef<Partikel[]>([]), lage = useRef(new Map<string, Lage>());
  const seen = useRef(new Set<string>()), neu = useRef(0), abgewiesen = useRef(0), szene = useRef<Szene | null>(null);
  const refresh = useRef<() => Promise<void>>(async () => { });
+ // P22-T229: Gedaechtnis der fremden Sonnen je angezeigtem Projekt (eine Sonne blendet zu Ende aus, auch wenn ihre Daten schon fehlen).
+ const sonnenGedaechtnis = useRef<SonnenGedaechtnis>(new Map());
+ // P22-T196: Modus fuer Lade- und Zeichenschleife (je Instanz fest: Uebersicht = global, Arbeitsraum = Projekt).
+ const globalModus = useRef(!!global); globalModus.current = !!global;
  // Anzeigezustand fuer die Zeichenschleife ohne Neustart des WebGL-Kontexts.
  const anzeige = useRef({ pause, auswahl, karte, erklaerungen });
  anzeige.current = { pause, auswahl, karte, erklaerungen };
@@ -85,10 +98,10 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
  useEffect(() => {
   const planAnzeige=new PlanNachleuchten();
   let ende = false, laeuft = false, nochmal = false, timer = 0, abgleich = 0, source: EventSource | null = null;
-  seen.current.clear(); partikel.current = []; daten.current = null; setSnapshot(null); setFehler(''); setStatus('verbinden');
+  seen.current.clear(); partikel.current = []; daten.current = null; sonnenGedaechtnis.current = new Map(); setSnapshot(null); setFehler(''); setStatus('verbinden');
   const stream = () => {
    if (source || !daten.current?.schalter.aktiv || document.hidden) return;
-   source = new EventSource('/api/projects/' + encodeURIComponent(project) + '/events?netzwerk=1');
+   source = new EventSource('/api/projects/' + encodeURIComponent(project) + '/events?netzwerk=1' + (globalModus.current ? '&umfang=global' : ''));
    source.onopen = () => { setStatus('live'); void laden(); };
    source.onerror = () => setStatus('Verbindung unterbrochen · Wiederverbinden');
    source.onmessage = event => {
@@ -99,7 +112,9 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    if (ende || document.hidden) return;
    if (laeuft) { nochmal = true; return; } laeuft = true;
    try {
-    const empfangen = await ladeNetzwerk(project); if (ende) return;
+    const roh = globalModus.current ? await ladeGlobalesNetzwerk(project) : await ladeNetzwerk(project); if (ende) return;
+    // P22-T229: Schalter netzwerk_visum_sonnen AUS = bisheriges Verhalten, also keine Heimat-Aufrufe fremder Agenten (P22-T232 liefert sie zusaetzlich).
+    const empfangen = globalModus.current || roh.visum_sonnen?.aktiv ? roh : ohneHeimatAufrufe(roh);
     const s = planAnzeige.aktualisiere(empfangen,Date.now());
     const vorher = daten.current;
     daten.current = s;
@@ -161,6 +176,8 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
   // P22-T156: Farben der Ergebnis-Effekte aus Theme-Tokens (agentennetzwerk.css --nw-e-*, hell und dunkel getrennt); Rueckfall fest.
   let ef: { membran: Rgb; sperre: Rgb; nebel: Rgb; konflikt: Rgb; funken: Rgb; wartet: Rgb } = { membran: KERN, sperre: rgb('#d6a84b'), nebel: rgb('#94a3b8'), konflikt: rgb('#a78bfa'), funken: FEHLER, wartet: rgb('#fcd34d') };
   const ergebnisZahl: Partial<Record<NetzErgebnisArt, number>> = {};
+  // P22-T229: Ankuenfte je fremder Sonne (Debug/Abnahme: Aufruf im Heimatprojekt -> Effekt an dessen Sonne).
+  const sonnenZiel: Record<string, number> = {};
   // Chunk-Nebel als einmal vorgezeichnete Ebene; neu gezeichnet nur bei anderer Punktzahl, anderem Netzradius (40er-Raster) oder Designwechsel.
   let nebelBild: { bild: HTMLCanvasElement; schluessel: string; r: number; f: number } | null = null;
   // P22-T152: Reaktion auf Index-Aenderungen zwischen zwei Snapshots: neue Punkte leuchten auf, wegfallende verglimmen, eine Aenderung
@@ -249,18 +266,28 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     }
    }
    if (q === g.kern) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern', von: q.id, nach: q.id, dauer: w.animation_ms * 0.8 };
+   // P22-T229: Ziel ist die Sonne des Projekts, auf das der Aufruf wirkt: Kern = angezeigtes Projekt, fremde Sonne = z. B. Heimat des
+   // Visum-Agenten. Ohne fremde Sonnen (Schalter AUS) bleibt es beim Weg ueber die Eltern-Kette zum Kern.
+   const zp = g.fremd.length ? zielProjekt(e) : '', zs = zp && zp !== g.kern.project ? g.alias.get('projekt:' + zp) : undefined, zielK = zs?.rolle === 'sonne' ? zs : g.global && g.mitte && !zielProjekt(e) ? g.mitte : g.kern;
+   // P22-T196 (Abnahme 35d1ce22): in der globalen Uebersicht laufen projektlose Aufrufe (ziel_projekt null, z. B. Hauptagent global, Jev)
+   // zum Hauptagenten in der Mitte; ruft er selbst projektlos auf, pulsiert er an Ort und Stelle.
+   if (zielK === q) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern', von: q.id, nach: q.id, dauer: w.animation_ms * 0.8 };
    const punkte: number[] = [], segmente: number[] = [];
-   for (let k: Knoten = q; ; k = k.eltern!) {
-    const ziel = k.eltern ?? g.kern; if (ziel === k) break;
+   for (let k: Knoten = q; ; ) {
+    let ziel = k.eltern ?? g.kern;
+    // Visum-Agent ruft im Gastprojekt: nicht ueber die eigene Heimat-Sonne, sondern direkt zum Ziel (und umgekehrt).
+    if (ziel !== zielK && (ziel.rolle === 'sonne' || ziel === g.kern)) ziel = zielK;
+    if (ziel === k) break;
     const vor = punkte.length;
     kurve(pos(k), pos(ziel), woelbung(k), 16, punkte);
     // P22-T156 (R7): Segmentlaengen, damit der Haltepunkt nicht auf dem Koordinator liegt.
     let sl = 0; for (let j = vor + 2; j < punkte.length; j += 2) sl += Math.hypot(punkte[j] - punkte[j - 2], punkte[j + 1] - punkte[j - 1]); segmente.push(sl);
-    if (!k.eltern || ziel === g.kern) break;
+    if (ziel === zielK || !k.eltern || ziel === g.kern) break;
+    k = ziel;
    }
    if (!punkte.length) return null;
    const p = gleichmaessig(punkte, 48);
-   const ruf: Impuls = { ...basis, ...p, art: erfolgreich ? 'aufruf' : 'fehler', von: q.id, nach: g.kern.id, dauer: w.animation_ms * (0.7 + 0.3 * Math.min(1, p.laenge / 520)) };
+   const ruf: Impuls = { ...basis, ...p, art: erfolgreich ? 'aufruf' : 'fehler', von: q.id, nach: zielK.id, dauer: w.animation_ms * (0.7 + 0.3 * Math.min(1, p.laenge / 520)) };
    return effekt ? mitEffekt(ruf, knickAnteile(segmente)) : ruf;
   };
   const punkt = (p: Float32Array, f: number) => {
@@ -351,7 +378,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    const still = pause || reduz.matches; if (!still) uhr += dt;
    const flare = orbitFlare ? Math.max(0, 1 - (zeit - orbitFlare.t) / nwWert(s.werte, 'orbit_flare_ms', 800)) : 0; if (!still) orbitPhase += dt * (1 + flare * 2.5);
    const jetzt = Date.now();
-   if (!graph || s !== stand || zeit - layoutAm >= Math.max(1000, s.werte.buendel_ms)) { graph = netzwerkSzene(s, jetzt); szene.current = graph; layoutAm = zeit; stand = s; rw = reaktionsWerte(s.werte); ebenen = indexEbenen(s); merkeIndex(s, zeit); }
+   if (!graph || s !== stand || zeit - layoutAm >= Math.max(1000, s.werte.buendel_ms)) { graph = globalModus.current ? globaleSzene(s, jetzt, sonnenGedaechtnis.current) : netzwerkSzene(s, jetzt, sonnenGedaechtnis.current); szene.current = graph; layoutAm = zeit; stand = s; rw = reaktionsWerte(s.werte); ebenen = indexEbenen(s); merkeIndex(s, zeit); }
    nebelEff = raeume(nebelEff, zeit, rw); trabEff = raeume(trabEff, zeit, rw);
    const g = graph;
    const ds = nwWert(s.werte, 'deko_sterne', 420);
@@ -362,6 +389,8 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    const ease = 1 - Math.exp(-dt * 3.2), ids = new Set<string>();
    for (const k of g.knoten) {
     ids.add(k.id);
+    // P22-T229: fremde Sonne blendet je Frame fliessend aus (nicht im Layout-Takt).
+    if (k.sonne) k.fade = sonnenFade(k.sonne, jetzt);
     let l = lage.current.get(k.id);
     if (!l) { const e = k.eltern ? lage.current.get(k.eltern.id) ?? { x: k.eltern.x * streckX, y: k.eltern.y * streckY } : { x: k.x * streckX, y: k.y * streckY }; l = { x: e.x, y: e.y, a: 0 }; lage.current.set(k.id, l); }
     l.x += (k.x * streckX - l.x) * ease; l.y += (k.y * streckY - l.y) * ease; l.a += (1 - l.a) * ease; if (k.plan) { l.auto = k.plan.auto_commit === true; bekanntePlaene.add(k.plan.id); }
@@ -418,7 +447,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    // Nervenbahnen: kaum sichtbar in Ruhe, aktive Bahnen schimmern zum Kern hin.
    const wolken = new Map<string, { x: number; y: number; n: number; f: Rgb; p: Punkt; act: number }>();
    for (const [p, c] of g.kanten) {
-    const a = pos(p), b = pos(c), lc = (lage.current.get(c.id)?.a ?? 1) * (c.fade ?? 1), act = Math.max(aktivitaet(c), c.rolle === 'koordinator' ? 0.25 : 0);
+    const a = pos(p), b = pos(c), lc = (lage.current.get(c.id)?.a ?? 1) * (c.fade ?? 1) * (p.fade ?? 1), act = Math.max(aktivitaet(c), c.rolle === 'koordinator' ? 0.25 : 0);
     if (p !== g.kern) { const wo = wolken.get(p.id) ?? { x: 0, y: 0, n: 0, f: rgb(p.farbe), p: a, act: 0 }; wo.x += b.x; wo.y += b.y; wo.n++; wo.act = Math.max(wo.act, act); wolken.set(p.id, wo); }
     if (stufe > 1 && act <= (stufe > 2 ? 0.3 : 0.1)) continue;
     const len = Math.hypot(b.x - a.x, b.y - a.y), schritt = (act > 0.1 ? 3.4 : 7) * (stufe > 2 ? 4 : stufe ? 2 : 1), n = Math.max(6, Math.min(130, Math.round(len / schritt)));
@@ -521,6 +550,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      if (i.art === 'post') schreibend++; else if (i.art === 'plan') planend++;
     } else if (!fehlt) {
      const u = Math.min(1, (t - ankunft) / (1.3 - ankunft)), z = punkt(i.pfad, 1);
+     if (!i.angekommen && i.nach !== g.kern.id && i.nach.startsWith('projekt:')) sonnenZiel[i.nach.slice(8)] = (sonnenZiel[i.nach.slice(8)] ?? 0) + 1;
      if (!i.angekommen) { i.angekommen = true; if (i.art !== 'lesen') zurueck(i, 0, zeit, s.werte.animation_ms); if (i.nach === g.kern.id) { kernPuls = Math.min(1.5, kernPuls + 0.16); welle(zeit, i.farbe); } else hitze.set(i.nach, Math.min(1.5, (hitze.get(i.nach) ?? 0) + (i.art === 'aufruf' ? 0.4 : 0.8))); }
      licht.sprite(z.x, z.y, 18 + u * (i.art === 'aufruf' ? 46 : 90), r, gg, b, (1 - u) * 0.75, 1);
      if (i.art === 'post' || i.art === 'plan') { licht.sprite(z.x, z.y, 10 + u * 150, r, gg, b, (1 - u) * 0.35, 1); schreibend++; }
@@ -539,6 +569,8 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     const act = aktivitaet(kn), f = rgb(kn.farbe), sel = kn.id === auswahl || kn.id === karte, ph = (hash(kn.id) % 628) / 100;
     const a = l.a;
     if (kn === g.kern) {
+     // P22-T196: in der globalen Uebersicht ist der Kern nur ein unsichtbarer Anker (keine Projektsonne, keine Trabanten).
+     if (g.global) continue;
      // P22-T149: Sterngroesse linear aus den Dateien (g.stern; 1 = 60.000 Dateien bzw. Rueckfall), Puls/Effekte behalten eine Mindestgroesse. Farbe = --accent.
      const sg = g.stern, ef = Math.max(0.45, sg), fk = akzent, schlag = 0.5 + 0.5 * Math.sin(uhr * 1.7), glut = 0.75 + kernPuls * 0.5;
      knotenLicht(l.x, l.y, 360 * sg + kernPuls * 120 * ef, fk[0], fk[1], fk[2], 0.16 * glut, 0, 1, 0.05, 0, 1.7);
@@ -602,6 +634,16 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      knotenLicht(l.x, l.y, 30 + act * 6, f[0], f[1], f[2], (0.55 + 0.4 * Math.min(1, act)) * fa, 2, 1, 0.05, ph, 2.2);
      knotenLicht(l.x, l.y, 46, 1, 0.95, 0.8, (co ? 0.35 : 0.14) * fa, 1, 1, co ? 0.08 : 0.03, ph, 3);
      if (sel) knotenLicht(l.x, l.y, 66, 1, 1, 1, 0.4, 1);
+     continue;
+    }
+    if (kn.rolle === 'sonne') {
+     // P22-T229: fremde Projekt-Sonne (Heimat von Visum-Agenten): kleiner Stern in eigener Farbe, gluehender Kern, Puls bei Ankunft, blendet aus.
+     const fd = (kn.fade ?? 1) * a, hf = mische(f, WEISS, 0.55), schlag = 0.5 + 0.5 * Math.sin(uhr * 1.7 + ph), ak = Math.min(1, act);
+     knotenLicht(l.x, l.y, 170 + ak * 70, f[0], f[1], f[2], (0.1 + 0.18 * ak) * fd, 0, 1, 0.05, ph, 1.7);
+     knotenLicht(l.x, l.y, 66 + schlag * 6 + ak * 16, f[0], f[1], f[2], (0.38 + 0.3 * ak) * fd, 0);
+     knotenLicht(l.x, l.y, 78, f[0], f[1], f[2], 0.26 * fd, 1, 1, 0.07, ph, 1.7);
+     knotenLicht(l.x, l.y, 34 + ak * 8, hf[0], hf[1], hf[2], 0.92 * fd, 9, 1, 0.08, ph, 1.7);
+     if (sel) knotenLicht(l.x, l.y, 100, 1, 1, 1, 0.3 * fd, 1);
      continue;
     }
     if (kn.rolle === 'projekt') { knotenLicht(l.x, l.y, 150, KERN[0], KERN[1], KERN[2], 0.07 * a, 0); continue; }
@@ -682,7 +724,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
    const sx = (x: number) => (x - k.x) * k.zoom + w / 2, sy = (y: number) => (y - k.y) * k.zoom + h / 2;
    // P22-T149: Chunk-Nebel als vorgezeichnete Ebene ueber dem ganzen Netz; sie treibt und pulsiert als Ganzes, dazu ein weicher Schimmer.
-   if (ebenen.nebel > 0 && stufe < 3) {
+   if (!g.global && ebenen.nebel > 0 && stufe < 3) {
     const nb = nebelEbene(ebenen.nebel, g.radius * 1.05, hell);
     if (nb) {
      const dichte = Math.min(1, ebenen.nebel / 3000), tr = reduz.matches ? 0 : uhr, basis = (hell ? 0.55 : 0.6) + 0.3 * dichte;
@@ -745,7 +787,9 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     // P22-T172: Agenten-Knoten heissen 'Name · Task' (Schalter agent_aktuelle_task AUS bzw. ohne Task: nur der Name).
     const tk = kn.agent && (kn.rolle === 'arbeitsagent' || kn.rolle === 'koordinator') ? findeAktuelleTask(aktuelleTasks.current, { identityId: kn.agent.identity_id, name: kn.agent.agent })?.task_id : undefined;
     const roh = tk ? kn.name + ' · ' + tk : kn.name, sel = kn.id === auswahl || kn.id === karte, max = (kompakt ? 14 : 22) + (tk ? tk.length + 3 : 0), name = roh.length > max ? roh.slice(0, max - 1) + '…' : roh;
+    if (kn === g.kern && g.global) continue;
     if (kn === g.kern) { etikett(kn.name.toUpperCase(), x, y + Math.max(16, 52 * k.zoom * Math.max(0.3, g.stern)), '#fed7aa', '600 10px "IBM Plex Mono", monospace', 0.95, true); continue; }
+    if (kn.rolle === 'sonne') { etikett(kn.name.toUpperCase() + (g.global ? '' : ' · VISUM'), x, y + Math.max(16, 30 * k.zoom), '#fde68a', '600 10px "IBM Plex Mono", monospace', 0.9 * l.a * (kn.fade ?? 1), true); continue; }
     if (kn.rolle === 'koordinator' || kn.rolle === 'main') { etikett(name, x, y + Math.max(18, 32 * k.zoom), sel ? '#F97316' : '#fde3c8', '600 11px "IBM Plex Mono", monospace', 0.95 * l.a, true); continue; }
     if (kn.rolle === 'plan') { etikett(kn.name, x, y + Math.max(15, 24 * k.zoom), sel ? '#F97316' : kn.farbe, '500 10px "IBM Plex Mono", monospace', (0.6 + 0.4 * Math.min(1, act)) * l.a * (kn.fade ?? 1), sel); continue; }
     if (kn.rolle === 'channel' || kn.rolle === 'channel-cluster') { etikett(kn.rolle === 'channel' ? name : kn.avatar + ' Channels', x, y + Math.max(15, 28 * k.zoom), sel ? '#F97316' : '#d8ccff', '500 10px "IBM Plex Mono", monospace', (0.55 + 0.45 * Math.min(1, act)) * l.a, sel); continue; }
@@ -767,6 +811,9 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    el.dataset.channelCount = String(g.channels); el.dataset.channelWriteCount = String(schreibend); el.dataset.animationCount = String(partikel.current.length);
    el.dataset.sprites = String(sprites); el.dataset.knoten = String(g.knoten.length); el.dataset.kameraModus = v.modus; el.dataset.streckX = String(streckX); el.dataset.streckY = String(streckY); el.dataset.plaene = String(g.plaene); el.dataset.planZustaende = JSON.stringify(g.knoten.filter(n=>n.plan).map(n=>({id:n.plan!.id,status:planZustand(n.plan!),farbe:n.farbe,fade:n.fade,animation:planAnimation(n.plan!),beitraege:n.teilnehmer?.length??0}))); el.dataset.planImpulse = String(planend); el.dataset.abgangCommit = String(zaehler.commit); el.dataset.abgangExplosion = String(zaehler.explosion); el.dataset.rueck = String(rueckZahl); el.dataset.leer = String(leerZahl);
    el.dataset.ergebnisEffekte = JSON.stringify(ergebnisZahl);
+   // P22-T229: Debug/Abnahme der Visum-Sonnen (welche fremden Sonnen, warum, bis wann, Ausblendstand, Ankuenfte je Sonne).
+   el.dataset.fremdSonnen = JSON.stringify(g.fremd.map(f => ({ projekt: f.projekt, agenten: f.agenten, grund: f.grund, zugang: f.zugang, ende: new Date(f.ende).toISOString(), fade: Number(sonnenFade(f, jetzt).toFixed(2)), heimat_aufrufe: f.heimatAufrufe, aufrufe: f.aufrufe })));
+   el.dataset.sonnenZiel = JSON.stringify(sonnenZiel); el.dataset.global = g.global ? '1' : '0'; el.dataset.visumSonnen = s.visum_sonnen?.aktiv ? '1' : '0';
    el.dataset.stern = String(g.stern); el.dataset.trabanten = String(ebenen.trabanten); el.dataset.trabantenEinzeln = String(ebenen.einzeln); el.dataset.nebelPunkte = String(nebelBild && ebenen.nebel && stufe < 3 ? ebenen.nebel : 0);
    // P22-T152: Debug der Index-Reaktion (letzte Art, aktive Leuchtpunkte, Zaehler, zuletzt gesehener Index Dateien/Chunks).
    el.dataset.nebelReaktion = nebelEff.letzte; el.dataset.nebelGlanz = String(nebelEff.glanz.length); el.dataset.nebelImpulse = String(nebelEff.zaehler.impuls);
@@ -805,14 +852,14 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
   const k = kamera.current, tol = 12 / k.zoom;
   let best: Knoten | undefined, bestD = Infinity;
   for (const kn of g.knoten) {
-   if (kn.rolle === 'projekt') continue;
+   if (kn.rolle === 'projekt' || (g.global && kn === g.kern)) continue;
    const l = lage.current.get(kn.id) ?? kn, d = Math.hypot(p.x - l.x, p.y - l.y);
    if (d < kn.radius + tol && d < bestD) { best = kn; bestD = d; }
   }
   return best;
  };
  const an = snapshot?.schalter.aktiv, ie = snapshot ? indexEbenen(snapshot) : null;
- const g = szene.current ?? (snapshot ? netzwerkSzene(snapshot, Date.now()) : null);
+ const g = szene.current ?? (snapshot ? (global ? globaleSzene(snapshot, Date.now()) : netzwerkSzene(snapshot, Date.now())) : null);
  const kartenKnoten = karte ? g?.knoten.find(k => k.id === karte) : undefined;
  const ereignisse = gruppiereEreignisse((snapshot?.ereignisse ?? []).filter(e => !auswahl || e.identity_id === auswahl || e.agent === auswahl || g?.alias.get(e.agent)?.id === auswahl || 'channel:' + e.channel === auswahl)).slice(-8).reverse();
  const datum = (s: string | null | undefined) => s ? new Date(s).toLocaleString('de-DE') : 'Nicht erfasst';
@@ -820,16 +867,17 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
  // P22-T156: Anzahl je Ergebnisart im Fenster (Legende, Debug-Zeile).
  const ergebnisAnzahl = zaehleErgebnisse(snapshot?.ereignisse ?? []);
  return <section className="agent-network" aria-label="Agentennetzwerk">
-  <header className="nw-head"><div><span className={'nw-signal ' + (status === 'live' ? 'live' : '')} /><strong>Agentennetzwerk</strong>{erklaerungen && <small>{status}</small>}</div><div>
+  <header className="nw-head"><div><span className={'nw-signal ' + (status === 'live' ? 'live' : '')} /><strong>{global ? 'Agentennetzwerk · alle Projekte' : 'Agentennetzwerk'}</strong>{erklaerungen && <small>{status}</small>}</div><div>
    {an && <><button onClick={() => setPause(p => !p)} aria-pressed={pause}>{pause ? 'Animation fortsetzen' : 'Animation pausieren'}</button><button className="nw-toggle" role="switch" aria-label="Erklärungen" aria-checked={erklaerungen} onClick={() => setErklaerungen(v => !v)}><span className="nw-toggle-track"><i /></span>Erklärungen <b>{erklaerungen ? 'Ein' : 'Aus'}</b></button>
     <span className="nw-help"><button aria-label="Icon-Legende" aria-expanded={legende} onClick={() => setLegende(v => !v)}>?</button>{legende && <div className="nw-legend" role="dialog" aria-label="Werkzeug-Icons">
-     <p className="nw-legend-text">Jeder echte Aufruf läuft als Lichtimpuls zum Projekt im Zentrum; Aufrufe mit Planbezug enden im goldenen Schattenplan. Blitz = Direktnachricht, Sechseck = Channel, Raute = files-Plan, dunkler Stern = ruhiger Agent. Rückfluss: hohle Ringe vom Ziel zurück zum Agenten, mehr und größere Ringe = größeres Ergebnis; leeres Ergebnis = kleine Kugel, die unterwegs zerplatzt. Nicht erfolgreiche Aufrufe erreichen das Projekt nicht (Ergebnis-Effekte unten). Commit: die Raute fliegt ins Projekt, das Projekt antwortet mit Welle und aufflackernden Trabanten. Artefakt bzw. Nachricht an den User: Signal feuert vom Agenten über den Netzrand (Karte = Artefakt, Funke = Nachricht). Trabanten um das Projekt: je 100 Dateien ein Punkt; feiner Nebel: je 100 Chunks ein Punkt.</p>
+     <p className="nw-legend-text">Jeder echte Aufruf läuft als Lichtimpuls zum Projekt im Zentrum; Aufrufe mit Planbezug enden im goldenen Schattenplan. Blitz = Direktnachricht, Sechseck = Channel, Raute = files-Plan, dunkler Stern = ruhiger Agent. Rückfluss: hohle Ringe vom Ziel zurück zum Agenten, mehr und größere Ringe = größeres Ergebnis; leeres Ergebnis = kleine Kugel, die unterwegs zerplatzt. Nicht erfolgreiche Aufrufe erreichen das Projekt nicht (Ergebnis-Effekte unten). Commit: die Raute fliegt ins Projekt, das Projekt antwortet mit Welle und aufflackernden Trabanten. Artefakt bzw. Nachricht an den User: Signal feuert vom Agenten über den Netzrand (Karte = Artefakt, Funke = Nachricht). Trabanten um das Projekt: je 100 Dateien ein Punkt; feiner Nebel: je 100 Chunks ein Punkt. Visum-Sonnen (Schalter netzwerk_visum_sonnen): ein Agent aus einem anderen Projekt bringt dessen Sonne mit und hängt an ihr; Aufrufe laufen zur Sonne des Projekts, in dem sie wirken. Nach Ablauf von Visum bzw. Arbeitsfreigabe blendet die Sonne langsam aus.</p>
      <p className="nw-legend-text">Ergebnis-Effekte auf halber Strecke Agent → Projekt{snapshot && nwWert(snapshot.werte, 'fehler_effekte', 1) === 0 ? ' (ausgeschaltet: jede Fehlerart als roter Fehlerimpuls)' : ''}: {ERGEBNIS_LEGENDE.map(([a, t]) => ERGEBNIS_SYMBOL[a] + ' ' + ERGEBNIS_NAMEN[a] + ' ' + t + (ergebnisAnzahl[a] ? ' [' + ergebnisAnzahl[a] + ' im Fenster]' : '')).join(' · ')}. Art und Fehlercode stehen am Impulskopf (Erklärungen an) und im Feed.</p>
      <p className="nw-legend-text">Aufrufe ohne Absender (kein Ausweis, kein Agentenname) werden kein Knoten; sie zählen nur als „ohne Absender“ in der Debug-Zeile (Erklärungen an){snapshot?.ohne_absender ? ' · im Fenster: ' + snapshot.ohne_absender : ''}.</p>
      <p className="nw-legend-text">Pläne: <span style={{color:PLAN_FARBEN.offen}}>offen (gold)</span> · <span style={{color:PLAN_FARBEN.committet}}>committet (grün, fliegt ins Projekt)</span> · <span style={{color:PLAN_FARBEN.auto}}>auto-committet (blau, fliegt ins Projekt)</span> · <span style={{color:PLAN_FARBEN.verworfen}}>verworfen (rote Explosion)</span>.</p>
      {Object.entries(STILE).map(([key, s]) => <span key={key} style={{ color: s.farbe }}><b>{s.icon}</b>{s.name}</span>)}</div>}</span></>}
    <button onClick={() => setEinstellungen(v => !v)} aria-expanded={einstellungen}>Einstellungen</button>
-   <button disabled={busy || !snapshot} onClick={() => void aktion(() => schalteNetzwerk(project, !an))}>{an ? 'Ausschalten' : 'Einschalten'}</button>
+   {/* P22-T196 (Abnahme 35d1ce22): die Uebersicht schaltet agentennetzwerk nie (global wirkte auf alle Projektnetzwerke); Rueckweg nur ueber uebersicht_netzwerk in der Leiste. */}
+   {!global && <button disabled={busy || !snapshot} onClick={() => void aktion(() => schalteNetzwerk(project, !an))}>{an ? 'Ausschalten' : 'Einschalten'}</button>}
   </div></header>
   {fehler && <p className="nw-error" role="alert">{fehler} <button onClick={() => void refresh.current()}>Erneut laden</button></p>}
   {einstellungen && snapshot && <form className="nw-settings" onSubmit={e => { e.preventDefault(); const diff = geaenderteNetzwerkWerte(werte, snapshot.einstellungen); if (Object.keys(diff).length) void aktion(async () => { await stelleNetzwerkEin(project, diff); setWerte({}); }); }}>
@@ -860,7 +908,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
       }
       if (ev.pointerType !== 'touch') { const k = treffer(welt(ev)); setKarte(k?.id || auswahl); }
      }}
-     onClick={ev => { if (zug.current?.bewegt) return; const k = treffer(welt(ev)); setAuswahl(k?.id || ''); setKarte(k?.id || ''); }} />
+     onClick={ev => { if (zug.current?.bewegt) return; const k = treffer(welt(ev)); if (global && k?.rolle === 'sonne') { global.onSonne(k.project); return; } setAuswahl(k?.id || ''); setKarte(k?.id || ''); }} />
     <div className="nw-viewport"><button aria-label="Netzwerk verkleinern" disabled={zoom <= 0.5} onClick={() => zoomSetzen(zoom - 0.5)}>−</button><button aria-label="Netzwerk vergrößern" disabled={zoom >= 4} onClick={() => zoomSetzen(zoom + 0.5)}>+</button><button onClick={() => zoomSetzen(1)}>Einpassen</button></div>
     {erklaerungen && <output className="nw-hud">{mess.fps} FPS · {mess.ms} ms · {mess.sprites} Lichter</output>}
     {ohneLicht && <p className="nw-empty">Diese Ansicht braucht WebGL2 oder Canvas.</p>}
@@ -872,11 +920,15 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
       {kartenKnoten.plan && <><dt>Status</dt><dd>{planZustand(kartenKnoten.plan)}{kartenKnoten.plan.status==='open'&&kartenKnoten.plan.coedit ? ' · Co-Edit offen' : ''}</dd><dt>Besitzer</dt><dd>{kartenKnoten.plan.besitzer_name || 'Nicht erfasst'}</dd><dt>Beitragende</dt><dd>{kartenKnoten.plan.beitraege.length}</dd><dt>Dateien</dt><dd>{kartenKnoten.plan.dateien}{kartenKnoten.plan.dateien_beispiele.length ? ' · ' + kartenKnoten.plan.dateien_beispiele.join(', ') : ''}</dd><dt>Erstellt</dt><dd>{datum(kartenKnoten.plan.erstellt)}</dd></>}
       <dt>Letzter Aufruf</dt><dd>{kartenAufruf ? kartenAufruf.tool + '.' + kartenAufruf.action + ' · ' + datum(kartenAufruf.zeit) : 'Nicht im Zeitfenster'}</dd>
       {kartenKnoten.zuordnung && <><dt>Zuordnung</dt><dd>{kartenKnoten.zuordnung}</dd></>}
+      {kartenKnoten.sonne && <><dt>{g?.global ? 'Aktive Agenten' : 'Visum-Agenten'}</dt><dd>{kartenKnoten.sonne.agenten.join(', ') || '–'}</dd><dt>Sichtbar bis</dt><dd>{datum(new Date(kartenKnoten.sonne.ende).toISOString())} · {kartenKnoten.sonne.grund}</dd></>}
      </dl><small>Quelle: {kartenKnoten.plan?'file_batch_plans':kartenKnoten.agent?.metadaten_quelle || 'tool_calls'} · Aktivität {snapshot.werte.aktivitaet_sekunden}s</small>
     </aside>}
     {!snapshot.ereignisse.length && <p className="nw-empty">Stille im Netz. Jeder echte Aufruf wird hier als Impuls sichtbar.</p>}
    </div>
-   {erklaerungen && <output className="nw-debug">Stream: {status} · {mess.rate} Ereignisse/s · {mess.fps} FPS · {mess.ms} ms/Frame · {mess.sprites} Lichter · Qualitätsstufe {mess.stufe} · {mess.gezeichnet} Impulsframes · {mess.ausgelassen} Animationen/Budgetüberschreitungen · Renderer: {glCanvas.current?.dataset.renderer ?? '–'} · Snapshot begrenzt: {snapshot.begrenzt} · ohne Absender: {snapshot.ohne_absender ?? 0} · Ergebnisse: {FEHLER_ARTEN.filter(a => ergebnisAnzahl[a]).map(a => ERGEBNIS_NAMEN[a] + ' ' + ergebnisAnzahl[a]).join(', ') || 'keine Fehler'}{nwWert(snapshot.werte, 'fehler_effekte', 1) === 0 ? ' (Effekte aus)' : ''} · Quelle: {snapshot.schalter.quelle} · Stand: {new Date(snapshot.stand).toLocaleTimeString('de-DE')}{snapshot.letzter_fehler || snapshot.schalter.letzter_fehler ? ' · ' + (snapshot.letzter_fehler || snapshot.schalter.letzter_fehler) : ''} · Index: {snapshot.index ? snapshot.index.dateien + ' Dateien / ' + snapshot.index.chunks + ' Chunks' : 'nicht geliefert'} · Stern {(g?.stern ?? 1).toFixed(2)} · {ie?.trabanten ?? 0} Trabanten ({ie?.einzeln ?? 0} einzeln) · {ie?.nebel ?? 0} Nebelpunkte{ie?.aktiv ? '' : ' · Rückfall ohne Index-Ebenen'}</output>}
+   {/* P22-T196: Sonnen als Liste (Tastatur/Mobil): Enter oeffnet das Projekt wie ein Klick auf die Sonne; ohne Sonnen der Grund. */}
+   {global && <nav className="nw-sonnen" aria-label="Projekte mit Aktivität">{(g?.knoten ?? []).filter(k => k.rolle === 'sonne').map(k => <button key={k.id} type="button" onClick={() => global?.onSonne(k.project)}><b>{k.name}</b><small>{k.aufrufe} Aufrufe</small></button>)}
+    {!(g?.knoten ?? []).some(k => k.rolle === 'sonne') && <small>{(snapshot as GlobalesNetz).daten_schalter?.aktiv === false ? 'Datengrundlage aus (Schalter netzwerk_datengrundlage): keine projektübergreifenden Ereignisse.' : 'Gerade arbeitet in keinem Projekt ein Agent.'}</small>}</nav>}
+   {erklaerungen && <output className="nw-debug">Stream: {status} · {mess.rate} Ereignisse/s · {mess.fps} FPS · {mess.ms} ms/Frame · {mess.sprites} Lichter · Qualitätsstufe {mess.stufe} · {mess.gezeichnet} Impulsframes · {mess.ausgelassen} Animationen/Budgetüberschreitungen · Renderer: {glCanvas.current?.dataset.renderer ?? '–'} · Snapshot begrenzt: {snapshot.begrenzt} · ohne Absender: {snapshot.ohne_absender ?? 0} · Ergebnisse: {FEHLER_ARTEN.filter(a => ergebnisAnzahl[a]).map(a => ERGEBNIS_NAMEN[a] + ' ' + ergebnisAnzahl[a]).join(', ') || 'keine Fehler'}{nwWert(snapshot.werte, 'fehler_effekte', 1) === 0 ? ' (Effekte aus)' : ''} · Quelle: {snapshot.schalter.quelle} · Stand: {new Date(snapshot.stand).toLocaleTimeString('de-DE')}{snapshot.letzter_fehler || snapshot.schalter.letzter_fehler ? ' · ' + (snapshot.letzter_fehler || snapshot.schalter.letzter_fehler) : ''} · Index: {snapshot.index ? snapshot.index.dateien + ' Dateien / ' + snapshot.index.chunks + ' Chunks' : 'nicht geliefert'} · Stern {(g?.stern ?? 1).toFixed(2)} · {ie?.trabanten ?? 0} Trabanten ({ie?.einzeln ?? 0} einzeln) · {ie?.nebel ?? 0} Nebelpunkte{ie?.aktiv ? '' : ' · Rückfall ohne Index-Ebenen'} · Visum-Sonnen: {snapshot.visum_sonnen ? (snapshot.visum_sonnen.aktiv ? (g?.fremd.length ? g.fremd.map(f => sonnenDebug(f, Date.now())).join('; ') : 'keine') + (g?.fremdOhneSonne ? ' · ' + g.fremdOhneSonne + ' Aufrufe ohne Sonne' : '') : 'aus') + ' (' + snapshot.visum_sonnen.quelle + (snapshot.visum_sonnen.letzter_fehler ? ', ' + snapshot.visum_sonnen.letzter_fehler : '') + ')' : 'nicht geliefert'}</output>}
    {erklaerungen && auswahl && g?.alias.get(auswahl)?.zuordnung && <p className="nw-assignment">{g.alias.get(auswahl)!.zuordnung}</p>}
    <details className="nw-feed" open><summary>Echte Ereignisse {auswahl ? '· Auswahl aktiv' : ''} <button onClick={e => { e.preventDefault(); setAuswahl(''); setKarte(''); }}>Alle</button></summary>
     <ol>{ereignisse.map(({ e, anzahl, ids }) => <li key={e.id}><time>{new Date(e.zeit).toLocaleTimeString('de-DE')}</time><b className="nw-event-icon" style={{ color: stil(e.tool).farbe }}>{stil(e.tool).icon}</b><span><strong>{e.agent}</strong> {e.tool}.{e.action}{e.empfaenger.length ? ' → ' + e.empfaenger.join(', ') : ''}{e.channel ? ' #' + e.channel : ''}{anzahl > 1 && <em> ×{anzahl}</em>}</span><code title={'Quelle tool_calls, Projekt ' + e.project + ' · IDs ' + ids.join(', ')}>#{e.id}</code>{(() => { const a = ergebnisArt(e); return <small className={'nw-ergebnis nw-ergebnis-' + a} title={'Ergebnis: ' + ERGEBNIS_NAMEN[a] + (e.fehler_code ? ' · Fehlercode ' + e.fehler_code : '')}>{istErfolg(a) ? (a === 'leer' ? '✓ ∅' : '✓') : ERGEBNIS_SYMBOL[a] + ' ' + ERGEBNIS_NAMEN[a] + (e.fehler_code ? ' · ' + e.fehler_code : '')}</small>; })()}</li>)}</ol>

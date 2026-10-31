@@ -61,7 +61,7 @@ export async function leseW1bSchalter(art: W1bSchalterArt): Promise<W1bSchalterS
 }
 
 export const PROFIL_PRODUKT_FUNKTIONEN = [
-  'agentennetzwerk',
+  'agentennetzwerk', 'netzwerk_datengrundlage',
   'profilverwaltung', 'typkatalog', 'persona', 'task_bindung', 'agenten_ausweis',
   // P22-T44: Ausweis fuer mehrere Projekte (Visum/Arbeitsfreigabe), Standard AUS; wirkt nach dem Stand der Heimat (agent-ausweis-projekte.ts).
   'mehrprojekt',
@@ -152,6 +152,8 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'koordinator_mehrfenster',
   // P22-T191: Artefakt-Dateien und MCP-Ueberlauf, Standard AUS, nur ausdruecklich.
   'artefakt_dateien', 'tool_antwort_ueberlauf',
+  // P22-T227: benannte Shell-Log-Stroeme, projektbezogen, Standard AUS.
+  'log_strom',
   // P22-T79 (Befund d93b8a2e): Main verwaltet Agenten/Koordinatoren in allen User-Projekten (Positivliste in
   // hauptagent-sonderstellung.ts, keine Projektarbeit), global, Standard AUS bis Abnahme, nur ausdruecklich.
   'main_agentenverwaltung',
@@ -246,9 +248,20 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   // P22-T222: Web-UI zeigt die neue Huelle SynapseWorkspace aus den P26-Modulen statt SynapseWorkspaceMock (web-ui App.tsx);
   // je Projekt/global, Standard AUS, nur ausdruecklich. AUS/Lesefehler = alte Oberflaeche.
   'web_ui_neue_oberflaeche',
+  // P22-T230: Web-UI-Seitenleiste 'Aktives Projekt': Unterzeile = letzte 3 aktiv bearbeitete Tasks, Klick oeffnet die bestehende
+  // Projektsuche (ProjectSelector) als Feld an der Karte; je Projekt/global, Standard AUS, nur ausdruecklich. AUS = bisherige Karte.
+  'seitenleiste_projekt_tasks',
+  // P22-T229: Agentennetzwerk - Visum-Agenten bringen ihre Heimat-Projektsonne mit, Impulse laufen zur Sonne des Zielprojekts, fremde Sonne
+  // blendet nach Zugangsende aus (web-ui netzwerk/sonnen.ts, core agentennetzwerk.ts visum_sonnen); je Projekt/global, Standard AUS, nur ausdruecklich.
+  'netzwerk_visum_sonnen',
+  // P22-T226: Projektdateien als Artefaktquelle; projekt/global, Standard AUS.
+  'datei_vertrag',
+  // P22-T196: Web-UI-Uebersicht als globales Agentennetzwerk (kompakte Leiste + alle Projekte mit Aktivitaet als Sonnen);
+  // global/projekt, Standard AUS, nur ausdruecklich. AUS/Lesefehler = bisherige Uebersicht (OverviewView.tsx).
+  'uebersicht_netzwerk',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-export const NUR_AUSDRUECKLICH: readonly string[] = ['anker_umrechnung', 'web_ui_neue_oberflaeche', 'artefakt_dateien', 'tool_antwort_ueberlauf', 'runtime_tool_ausgabe', 'user_inbox', 'zeilen_anmerkungen', 'koordinator_mehrfenster', 'reverse_pipeline_halt', 'agentennetzwerk', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_asset_registrierung', 'reverse_parser_adapter', 'reverse_leser', 'reverse_leser_nachzug', 'reverse_leser_hinweise', 'reverse_leser_runtime_verwaltung', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'reverse_global_sichtbar', 'reverse_intel_abruf', 'reverse_fehlerlog', 'ausweis_channels', 'kontingent_delegiert', 'plattform_agent_chat', 'main_agentenverwaltung', 'koordinator_heartbeat', 'agent_start_ort', 'runtime_agenten_uebersicht', 'runtime_agenten_steuerung', 'plattform_agent_modellwechsel', 'main_turn_wake_frist', 'ausweis_zielmodell', 'modell_lauf_bindung', 'wake_echter_absender', 'wake_antwort_identitaet', 'runtime_agenten_panel_neu', 'verlauf_tool_karten', 'agent_kennung_werbung', 'wrapper_status_ursache', 'agent_chat_einheitlich', 'mod_inbox', 'mod_inbox_vorpruefung', 'task_bindung_loesen_bei_done', 'artefakt_bewertung', 'artefakt_bewertung_melden', 'inbox_quittung', 'artefakt_vorlagen', 'artefakt_vorlagen_live', 'artefakt_ausweis_zeigen', 'artefakt_verweise', 'artefakt_skripte', 'verlauf_einbetten', 'verlauf_suche', 'chat_zitate', 'agent_aktuelle_task', 'agent_lauf_herkunft', 'agent_umbenennung', 'api_agenten', 'wiederkehr_plaene', 'speicher_aehnlichkeit', 'speicher_aehnlichkeit_pruefen', 'task_pins', 'api_agenten_lauf_intern'];
+export const NUR_AUSDRUECKLICH: readonly string[] = ['log_strom', 'uebersicht_netzwerk', 'netzwerk_visum_sonnen', 'anker_umrechnung', 'web_ui_neue_oberflaeche', 'seitenleiste_projekt_tasks', 'artefakt_dateien', 'tool_antwort_ueberlauf', 'runtime_tool_ausgabe', 'user_inbox', 'zeilen_anmerkungen', 'koordinator_mehrfenster', 'reverse_pipeline_halt', 'agentennetzwerk', 'netzwerk_datengrundlage', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_asset_registrierung', 'reverse_parser_adapter', 'reverse_leser', 'reverse_leser_nachzug', 'reverse_leser_hinweise', 'reverse_leser_runtime_verwaltung', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'reverse_global_sichtbar', 'reverse_intel_abruf', 'reverse_fehlerlog', 'ausweis_channels', 'kontingent_delegiert', 'plattform_agent_chat', 'main_agentenverwaltung', 'koordinator_heartbeat', 'agent_start_ort', 'runtime_agenten_uebersicht', 'runtime_agenten_steuerung', 'plattform_agent_modellwechsel', 'main_turn_wake_frist', 'ausweis_zielmodell', 'modell_lauf_bindung', 'wake_echter_absender', 'wake_antwort_identitaet', 'runtime_agenten_panel_neu', 'verlauf_tool_karten', 'agent_kennung_werbung', 'wrapper_status_ursache', 'agent_chat_einheitlich', 'mod_inbox', 'mod_inbox_vorpruefung', 'task_bindung_loesen_bei_done', 'artefakt_bewertung', 'artefakt_bewertung_melden', 'inbox_quittung', 'datei_vertrag', 'artefakt_vorlagen', 'artefakt_vorlagen_live', 'artefakt_ausweis_zeigen', 'artefakt_verweise', 'artefakt_skripte', 'verlauf_einbetten', 'verlauf_suche', 'chat_zitate', 'agent_aktuelle_task', 'agent_lauf_herkunft', 'agent_umbenennung', 'api_agenten', 'wiederkehr_plaene', 'speicher_aehnlichkeit', 'speicher_aehnlichkeit_pruefen', 'task_pins', 'api_agenten_lauf_intern'];
 /**
  * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
  * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.
