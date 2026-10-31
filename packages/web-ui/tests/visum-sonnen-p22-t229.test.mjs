@@ -191,8 +191,23 @@ try {
 
  // ---------- D Komponente (statisch) ----------
  const tsx = lies('packages/web-ui/src/components/Agentennetzwerk.tsx');
- ok(tsx.includes("zielK = zs?.rolle === 'sonne' ? zs : g.kern") && tsx.includes("if (ziel !== zielK && (ziel.rolle === 'sonne' || ziel === g.kern)) ziel = zielK;") && tsx.includes('nach: zielK.id'),
-  'D Impuls endet an der Sonne des Zielprojekts; Visum-Agent im Gastprojekt direkt zum Kern');
+ // t221 (Befund 34926e31): Der Ausdruck fuer das Impulsziel wird nicht mehr woertlich geprueft. Die ausgelieferte Zeile
+ // 'const zp = …, zs = …, zielK = …;' aus baue() wird ausgefuehrt, gegen echte Szenen von netzwerkSzene, damit Erweiterungen wie der
+ // globale Zweig (P22-T196 Plan 30517: projektlose Aufrufe -> Szene.mitte) den Test nicht brechen, eine falsche Zielwahl aber schon.
+ const zielZeile = tsx.match(/const zp = [^\n]*?zielK = [^\n]*?;\n/)?.[0];
+ ok(!!zielZeile, 'D Agentennetzwerk.tsx: Zielwahl zp/zs/zielK in baue() vorhanden');
+ const zielVon = new Function('g', 'e', 'zielProjekt', zielZeile.replace(/^const /, 'let ') + ' return zielK;');
+ const zk = (g, extra) => zielVon(g, ev('z', 'moo-a', 'id-moo-a', extra), F.zielProjekt);
+ ok(zk(gAn, { project: 'moo', heimat_projekt: 'moo', ziel_projekt: 'moo' }) === sMoo, 'D Arbeitsraum: Aufruf im Heimatprojekt -> Impulsziel fremde Sonne');
+ ok(zk(gAn, { heimat_projekt: 'moo', ziel_projekt: 'synapse' }) === gAn.kern, 'D Arbeitsraum: Aufruf im Gastprojekt -> Impulsziel Kern');
+ ok(zk(gAn, { project: 'drittes', heimat_projekt: 'moo', ziel_projekt: 'drittes' }) === gAn.kern && zk(gAn, { project: '', ziel_projekt: null }) === gAn.kern,
+  'D Arbeitsraum: Zielprojekt ohne Sonne bzw. projektlos -> Kern (kein globaler Zweig)');
+ ok(zk(gAus, { project: 'moo', heimat_projekt: 'moo', ziel_projekt: 'moo' }) === gAus.kern, 'D Schalter AUS: Impulsziel immer der Kern (wie bisher)');
+ const mitte = gAn.alias.get('synapse-hauptagent'), gGlobal = { ...gAn, global: true, mitte };
+ ok(zk(gGlobal, { project: '', ziel_projekt: null }) === mitte && zk(gGlobal, { project: 'moo', heimat_projekt: 'moo', ziel_projekt: 'moo' }) === sMoo && zk(gGlobal, { ziel_projekt: 'synapse' }) === gAn.kern,
+  'D global (P22-T196): projektloser Aufruf -> Mitte (Hauptagent), Aufruf mit Zielprojekt -> dessen Sonne bzw. Anker');
+ ok(tsx.includes("if (ziel !== zielK && (ziel.rolle === 'sonne' || ziel === g.kern)) ziel = zielK;") && tsx.includes('nach: zielK.id'),
+  'D Weg: Visum-Agent im Gastprojekt direkt zum Ziel (nicht ueber die Heimat-Sonne), Impuls endet am Zielknoten');
  ok(tsx.includes('roh.visum_sonnen?.aktiv ? roh : ohneHeimatAufrufe(roh)') && tsx.includes('netzwerkSzene(s, jetzt, sonnenGedaechtnis.current)') && tsx.includes('if (k.sonne) k.fade = sonnenFade(k.sonne, jetzt);'),
   'D Schalter AUS filtert Heimat-Aufrufe, Gedaechtnis je Projekt, Ausblenden je Frame');
  ok(['dataset.fremdSonnen', 'dataset.sonnenZiel', 'dataset.visumSonnen', "Visum-Sonnen: {snapshot.visum_sonnen"].every(x => tsx.includes(x)), 'D Debug-Attribute und Debug-Zeile fuer die Abnahme');
