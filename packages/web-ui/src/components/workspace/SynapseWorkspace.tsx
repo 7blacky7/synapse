@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 
 import GraphView from '../../components/GraphView';
-import Agentennetzwerk from '../../components/Agentennetzwerk';
 import { ChannelFensterProvider } from '../../components/ChannelFenster';
 import { ChannelSuche } from '../../components/ChannelSuche';
 import { leseArbeitsbereichSchalter, type ArbeitsbereichSchalter } from '../../api/arbeitsbereich-schalter';
@@ -232,9 +231,8 @@ function Arbeitsraum({ project: initialProject, onLogout }: Props) {
   };
 
   const renderArea = () => {
-    if (area === 'main-agent') return arbeitsbereich?.aktiv
-      ? <VerweisFensterProvider><div className="standard-page"><Agentennetzwerk project={selectedProject} fallback={<p>Das Projektnetzwerk ist derzeit ausgeschaltet.</p>} /></div></VerweisFensterProvider>
-      : null;
+    // P22-T253: Das bestehende Dashboard zeigt das Netzwerk UND die Artefakt-/Aktivitätsreiter.
+    if (area === 'main-agent') return null;
     if (area === 'overview') {
       return (
         <OverviewView
@@ -375,7 +373,7 @@ function Arbeitsraum({ project: initialProject, onLogout }: Props) {
           <div><strong>{area === 'settings' ? 'Einstellungen' : nav.flatMap((group) => group.items).find((item) => item.area === area)?.label ?? 'Synapse'}</strong><small>{selectedProject || 'Projekt wählen'}</small></div>
         </header>
         <div className="control-content">{renderArea()}</div>
-        {arbeitsbereich && <MainAgentView theme={theme} project={selectedProject} showDashboard={area === 'main-agent' && !arbeitsbereich.aktiv} nurKnopf={arbeitsbereich.aktiv} />}
+        {arbeitsbereich && <MainAgentView theme={theme} project={selectedProject} showDashboard={area === 'main-agent'} nurKnopf={arbeitsbereich.aktiv} />}
         <ProjectCoordinatorDock />
         <MainAgentAssistantDock />
       </main>
