@@ -26,7 +26,7 @@ import { setzeArtefaktBlock } from './artefakt-zustand';
 import { verlaufAnzeigeId, warteText, baueVerlaufNachrichten } from './verlauf';
 import { zitatTeile } from './zitat-teile';
 
-export function MainAgentView({ project, showDashboard }: { theme: Theme; project: string; showDashboard: boolean }) {
+export function MainAgentView({ project, showDashboard, nurKnopf = false }: { theme: Theme; project: string; showDashboard: boolean; nurKnopf?: boolean }) {
   const [input, setInput] = useState('');
   const [pendingFiles, setPendingFiles] = useState<MockChatAttachment[]>([]);
   // P22-T168: Zitat-Anhaenge NUR an den Hauptagenten (Schalter chat_zitate global).
@@ -49,7 +49,7 @@ export function MainAgentView({ project, showDashboard }: { theme: Theme; projec
   /** Der ungekuerzte Laufkontext. Wird nicht angezeigt, haengt aber als title an der Meta-Zeile. */
   const [runtimeContextRoh, setRuntimeContextRoh] = useState('');
   const [chatMode, setChatMode] = useState<'auto' | 'fixed'>('auto');
-  const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [chatCollapsed, setChatCollapsed] = useState(nurKnopf);
   const [chatPeeking, setChatPeeking] = useState(false);
   const [chatHasUnread, setChatHasUnread] = useState(false);
   // P22-T7: Steuerung des Hauptagenten (Heartbeat, Schalter, Wechsel, Verbrauch) als aufklappbarer Zusatz.
@@ -106,7 +106,7 @@ export function MainAgentView({ project, showDashboard }: { theme: Theme; projec
     const latest = messages[messages.length - 1];
     if (chatCollapsed && latest?.role === 'agent') {
       setChatHasUnread(true);
-      if (chatMode === 'auto') {
+      if (chatMode === 'auto' && !nurKnopf) {
         setChatPeeking(true);
         if (peekTimerRef.current) window.clearTimeout(peekTimerRef.current);
         peekTimerRef.current = window.setTimeout(() => setChatPeeking(false), 6500);
@@ -130,8 +130,9 @@ export function MainAgentView({ project, showDashboard }: { theme: Theme; projec
 
   useEffect(() => {
     setChatPeeking(false);
-    setChatCollapsed(!showDashboard);
-  }, [showDashboard]);
+    if (!nurKnopf) setChatCollapsed(!showDashboard);
+  }, [showDashboard, nurKnopf]);
+  useEffect(() => { if (nurKnopf) { setChatPeeking(false); setChatCollapsed(true); } }, [nurKnopf]);
 
   // P8-T26: nur Aufrufe des Hauptagenten selbst (Server filtert nach seiner Identitaet), nie die anderer Agenten
   // im gewaehlten Projekt. Hat er noch nichts aufgerufen, bleibt die Liste leer.

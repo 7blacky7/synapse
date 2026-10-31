@@ -29,6 +29,20 @@ export const navigation: NavGroup[] = [
   },
 ];
 
+/** P22-T253: Übersicht vor dem Abschnitt; bestehende Einträge bleiben echte Navigation. */
+export const navigationArbeitsbereich: NavGroup[] = [
+  { label: '', items: [{ area: 'overview', label: 'Übersicht', glyph: '⌂' }] },
+  { label: 'Arbeitsbereich', items: [
+    { area: 'main-agent', label: 'Projektnetzwerk', glyph: '◎' },
+    // P22-T256 setzt hier den Editor ein, sobald Modul und Schalter vorhanden sind.
+    { area: 'agents', label: 'Agententeam', glyph: '◉' },
+    { area: 'workspaces', label: 'Projekt-Workspaces', glyph: '□' },
+    { area: 'graph', label: 'Graph', glyph: '◇' },
+    { area: 'channels', label: 'Channels', glyph: '#' },
+  ] },
+  ...navigation.slice(1),
+];
+
 export const defaultSettings: SettingsViewModel = {
   heartbeatEnabled: true,
   heartbeatInterval: 60,

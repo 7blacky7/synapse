@@ -21,12 +21,14 @@ export function OverviewView({
   channels,
   onSelectProject,
   onOpen,
+  hauptagentNurRechts = false,
 }: {
   projects: ProjectViewModel[];
   selectedProject: string;
   channels: ChannelViewModel[];
   onSelectProject: (project: string) => void;
   onOpen: (area: Area) => void;
+  hauptagentNurRechts?: boolean;
 }) {
   const active = projects.filter((project) => project.isActive).length;
   const schalterProjekt = selectedProject || 'synapse';
@@ -140,7 +142,7 @@ export function OverviewView({
             <div><dt>Main-Agent</dt><dd>UI vorbereitet</dd></div>
           </dl>
           <div className="detail-actions">
-            <button type="button" onClick={() => onOpen('main-agent')}>Hauptagent öffnen</button>
+            {!hauptagentNurRechts && <button type="button" onClick={() => onOpen('main-agent')}>Hauptagent öffnen</button>}
             <button type="button" onClick={() => onOpen('channels')}>Channels öffnen</button>
           </div>
         </div>
