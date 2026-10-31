@@ -7,7 +7,7 @@
  * Fall 6 misst tatsächlich 300 s Standard-Inaktivität ohne Zeitstempel-Manipulation.
  * Tabellenzeilen enthalten erwartet/ist, Plan-IDs, Dauer und parallelen Laststand.
  * P22-T199 (t215): derselbe Lauf je Methode, T199_METHODE=aus (Standard, Ready-Gate; Frist jetzt PG-Einstellung
- * coedit_aktiv_sekunden, Standard 60 s statt Env 5 min) bzw. =ein (Produkt-Schalter coedit_ohne_gate fuer dieses
+ * coedit_aktiv_sekunden; ohne PG-Wert wie live Env SYNAPSE_COEDIT_AKTIV_MIN bzw. 300 s, t223-Nachbesserung) bzw. =ein (Produkt-Schalter coedit_ohne_gate fuer dieses
  * Testprojekt: kein Gate, Teilcommit mit eigener batch_id, Op-Zustaende). Zusaetzliche EIN-Faelle S, E1, E2, E4/E6, E8,
  * E11, E12 (Entwurf 7efece9b Abschnitt 6) und Messung der Beitragsdauer je Op (T-M1) im Lastteil.
  */
@@ -128,8 +128,10 @@ try{
    return {plan_id:s.p.plan_id,batch_id:cm.batch_id,last_activity:ts,commit_ms:ms,plan_offen:cm.plan_offen};
   });
  else crashJob=test('6b Beitragender stürzt vor Ready ab; volle Standardfrist (P22-T199: coedit_aktiv_sekunden)',
-  'Frist aus PG-Einstellung coedit_aktiv_sekunden (Standard 60 s, Quelle standard) seit letzter Tool-Aktivität; davor begrenzte Warteantwort; danach beide Marken erhalten',async()=>{
-   const frist=await F.coeditAktivFrist(project);ok(frist.sekunden===60&&frist.quelle==='standard','Frist 60 s Standard aus PG-Lesestelle',frist);
+  'Frist aus PG-Einstellung coedit_aktiv_sekunden (ohne Wert Standard 300 s wie live, Quelle standard) seit letzter Tool-Aktivität; davor begrenzte Warteantwort; danach beide Marken erhalten',async()=>{
+   process.env.SYNAPSE_COEDIT_AKTIV_MIN='0.5';const envFrist=await F.coeditAktivFrist(project);delete process.env.SYNAPSE_COEDIT_AKTIV_MIN;
+   ok(envFrist.sekunden===30&&envFrist.quelle==='env','ohne PG-Wert Env-Rueckfall wie live (0.5 min = 30 s)',envFrist);
+   const frist=await F.coeditAktivFrist(project);ok(frist.sekunden===300&&frist.quelle==='standard','Frist 300 s Standard ohne PG-Wert (wie live, t223-Nachbesserung)',frist);
    const s=await scenario();ok((await add(s.p.plan_id,s.w,[s.op])).success,'Absturz-Beitrag eingereicht');
    const ts=await active(s.w),started=Date.now();
    const first=await commit(s.p.plan_id,s.o,2),firstMs=Date.now()-started;
