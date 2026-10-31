@@ -54,6 +54,11 @@ const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v)
 const obj = (v: unknown): Roh => (v && typeof v === 'object' && !Array.isArray(v) ? v as Roh : {});
 const liste = (v: unknown): Roh[] => (Array.isArray(v) ? v.filter((x): x is Roh => !!x && typeof x === 'object') : []);
 const textListe = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+// P22-T257: nur User-Teamansicht; keine persistente Speicherung.
+export async function ladeTeamAusweis(project: string, identityId: string): Promise<{ aktiv: boolean; ausweis: string; quelle: string; fehler: string }> {
+  const r = await anfrage(project, '/identitaeten/' + encodeURIComponent(identityId) + '/team-ausweis');
+  return { aktiv: r.aktiv === true, ausweis: str(r.ausweis), quelle: str(r.quelle), fehler: str(r.letzter_fehler) };
+}
 
 export function zeit(v: unknown): string {
   const roh = str(v);

@@ -50,7 +50,7 @@
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
-  agentPrincipalAusAnmeldung, fuehreW1bAdminAus, leseAgentBezugModus, mitUserHerkunft, pruefeAgentToken, w1bFehlerStatus, type W1bAkteur,
+  agentPrincipalAusAnmeldung, fuehreW1bAdminAus, leseAgentBezugModus, mitUserHerkunft, pruefeAgentToken, w1bFehlerStatus, getPool, leseProfilProduktSchalter, type W1bAkteur,
 } from '@synapse/core';
 import { validateToken } from '../services/auth.js';
 import {reverseErkenntnisseRoutes} from './reverse-erkenntnisse.js';
@@ -164,6 +164,29 @@ export async function registerAgentProfilRoutes(f: FastifyInstance, o: AgentProf
       throw e;
     }
   }
+
+  // P22-T257: eigene, ausschließlich User-Sitzungen zugängliche Projektion; keine Änderung am allgemeinen Teamvertrag.
+  f.get<{ Params: { project: string; identity_id: string } }>('/api/projects/:project/agent-profile/identitaeten/:identity_id/team-ausweis', async (req, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    try {
+      const wer = await akteur(req, req.params.project);
+      if (!wer.user) throw new RouteFehler('nur_user', 403);
+      const stand = await leseProfilProduktSchalter('team_ausweis_zeigen', req.params.project);
+      if (!stand.aktiv || stand.letzter_fehler) return { success: true, aktiv: false, quelle: stand.quelle, letzter_fehler: stand.letzter_fehler ?? null, ausweis: null };
+      const r = await getPool().query<{ token_offen: string | null }>(`
+        SELECT k.token_offen FROM agent_identitaeten i JOIN agent_identitaet_tokens k ON k.identity_id=i.id
+        WHERE i.project=$1 AND i.id=$2 AND i.status='aktiv' AND i.rolle <> 'main'
+          AND i.agent_id NOT LIKE 'archiv-%' AND k.widerrufen_am IS NULL
+          AND (k.gueltig_bis IS NULL OR k.gueltig_bis > NOW()) LIMIT 1`, [req.params.project, req.params.identity_id]);
+      const wert = r.rows[0]?.token_offen;
+      return { success: true, aktiv: true, quelle: stand.quelle, letzter_fehler: null,
+        ausweis: typeof wert === 'string' && /^sai_[A-Za-z0-9_-]{1,64}$/.test(wert) ? wert : null };
+    } catch (e) {
+      if (e instanceof RouteFehler) return reply.code(e.status).send({ success: false, error: { code: e.code } });
+      // Keine Kennung oder Datenbankdetails in Fehlern/Logs.
+      return reply.code(500).send({ success: false, error: { code: 'team_ausweis_fehler' } });
+    }
+  });
 
   for (const def of ROUTEN) {
     f.route({ method: def.methode, url: '/api/projects/:project/agent-profile' + def.pfad, handler: (req, reply) => bearbeite(req, reply, def) });

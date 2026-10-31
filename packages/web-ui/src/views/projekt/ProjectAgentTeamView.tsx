@@ -7,6 +7,7 @@ import { PageHeader } from '../../components/gemeinsam/PageHeader';
 import { StatusChip } from '../../components/StatusKennzeichnung';
 import { useAgentVerbrauch } from '../../components/HauptagentSteuerung';
 import { oeffneAusweisVerwaltung } from '../../ausweis-deeplink';
+import { ladeTeamAusweis } from '../../api/ausweis-verwaltung';
 import { herkunftText, loadProjectTeamViewModels } from '../../api/control-plane-adapter';
 import type { ProjectTeamAgentViewModel } from '../../control-plane/view-model';
 import { agentTon, teamAnmeldungText, teamKontextText, teamSchluessel } from './agententeam-logik';
@@ -20,6 +21,15 @@ export function ProjectAgentTeamView({ project }: { project: string }) {
   const [selected, setSelected] = useState('');
   const current = agents.find((agent) => teamSchluessel(agent) === selected) ?? agents[0];
   const verbrauch = useAgentVerbrauch(project);
+  const [teamAusweis, setTeamAusweis] = useState<{ identityId: string; aktiv: boolean; ausweis: string; quelle: string; fehler: string } | null>(null);
+  useEffect(() => {
+    let aktiv = true;
+    setTeamAusweis(null);
+    const identityId = current?.identityId;
+    if (project && identityId) void ladeTeamAusweis(project, identityId)
+      .then(r => { if (aktiv) setTeamAusweis({ ...r, identityId }); }).catch(() => { if (aktiv) setTeamAusweis(null); });
+    return () => { aktiv = false; };
+  }, [project, current?.identityId]);
 
   useEffect(() => {
     let active = true;
@@ -62,7 +72,7 @@ export function ProjectAgentTeamView({ project }: { project: string }) {
         <dl>
           <div><dt>Rolle</dt><dd>{current.rolle || '–'}</dd></div>
           <div><dt>Typ</dt><dd>{current.typ || '–'}</dd></div>
-          <div><dt>Ausweis</dt><dd>{current.ausweis === 'gueltig' ? 'gültig' : current.ausweis === 'keiner' ? 'kein gültiger Ausweis' : '–'}</dd></div>
+          <div><dt>Ausweis</dt><dd>{current.ausweis === 'gueltig' ? 'gültig' : current.ausweis === 'keiner' ? 'kein gültiger Ausweis' : '–'}{teamAusweis?.identityId === current.identityId && teamAusweis?.aktiv && teamAusweis.ausweis && <> · <code>{teamAusweis.ausweis}</code> <button type="button" onClick={() => void navigator.clipboard.writeText(teamAusweis.ausweis)}>Kopieren</button></>}{teamAusweis?.fehler && <small> Anzeige nicht verfügbar ({teamAusweis.fehler})</small>}</dd></div>
           <div><dt>Modell</dt><dd>{current.model || '–'}</dd></div>
           <div><dt>Provider</dt><dd>{current.provider || '–'}</dd></div>
           <div><dt>Ort</dt><dd>{current.herkunft ? herkunftText(current.herkunft) : '–'}</dd></div>
