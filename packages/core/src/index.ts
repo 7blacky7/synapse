@@ -1,9 +1,14 @@
 export * from './services/api-agent-auswahl.js';
 
 // P22-T172: aktuelle Task je Agent (Schalter agent_aktuelle_task, Einstellwert fenster_stunden in agent_aktuelle_task_einstellungen).
+// P22-T194 Stufe2: Cache-Telemetrie ohne automatische Laufsteuerung.
+export * from './services/cache-waechter.js';
+export {CACHE_WAECHTER_SCHEMA_SQL} from './db/cache-waechter-schema.js';
 // P22-T191: gemeinsame Artefakt-Datei-/Katalogvertraege.
 export * from './services/artefakt-katalog.js';
 export * from './services/shell-log-strom.js';
+// P22-T243 (+P22-T208): volle Shell-Ausgabe in Teilen, gedeckelte Abrufe (Schalter shell_ausgabe_voll).
+export * from './services/shell-ausgabe.js';
 export {ShellAusgabePuffer} from './services/shell-ausgabe-puffer.js';
 export * from './services/artefakt-dateien.js';
 export * from './services/artefakt-ueberlauf.js';
@@ -29,9 +34,16 @@ export {
 } from './services/speicher-aehnlichkeit.js';
 export type { AehnlicherEintrag, SpeicherAehnlichkeitSchalter, SpeicherAehnlichkeitEinstellungenStand } from './services/speicher-aehnlichkeit.js';
 export { SPEICHER_AEHNLICHKEIT_SCHEMA_SQL } from './db/speicher-aehnlichkeit-schema.js';
+// P22-T199: Co-Edit ohne Gate, Schema 168 (file_batch_plans.op_zustaende/aus_plan_id).
+export { COEDIT_OHNE_GATE_SCHEMA_SQL } from './db/coedit-ohne-gate-schema.js';
+export { COEDIT_OHNE_GATE_FUNKTION, leseCoeditMethode, coeditOhneGate } from './services/coedit-methode.js';
 // P22-T217: Anker-Umrechnung veralteter Zeilen-Ops im Plan (Schalter anker_umrechnung, Standard AUS).
 export { ANKER_UMRECHNUNG_FUNKTION, leseAnkerUmrechnung, ankerUmrechnungAn, rechneAnkerUm } from './services/anker-umrechnung.js';
 export type { AnkerUmrechnung, AnkerUmrechnungStand, AnkerFundstellen } from './services/anker-umrechnung.js';
+export type { CoeditMethode, CoeditMethodeStand } from './services/coedit-methode.js';
+// P22-T199: Werte der kleinen Plan-Pruefung als Einstellung (Env nur Rueckfall).
+export { PLAN_PRUEF_BEREICH, PLAN_PRUEF_ZAHLEN, planPruefBereich, lesePlanPruefEinstellungen, leerePlanPruefCache } from './services/plan-pruef-einstellungen.js';
+export type { PlanPruefStand, PlanPruefWert, PlanPruefQuelle } from './services/plan-pruef-einstellungen.js';
 // P10-T88 N1: Pins in plan(get, task_id) und gebundenen Tasks (Schalter task_pins).
 export { TASK_PINS_FUNKTION, leseTaskPinsSchalter, ergaenzeTaskPins } from './services/task-pins.js';
 export type { TaskPinsSchalter } from './services/task-pins.js';
@@ -901,6 +913,9 @@ export type {
   UeberwachungZustand, Massnahme as UeberwachungMassnahme, UeberwachungStand, UeberwachungEreignis, ContainerBeobachtung, RuntimeBeobachtung, ProbeDiagnose, ProbeFehlerKlasse,
   Entscheidung as UeberwachungEntscheidung, UeberwachungsDienste, TaktBericht as UeberwachungTaktBericht, FreeAusfuehrer, KettenRuntime, KettenSchritt,
 } from './services/runtime-ueberwachung.js';
+export { leseRuntimeSynapseMods, runtimeModsUmgebung, RUNTIME_SYNAPSE_MODS_FUNKTION } from './services/runtime-synapse-mods.js';
+export type { RuntimeModStand } from './services/runtime-synapse-mods.js';
+export { baueRuntimeModPolicy, runtimeModStartStand, RUNTIME_MOD_PLUGIN } from './services/runtime-mod-policy.js';
 export { leseRuntimeToolAusgabe, RUNTIME_TOOL_AUSGABE_FUNKTION } from './services/runtime-tool-ausgabe.js';
 export { toolAusgabeUmgebung, claudeToolAusgabe, codexToolAusgabe, toolResultsGuardQuelle, TOOL_RESULTS_READ_REGEL, pruefeToolAusgabeClaudeVersion } from './services/runtime-tool-ausgabe-regeln.js';
 export type { ToolAusgabeStand, ToolAusgabeWerte } from './services/runtime-tool-ausgabe-regeln.js';

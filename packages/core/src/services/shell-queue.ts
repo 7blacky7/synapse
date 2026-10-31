@@ -34,6 +34,8 @@ import {
 } from './shell-channel-unterbrechung.js';
 
 import {logStromSchalter,pruefeLogStromName,gleicheLogStromAbschlussAn} from './shell-log-strom.js';
+// P22-T243 (+P22-T208): volle Ausgabe in Teilen, gedeckelte Abrufe (Schalter shell_ausgabe_voll).
+import {shellAusgabeSchalter,speichereShellAusgabeText,schliesseShellAusgabeAb,istShellAusgabeMeta,leseShellAusgabeBereich,sucheShellAusgabe,shellAusgabeAnzeige,type ShellAusgabeAbschlussMeta,type ShellLogBereich,type ShellLogSuche,type ShellLogSucheOptionen} from './shell-ausgabe.js';
 
 export interface EnqueueArgs {
   log_strom?: string;
@@ -81,6 +83,13 @@ export interface ShellJobRow {
   /** SH-2: wer den Job abgebrochen hat (NULL = nicht abgebrochen). */
   cancelled_by: string | null;
   cancelled_at: Date | null;
+  /** P22-T243: Summen der Teile in shell_stream_chunks (NULL = keine Teile; BIGINT kommt als Text). */
+  ausgabe_teile?: number | null;
+  ausgabe_bytes?: string | null;
+  ausgabe_zeilen?: string | null;
+  ausgabe_offen?: boolean | null;
+  ausgabe_ausgelassen_bytes?: string | null;
+  ausgabe_stand?: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -98,6 +107,8 @@ export interface ShellJobCompletion {
   output?: string;
   /** P9-T33: Ausgabe lokal/bei Uebertragung unvollstaendig, auch unterhalb des Groessencaps. */
   output_truncated?: boolean;
+  /** P22-T243: der Daemon hat die volle Ausgabe schon in Teilen abgelegt (output fehlt dann oder ist nur die Rohausgabe). */
+  ausgabe?: ShellAusgabeAbschlussMeta;
   /** Nur Recovery: spaetes Nachtragen darf bereits terminale Ergebnisse nie ueberschreiben. */
   nur_laufend?: boolean;
   /** P10-T73: bestaetigt demaskiert -> output/tail unmaskiert speichern und in shell_demaskierungen vormerken. */
@@ -442,6 +453,27 @@ export async function completeShellJob(
   // Bei Bedarf kann der File-Fallback die volle Groesse liefern.
   let output = result.output ?? null;
   let truncated = result.output_truncated === true;
+  // P22-T243 (Schalter shell_ausgabe_voll): die volle Ausgabe liegt in Teilen (Daemon live/Abschluss oder hier aus output);
+  // shell_jobs.output behaelt nur den Kopf fuer Altleser. Meldet der Daemon Teile, wird immer abgeschlossen (sie liegen schon da).
+  let stromKopf: string | undefined;
+  const ausgabeMeta = istShellAusgabeMeta(result.ausgabe) ? result.ausgabe : undefined;
+  const vollAblegen = ausgabeMeta !== undefined
+    || (!!project && output !== null && output.length > MAX_OUTPUT_BYTES && (await shellAusgabeSchalter(project)).aktiv);
+  if (project && vollAblegen) {
+    try {
+      if (!ausgabeMeta && output !== null) await speichereShellAusgabeText(id, project, output);
+      const ab = await schliesseShellAusgabeAb(id, ausgabeMeta);
+      if (ab.teile > 0 && (output === null || output.length > MAX_OUTPUT_BYTES)) output = ab.kopf;
+      if (ab.teile > 0) stromKopf = ab.kopf;
+      if (ab.stand === 'luecke' || ab.stand === 'unvollstaendig') truncated = true;
+      if (ab.meldung) result.message = [result.message, ab.meldung].filter(Boolean).join('; ');
+    } catch (error) {
+      const code = (error as { code?: unknown })?.code;
+      console.error('[shell-queue] volle Ausgabe nicht abgelegt:', id, typeof code === 'string' && /^[a-z0-9_]+$/i.test(code) ? code : 'unknown');
+      result.message = [result.message, 'Volle Ausgabe konnte nicht in Teilen abgelegt werden; gespeichert ist nur der Anfang (1 MB).'].filter(Boolean).join('; ');
+      if (output === null) truncated = true;
+    }
+  }
   if (output !== null && output.length > MAX_OUTPUT_BYTES) {
     output =
       output.slice(0, MAX_OUTPUT_BYTES) +
@@ -449,7 +481,8 @@ export async function completeShellJob(
     truncated = true;
   }
   if(project && logJob?.log_strom){
-    const text=sichereStromAusgabe===undefined?undefined:sichereStromAusgabe.slice(0,MAX_OUTPUT_BYTES);
+    const stromQuelle=sichereStromAusgabe??stromKopf;
+    const text=stromQuelle===undefined?undefined:stromQuelle.slice(0,MAX_OUTPUT_BYTES);
     await gleicheLogStromAbschlussAn(project,logJob.log_strom,id,text,truncated);
   }
   // SH-2: Ein abgebrochener Job darf NIE als 'done' enden. Der Kill kann daneben
@@ -905,6 +938,8 @@ export async function insertCompletedShellJob(args: {
   args.command=command; // Ausfuehrungs-/Audit-Kommando bleibt in der Job-Steuerung, Ausgaben sind geschwaerzt.
   let output = args.output ?? null;
   let truncated = false;
+  // P22-T243: vor dem Kappen merken; mit Schalter shell_ausgabe_voll wird der volle Text nach dem INSERT in Teilen abgelegt.
+  const vollText = output !== null && output.length > MAX_OUTPUT_BYTES ? output : null;
   if (output !== null && output.length > MAX_OUTPUT_BYTES) {
     output = output.slice(0, MAX_OUTPUT_BYTES) + `\n\n[... output truncated at ${MAX_OUTPUT_BYTES} bytes ...]`;
     truncated = true;
@@ -935,6 +970,18 @@ export async function insertCompletedShellJob(args: {
     ],
   );
   if(roh)await trageShellDemaskierungEin(res.rows[0].id,args.project,roh.demaskierung);
+  // P22-T243: grosse stdio-Ausgabe vollstaendig in Teilen ablegen (Schalter shell_ausgabe_voll), output wird der Kopf.
+  if (vollText !== null) {
+    try {
+      if (await speichereShellAusgabeText(res.rows[0].id, args.project, vollText)) {
+        const ab = await schliesseShellAusgabeAb(res.rows[0].id);
+        await pool.query('UPDATE shell_jobs SET output=$2,output_truncated=$3 WHERE id=$1', [res.rows[0].id, ab.kopf, ab.stand !== 'vollstaendig']);
+      }
+    } catch (error) {
+      const code = (error as { code?: unknown })?.code;
+      console.error('[shell-queue] volle Ausgabe (stdio) nicht abgelegt:', res.rows[0].id, typeof code === 'string' && /^[a-z0-9_]+$/i.test(code) ? code : 'unknown');
+    }
+  }
   return { id: res.rows[0].id };
 }
 
@@ -1008,6 +1055,7 @@ export async function getShellJobs(opts: {
             CASE WHEN sicherung->'audit'->>'entscheidung'='bestaetigt' THEN sicherung->'audit'->>'grund' END AS bestaetigt_grund,
             sicherung->'demaskierung'->>'grund' AS demaskiert_grund,
             CASE
+              WHEN COALESCE(ausgabe_teile, 0) > 0 THEN (ausgabe_zeilen + CASE WHEN ausgabe_offen THEN 1 ELSE 0 END)::int
               WHEN output IS NULL OR output = '' THEN 0
               WHEN substring(output FROM length(output) FOR 1) = E'\n'
                 THEN length(output) - length(replace(output, E'\n', ''))
@@ -1096,7 +1144,17 @@ export async function getShellJobById(id: string, optionen?: { anzeige: 'kompakt
   // P10-T73 H3: eine offene Rueckfrage-ID sieht nur der Agent, der sie ausgeloest hat (Bindung bleibt agent_id).
   const sicherung=gespeichert&&!(optionen?.betrachter && (aktuelleAgentIdentityId(row.project,optionen.betrachter) ? aktuelleAgentIdentityId(row.project,optionen.betrachter)===row.owner_identity_id : !row.owner_identity_id && optionen.betrachter===row.agent_id))?ohneRueckfrageId(gespeichert):gespeichert;
   const sichtbar=sicherung?.antwort||sicherung?.anfrage?.bestaetigt||sicherung?.anfrage?.shell||(sicherung as {demaskierung?:unknown}|null|undefined)?.demaskierung;
-  const job = await maskiereShellAntwort(row.project,{ ...normal,...(sichtbar?{sicherung}:{}), output_line_count: countLines(row.output) });
+  const zeilen = row.ausgabe_teile ? Number(row.ausgabe_zeilen ?? 0) + (row.ausgabe_offen ? 1 : 0) : countLines(row.output);
+  const job = await maskiereShellAntwort(row.project,{ ...normal,...(sichtbar?{sicherung}:{}), output_line_count: zeilen });
+  if (optionen) {
+    // P22-T243: MCP-Anzeige nie mit der ganzen Ausgabe (Schalter shell_ausgabe_voll): Kopf + Ende + Verweis auf log.
+    try {
+      const anzeige = await shellAusgabeAnzeige(job);
+      if (anzeige) { (job as ShellJobDetail & { ausgabe?: unknown }).ausgabe = anzeige; job.output = null; }
+    } catch (error) {
+      console.error('[shell-queue] Ausgabe-Anzeige fehlgeschlagen:', id, error instanceof Error ? error.message.slice(0, 120) : 'unknown');
+    }
+  }
   return optionen ? shellJobAnzeige(job, optionen.anzeige) : job;
 }
 
@@ -1117,14 +1175,10 @@ export async function getShellJobLogLines(
   id: string,
   fromLine?: number,
   toLine?: number,
-): Promise<{
-  found: boolean;
-  total_lines: number;
-  from_line: number;
-  to_line: number;
-  lines: string[];
-  maskiert?: number;
-} | null> {
+): Promise<ShellLogBereich | null> {
+  // P22-T243: mit Schalter shell_ausgabe_voll ueber den vollen Bestand, gedeckelt und mit Hinweis; sonst Altweg.
+  const voll = await leseShellAusgabeBereich(id, fromLine, toLine);
+  if (voll !== undefined) return voll;
   const job = await getShellJobById(id);
   if (!job) return null;
   const all = (job.output ?? '').split('\n');
@@ -1147,20 +1201,20 @@ export async function getShellJobLogLines(
 export async function searchShellJobLog(
   id: string,
   query: string,
-  opts: { regex?: boolean; case_sensitive?: boolean; max_matches?: number } = {},
-): Promise<{
-  found: boolean;
-  total_lines: number;
-  total_matches: number;
-  matches: Array<{ line_number: number; content: string }>;
-  truncated: boolean;
-  maskiert?: number;
-} | null> {
+  opts: ShellLogSucheOptionen = {},
+): Promise<ShellLogSuche | null> {
+  // P22-T243: mit Schalter shell_ausgabe_voll Suche ueber den VOLLEN Bestand (kontext_zeilen, filter, Bereich, Hinweis).
+  const voll = await sucheShellAusgabe(id, query || undefined, opts);
+  if (voll !== undefined) return voll;
   const job = await getShellJobById(id);
   if (!job) return null;
   const all = (job.output ?? '').split('\n');
   if (all.length > 0 && all[all.length - 1] === '') all.pop();
   const total = all.length;
+  if (!query) {
+    return { found: true, total_lines: total, total_matches: 0, matches: [], truncated: false, error: 'query_fehlt',
+      message: 'log-Suche braucht query; filter (fehler|warnungen) gibt es erst mit dem Produkt-Schalter shell_ausgabe_voll.' };
+  }
 
   const max = Math.max(1, Math.min(opts.max_matches ?? 200, 2000));
   const matches: Array<{ line_number: number; content: string }> = [];

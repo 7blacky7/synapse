@@ -162,11 +162,19 @@ function writeMeta(meta: StreamMeta): void {
 }
 
 function tailLines(file: string, n: number): string[] {
+  // P22-T243: nur das Dateiende lesen - Stream-Dateien koennen hunderte MB gross werden (bisher ganz im RAM).
   try {
-    const content = fs.readFileSync(file, 'utf8');
-    const lines = content.split('\n');
-    if (lines[lines.length - 1] === '') lines.pop();
-    return lines.slice(-n);
+    const fd = fs.openSync(file, 'r');
+    try {
+      const groesse = fs.fstatSync(fd).size;
+      const laenge = Math.min(groesse, 8 * 1024 * 1024, Math.max(65_536, n * 1024));
+      const puffer = Buffer.alloc(laenge);
+      fs.readSync(fd, puffer, 0, laenge, groesse - laenge);
+      const lines = puffer.toString('utf8').split('\n');
+      if (laenge < groesse) lines.shift(); // erste Zeile ist angeschnitten
+      if (lines[lines.length - 1] === '') lines.pop();
+      return lines.slice(-n);
+    } finally { fs.closeSync(fd); }
   } catch { return []; }
 }
 
@@ -543,6 +551,8 @@ export function getShellStream(args: ShellGetStreamArgs): Record<string, unknown
   return {
     status: meta.status,
     stream_id: args.stream_id,
+    // P22-T243: Projekt fuer die Begrenzung im stdio-Weg (Schalter je Projekt).
+    project: meta.project,
     exit_code: meta.exit_code,
     new_lines: lines.slice(-tailN),
     total_bytes: fullLog.length,

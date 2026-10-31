@@ -13,7 +13,7 @@
 
 import type { ConsolidatedTool } from './types.js';
 import {rufeArtefaktApi} from './artefakt.js';
-import {mitShellAufrufPerId,mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus,completeShellJob,shellRohAusgabe,maskiereFaelligeShellJobs,schlankeShellRueckfrageWennAktiv,fremderLaufFeld} from '@synapse/core';
+import {mitShellAufrufPerId,mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus,completeShellJob,shellRohAusgabe,maskiereFaelligeShellJobs,schlankeShellRueckfrageWennAktiv,fremderLaufFeld,leseShellAusgabeNeu,begrenzeShellTail,begrenzeShellTailLines} from '@synapse/core';
 import { str, num, reqStr, strArray, bool } from './types.js';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -157,7 +157,7 @@ export const shellTool: ConsolidatedTool = {
         project: { type: 'string', description: 'Projekt-Name (Pflicht fuer exec; optional fuer history Filter)' },
         command: { type: 'string', description: 'Shell-Kommando (Pflicht fuer exec)' },
         log_strom: {type:'string',description:'exec/log/log_loeschen: benannter Projektstrom ueber die Synapse-API'},
-        stream_id: { type: 'string', description: 'Pflicht fuer get_stream' },
+        stream_id: { type: 'string', description: 'get_stream lokal: Live-Tail der Stream-Datei. Alternativ id (Job-UUID) + seit_zeile aus PG (P22-T208, Schalter shell_ausgabe_voll)' },
         id: { type: 'string', description: 'Job-UUID (Pflicht fuer get und log); bei bestaetigen die bestaetigung_id. NICHT die stream_id aus der exec-Antwort — die Job-UUID liefert shell(history).' },
         limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200); activity: max Eintraege (Default 50, Max 500)' },
         offset: { type: 'number', description: 'history: Skip N Jobs (Default 0)' },
@@ -166,12 +166,15 @@ export const shellTool: ConsolidatedTool = {
           enum: ['pending', 'running', 'done', 'failed', 'rejected', 'timeout'],
           description: 'history: Filter auf Status',
         },
-        from_line: { type: 'number', description: 'log: ab Zeile N (1-basiert, Default 1)' },
-        to_line: { type: 'number', description: 'log: bis Zeile M inkl. (Default from_line+99)' },
+        from_line: { type: 'number', description: 'log: ab Zeile N (1-basiert, Default 1); mit query/filter Beginn des Suchbereichs' },
+        to_line: { type: 'number', description: 'log: bis Zeile M inkl. (Default from_line+99; Schalter shell_ausgabe_voll: hoechstens log_max_zeilen je Abruf, Antwort nennt naechster_bereich); mit query/filter Ende des Suchbereichs' },
         query: { type: 'string', description: 'log: Such-Pattern (Substring oder Regex). Fuer Zahlen einfach die Zahl als String.' },
         regex: { type: 'boolean', description: 'log: query als Regex interpretieren (Default false = Substring)' },
         case_sensitive: { type: 'boolean', description: 'log: case-sensitive Suche (Default false)' },
-        max_matches: { type: 'number', description: 'log: max Treffer (Default 200, Max 2000)' },
+        max_matches: { type: 'number', description: 'log: max Treffer (Default 200, Max 2000; Schalter shell_ausgabe_voll: hoechstens suche_max_treffer, Antwort nennt N von M und weiter_ab_zeile)' },
+        kontext_zeilen: { type: 'number', description: 'log-Suche (P22-T243): Zeilen vor/nach jedem Treffer (vorher/nachher), hoechstens kontext_max_zeilen (10)' },
+        filter: { type: 'string', enum: ['fehler', 'warnungen', 'fehler_und_warnungen'], description: 'log-Suche (P22-T243): nur Fehler-/Warnzeilen, allein oder zusaetzlich zu query; durchsucht die VOLLE Ausgabe' },
+        seit_zeile: { type: 'number', description: 'get_stream mit id (P22-T208): Cursor = naechste_seit_zeile der letzten Antwort; ohne die letzten tail_lines (Standard 20)' },
         // timeout_ms wurde mit SH-1 aus dem Schema ENTFERNT (siehe routes/mcp.ts).
         // exec kehrt nach 20 s mit 'running_background' zurueck; der Job laeuft
         // bis zu 3 h weiter, das Ergebnis kommt via shell(history)/shell(get).
@@ -209,11 +212,30 @@ export const shellTool: ConsolidatedTool = {
     }
 
     if (action === 'get_stream') {
+      // P22-T208/T243: mit id (Job-UUID) aus PG wie im REST-Weg (Cursor seit_zeile, gedeckelt); mit stream_id lokaler Live-Tail.
+      const jobId = str(args, 'id');
+      if (jobId) {
+        const antwort = !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId)
+          ? { success: false, error: 'invalid_job_id', message: `"${jobId}" ist keine Job-UUID - fuer den lokalen Live-Tail stream_id nehmen.` }
+          : await (async () => {
+            const stand = await leseShellAusgabeNeu(jobId, { seit_zeile: num(args, 'seit_zeile'), tail_lines: num(args, 'tail_lines') });
+            if (stand === null) return { success: false, error: 'unknown_job', message: `Job ${jobId} nicht gefunden` };
+            if (stand === undefined) return { success: false, error: 'shell_ausgabe_funktion_aus', message: 'Produkt-Schalter shell_ausgabe_voll ist aus: laufende Ausgabe nur lokal per stream_id, sonst nach dem Ende per shell(get|log, id).' };
+            return { success: true, ...stand };
+          })();
+        return { content: [{ type: 'text', text: JSON.stringify(antwort, null, 2) }] };
+      }
       const result = getShellStream({
         stream_id: reqStr(args, 'stream_id'),
         tail_lines: num(args, 'tail_lines'),
         since_last_read: args.since_last_read !== false,
       });
+      // P22-T243: auch der lokale Live-Tail ist gedeckelt (Schalter je Projekt).
+      if (Array.isArray(result['new_lines']) && typeof result['project'] === 'string') {
+        const b = await begrenzeShellTail(result['project'], result['new_lines']);
+        result['new_lines'] = b.tail;
+        if (b.tail_gekappt) result['new_lines_gekappt'] = b.tail_gekappt;
+      }
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 
@@ -266,12 +288,18 @@ export const shellTool: ConsolidatedTool = {
         return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'invalid_job_id', message: `"${id}" ist keine Job-UUID${/^[0-9a-f]{16}$/i.test(id) ? ' (das ist eine stream_id)' : ''} — nutze das id-Feld der exec-Antwort oder shell(history).` }, null, 2) }] };
       }
       const query = str(args, 'query');
-      // Mit query → Such-Modus; ohne query → Range-Modus.
-      if (query) {
-        const result = await searchShellJobLog(id, query, {
+      const filter = str(args, 'filter');
+      // Mit query/filter → Such-Modus; ohne → Range-Modus.
+      if (query || filter) {
+        const result = await searchShellJobLog(id, query ?? '', {
           regex: bool(args, 'regex') === true,
           case_sensitive: bool(args, 'case_sensitive') === true,
           max_matches: num(args, 'max_matches'),
+          // P22-T243: Umgebung, Filter und Bereich der Suche (wirken mit Schalter shell_ausgabe_voll).
+          kontext_zeilen: num(args, 'kontext_zeilen'),
+          filter,
+          from_line: num(args, 'from_line'),
+          to_line: num(args, 'to_line'),
         });
         if (!result) {
           return {
@@ -358,7 +386,7 @@ export const shellTool: ConsolidatedTool = {
         ...sicherung,
         cwd_relative: cwdRel,
         hard_limit_ms: timeoutMs,
-        tail_lines: tailLines,
+        tail_lines: await begrenzeShellTailLines(project, tailLines),
         onStarted: (ctl) => { streamId = ctl.stream_id; },
       }) as Promise<Record<string, unknown>>;
 
@@ -478,6 +506,12 @@ export const shellTool: ConsolidatedTool = {
       if (id) (result as Record<string, unknown>)['id'] = id;
     }
 
+    // P22-T243: tail gedeckelt (Schalter shell_ausgabe_voll); im Workspace-Weg war er ohne tail_lines die ganze stdout.
+    if (Array.isArray(result['tail'])) {
+      const b = await begrenzeShellTail(project, result['tail']);
+      result['tail'] = b.tail;
+      if (b.tail_gekappt) result['tail_gekappt'] = b.tail_gekappt;
+    }
     // P23-T3 Punkt 6b (Schalter shell_fremde_ergebnisse): gleicher beendeter Lauf eines anderen Agenten -> Abrufweg.
     if (result['status'] !== 'rejected') Object.assign(result, await fremderLaufFeld({ project, command, cwd_relative: cwdRel, agent_id: actor, ausser_job_id: typeof result['id'] === 'string' ? result['id'] as string : null }));
     // P23-T3: stufe rueckfrage ohne Lage-Baum (Schalter tool_antworten_schlank); persistiert wurde oben das volle Ergebnis.

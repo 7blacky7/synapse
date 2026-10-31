@@ -227,6 +227,10 @@ import {
   getShellJobs,
   getShellJobById,
   getShellJobLogLines,
+  // P22-T243 (+P22-T208): get_stream ueber PG, gedeckelte tails (Schalter shell_ausgabe_voll)
+  leseShellAusgabeNeu,
+  begrenzeShellTail,
+  begrenzeShellTailLines,
   leseLogStromEnde,
   logStromSchalter,
   pruefeLogStromName,
@@ -1226,6 +1230,7 @@ export const MCP_TOOLS = [
               anchor_text: { type: 'string', description: 'Pre-flight Drift-Verifikation. Bei update: PFLICHT (anchor_text ODER anchor_contains) — Substring des aktuellen Datei-Inhalts. Bei line-Ops: Zielzeile muss diesen Text enthalten (.trim()-vergleich). Mismatch -> harter Error, KEINE Mutation.' },
               anchor_contains: { type: 'string', description: 'Wie anchor_text. Bei update: PFLICHT-Alternative zu anchor_text. Bei line-Ops: Substring-Match auf der Ziel-Zeile.' },
               upsert: { type: 'boolean', description: '(optional, nur fuer action="create"): wenn true und die Datei existiert bereits, wird der content als update ueberschrieben statt zu failen. Default false — bewusst opt-in damit KI nicht versehentlich existierende Files killt.' },
+              gruppe: { type: 'string', description: '(optional, P22-T199, nur bei Schalter coedit_ohne_gate EIN wirksam): zusammengehoerige eigene Ops; eine Gruppe wird nur vollstaendig und gueltig committet und haelt nur sich selbst zurueck. Ohne gruppe ist jede Op eigenstaendig.' },
             },
             required: ['file_path', 'action'],
           },
@@ -1293,6 +1298,7 @@ export const MCP_TOOLS = [
               anchor_text: { type: 'string', description: '(optional): Pre-flight Verifikation — pruefe dass die Ziel-Zeile (line_start fuer replace/delete, after_line fuer insert) exakt diesen Text enthaelt (.trim()-vergleich). Mismatch -> harter Error, KEINE Mutation.' },
               anchor_contains: { type: 'string', description: '(optional): Wie anchor_text, aber Substring-Match statt Exact.' },
               upsert: { type: 'boolean', description: '(optional, nur fuer action="create"): wenn true und die Datei existiert bereits, wird der content als update ueberschrieben statt zu failen. Default false — bewusst opt-in damit KI nicht versehentlich existierende Files killt.' },
+              gruppe: { type: 'string', description: '(optional, P22-T199, nur bei Schalter coedit_ohne_gate EIN wirksam): zusammengehoerige eigene Ops; eine Gruppe wird nur vollstaendig und gueltig committet und haelt nur sich selbst zurueck. Ohne gruppe ist jede Op eigenstaendig.' },
               new_path: { type: 'string' },
               reason: { type: 'string' },
               task_id: { type: 'string', description: 'Optionale Task-Referenz, hat Vorrang vor task_id am Plan.' },
@@ -1365,16 +1371,19 @@ export const MCP_TOOLS = [
         limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200); activity: max Eintraege (Default 50, Max 500)' },
         offset: { type: 'number', description: 'history: Skip N (Default 0)' },
         status: { type: 'string', enum: ['pending', 'running', 'done', 'failed', 'rejected', 'timeout'], description: 'history: Filter auf Status' },
-        from_line: { type: 'number', description: 'log: ab Zeile N (1-basiert)' },
-        to_line: { type: 'number', description: 'log: bis Zeile M inkl.' },
+        from_line: { type: 'number', description: 'log: ab Zeile N (1-basiert); mit query/filter Beginn des Suchbereichs' },
+        to_line: { type: 'number', description: 'log: bis Zeile M inkl. (Schalter shell_ausgabe_voll: hoechstens log_max_zeilen je Abruf, Antwort nennt naechster_bereich); mit query/filter Ende des Suchbereichs' },
         query: { type: 'string', description: 'log: Such-Pattern (Substring oder Regex)' },
         regex: { type: 'boolean', description: 'log: query als Regex (Default false)' },
         case_sensitive: { type: 'boolean', description: 'log: case-sensitive (Default false)' },
-        max_matches: { type: 'number', description: 'log: max Treffer (Default 200, Max 2000)' },
+        max_matches: { type: 'number', description: 'log: max Treffer (Default 200, Max 2000; Schalter shell_ausgabe_voll: hoechstens suche_max_treffer, Antwort nennt N von M und weiter_ab_zeile)' },
+        kontext_zeilen: { type: 'number', description: 'log-Suche (P22-T243): Zeilen vor/nach jedem Treffer (vorher/nachher), hoechstens kontext_max_zeilen (10)' },
+        filter: { type: 'string', enum: ['fehler', 'warnungen', 'fehler_und_warnungen'], description: 'log-Suche (P22-T243): nur Fehler-/Warnzeilen, allein oder zusaetzlich zu query; durchsucht die VOLLE Ausgabe' },
+        seit_zeile: { type: 'number', description: 'get_stream (P22-T208): Cursor = naechste_seit_zeile der letzten Antwort; ohne die letzten tail_lines (Standard 20)' },
         project: { type: 'string', description: 'Projekt-Name (Pflicht fuer exec)' },
         command: { type: 'string', description: 'Shell-Kommando (Pflicht fuer exec)' },
         log_strom: { type:'string', description:'exec: Ausgabe in benannten Projektstrom; log: letzte Zeilen des Stroms (Produkt-Schalter log_strom).' },
-        stream_id: { type: 'string', description: 'Pflicht fuer get_stream (noch nicht implementiert via REST)' },
+        stream_id: { type: 'string', description: 'nur stdio-lokal (Live-Tail der Stream-Datei). Ueber die API get_stream mit id (Job-UUID) + seit_zeile (P22-T208, Schalter shell_ausgabe_voll)' },
         // timeout_ms wurde mit SH-1 ENTFERNT. Es existierte nur, damit Agenten
         // laengere Laeufe erlauben konnten — und genau das taten sie reflexhaft,
         // weil der Rueckgabestatus 'timeout' wie ein Fehlschlag aussah. Jetzt
@@ -5721,7 +5730,15 @@ async function handleToolCallKern(
       const shellAction = str(args, 'action') ?? 'exec';
 
       if (shellAction === 'get_stream') {
-        return { success: false, error: 'get_stream via REST-API noch nicht implementiert' };
+        // P22-T208/T243: neue Zeilen eines (auch laufenden) Jobs aus PG; Cursor seit_zeile, gedeckelt, mit Hinweis.
+        const jobId = str(args, 'id');
+        if (!jobId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId)) {
+          return { success: false, error: 'invalid_job_id', message: 'get_stream ueber die API braucht id = Job-UUID (aus der exec-Antwort bzw. shell(history)); stream_id gilt nur lokal (stdio).' };
+        }
+        const stand = await leseShellAusgabeNeu(jobId, { seit_zeile: num(args, 'seit_zeile'), tail_lines: num(args, 'tail_lines') });
+        if (stand === null) return { success: false, error: 'unknown_job', message: `Job ${jobId} nicht gefunden` };
+        if (stand === undefined) return { success: false, error: 'shell_ausgabe_funktion_aus', message: 'Produkt-Schalter shell_ausgabe_voll ist aus: Ausgabe laufender Jobs gibt es erst nach dem Ende per shell(get|log, id).' };
+        return { success: true, ...stand };
       }
 
       if (shellAction === 'history') {
@@ -5764,14 +5781,20 @@ async function handleToolCallKern(
           return { success: false, error: 'invalid_job_id', message: `"${id}" ist keine Job-UUID${/^[0-9a-f]{16}$/i.test(id) ? ' (das ist eine stream_id)' : ''} — nutze das id-Feld der exec-Antwort oder shell(history).` };
         }
         const query = str(args, 'query');
-        if (query) {
-          const result = await searchShellJobLog(id, query, {
+        const filter = str(args, 'filter');
+        if (query || filter) {
+          const result = await searchShellJobLog(id, query ?? '', {
             regex: bool(args, 'regex') === true,
             case_sensitive: bool(args, 'case_sensitive') === true,
             max_matches: num(args, 'max_matches'),
+            // P22-T243: Umgebung, Filter und Bereich der Suche (wirken mit Schalter shell_ausgabe_voll).
+            kontext_zeilen: num(args, 'kontext_zeilen'),
+            filter,
+            from_line: num(args, 'from_line'),
+            to_line: num(args, 'to_line'),
           });
           if (!result) return { success: false, error: 'unknown_job', message: `Job ${id} nicht gefunden` };
-          return { success: true, ...result };
+          return { success: !result.error, ...result };
         }
         const result = await getShellJobLogLines(id, num(args, 'from_line'), num(args, 'to_line'));
         if (!result) return { success: false, error: 'unknown_job', message: `Job ${id} nicht gefunden` };
@@ -5911,7 +5934,8 @@ async function handleToolCallKern(
             exit_code: r.exitCode,
             ...(r.quellen_pruefung_ausstehend?{quellen_pruefung_ausstehend:true,...(r.id?{id:r.id}:{})}:{}),
             ...(r.quellen_wiederhergestellt?.length?{quellen_wiederhergestellt:r.quellen_wiederhergestellt,...(r.id?{id:r.id}:{})}:{}),
-            tail,
+            // P22-T243: ohne tail_lines war tail bisher die ganze stdout - jetzt gedeckelt (Schalter shell_ausgabe_voll).
+            ...await begrenzeShellTail(project, tail),
             stderr_tail: r.stderr ? r.stderr.split('\n').slice(-20) : undefined,
             duration_ms: r.durationMs,
             ...(r.timedOut
@@ -5940,7 +5964,7 @@ async function handleToolCallKern(
         ...shellSicherungsParameter(args),
         cwd_relative: cwdRel,
         timeout_ms: timeoutMs,
-        tail_lines: tailLines,
+        tail_lines: await begrenzeShellTailLines(project, tailLines),
         // SH-4: gehoert in den Schluessel — derselbe Build im Container und auf
         // dem Daemon sind zwei Ergebnisse, nicht eines.
         target,
@@ -5969,7 +5993,8 @@ async function handleToolCallKern(
         status: result.status,
         stream_id: result.stream_id,
         exit_code: result.exit_code,
-        tail: result.tail,
+        // P22-T243: tail gedeckelt (Schalter shell_ausgabe_voll), volle Ausgabe per shell(log, id).
+        ...await begrenzeShellTail(project, result.tail),
         error: result.error,
         // Beim Anhaengen erklaert die Meldung aus enqueue, WARUM kein eigener
         // Lauf gestartet wurde — die haette das Job-Ergebnis sonst ueberschrieben.

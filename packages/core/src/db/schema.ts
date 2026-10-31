@@ -38,7 +38,7 @@ import {REVERSE_CODE_STUECKE_SCHEMA_SQL} from './reverse-code-stuecke-schema.js'
 import {REVERSE_VERKNUEPFUNGEN_SCHEMA_SQL} from './reverse-verknuepfungen-schema.js';
 import { AGENTENNETZWERK_SCHEMA_SQL } from './agentennetzwerk-schema.js';
 import {SHELL_ALT_SCHEMA_SQL} from './shell-altbestand-schema.js';
-import {SHELL_LOG_STROM_SCHEMA_SQL} from './shell-log-strom-schema.js';
+import {SHELL_LOG_STROM_SCHEMA_SQL} from './shell-log-strom-schema.js'; import {SHELL_AUSGABE_SCHEMA_SQL} from './shell-ausgabe-schema.js';
 import { getPool } from './client.js';
 import {HEX_EXE_FORMATE_SCHEMA_SQL} from './hex-exe-formate-schema.js';
 import {HEX_FORMATE_SCHEMA_SQL} from './hex-formate-schema.js';
@@ -61,6 +61,7 @@ import { AGENT_START_ORT_SCHEMA_SQL } from './agent-start-ort-schema.js';
 import { WRAPPER_ENDE_SCHEMA_SQL } from './wrapper-ende-schema.js'; import { ARTEFAKT_BEWERTUNG_SCHEMA_SQL, ARTEFAKT_BEWERTUNG_NOTIFY_SCHEMA_SQL } from './artefakt-bewertung-schema.js';
 import { ARTEFAKT_VORLAGEN_SCHEMA_SQL } from './artefakt-vorlagen-schema.js';
 import { ARTEFAKT_DATEIEN_SCHEMA_SQL } from './artefakt-dateien-schema.js';
+import { CACHE_WAECHTER_SCHEMA_SQL } from './cache-waechter-schema.js';
 import { QUELLENANMERKUNGEN_SCHEMA_SQL } from './quellenanmerkungen-schema.js';
 import { VERLAUF_STUECKE_SCHEMA_SQL } from './verlauf-stuecke-schema.js';
 import { CHAT_ZITATE_SCHEMA_SQL } from './chat-zitate-schema.js';
@@ -72,6 +73,8 @@ import { API_AGENT_FREIGABEN_SCHEMA_SQL } from './api-agent-freigaben-schema.js'
 import { SPEICHER_AEHNLICHKEIT_SCHEMA_SQL } from './speicher-aehnlichkeit-schema.js';
 // P3-T16: wiederkehrende Plaene (Schema 163).
 import { PLAN_WIEDERKEHR_SCHEMA_SQL } from './plan-wiederkehr-schema.js';
+// P22-T199: Co-Edit ohne Gate (Schema 168, file_batch_plans.op_zustaende/aus_plan_id).
+import { COEDIT_OHNE_GATE_SCHEMA_SQL } from './coedit-ohne-gate-schema.js';
 import { API_AGENT_LAUF_SCHEMA_SQL } from './api-agent-lauf-schema.js';
 import { HEX_SCHEMA_SQL } from './hex-schema.js';
 import {HEX_ANALYSEN_SCHEMA_SQL} from './hex-analysen-schema.js';
@@ -1491,7 +1494,7 @@ CREATE TABLE IF NOT EXISTS shell_stream_chunks (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_shell_stream_chunks_job ON shell_stream_chunks(job_id, chunk_index);
+CREATE INDEX IF NOT EXISTS idx_shell_stream_chunks_job ON shell_stream_chunks(job_id, chunk_index); ${SHELL_AUSGABE_SCHEMA_SQL}
 
 -- ==========================================================================
 -- Tool-Call Activity-Store: zentraler Audit-Log ALLER MCP-Tool-Aufrufe.
@@ -3245,6 +3248,7 @@ ${WRAPPER_ENDE_SCHEMA_SQL}${ARTEFAKT_BEWERTUNG_SCHEMA_SQL}
 ${ARTEFAKT_BEWERTUNG_NOTIFY_SCHEMA_SQL}
 ${ARTEFAKT_VORLAGEN_SCHEMA_SQL}
 ${ARTEFAKT_DATEIEN_SCHEMA_SQL}
+${CACHE_WAECHTER_SCHEMA_SQL}
 ${QUELLENANMERKUNGEN_SCHEMA_SQL}
 ${VERLAUF_STUECKE_SCHEMA_SQL}
 ${CHAT_ZITATE_SCHEMA_SQL}
@@ -3254,6 +3258,7 @@ ${API_AGENT_SCHLUESSEL_SCHEMA_SQL}
 ${API_AGENT_FREIGABEN_SCHEMA_SQL}
 ${SPEICHER_AEHNLICHKEIT_SCHEMA_SQL}
 ${PLAN_WIEDERKEHR_SCHEMA_SQL}
+${COEDIT_OHNE_GATE_SCHEMA_SQL}
 ${API_AGENT_LAUF_SCHEMA_SQL}
 ${HEX_SCHEMA_SQL}
 ${HEX_ANALYSEN_SCHEMA_SQL}

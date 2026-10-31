@@ -71,6 +71,8 @@ import {
   schliesseDaemonJobWecker,
   schliesseShellJobFuerDaemon,
   haengeLogStromTeilAn,
+  haengeShellAusgabeTeilAn,
+  ShellAusgabeFehler,
   schliesseSpecialistJobFuerDaemon,
   wrapperReapKandidaten,
 } from '@synapse/core';
@@ -303,6 +305,30 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
         return reply.code(403).send({success:false,error:'log_strom_job_nicht_berechtigt'});
       try {const gespeichert=await haengeLogStromTeilAn(job.project,job.log_strom,b.id,b.folge!,b.inhalt);return {success:true,gespeichert};}
       catch(e){return reply.code(400).send({success:false,error:e instanceof Error?e.message:'log_strom_fehler'});}
+    });
+
+  // P22-T243 (+P22-T208): ein Teil der vollen Ausgabe eines EIGENEN laufenden Jobs (Pruefung wie log-strom). Antwort traegt
+  // die Einstellwerte (teil_bytes, live_intervall_s, ...); Schalter aus -> 409 shell_ausgabe_funktion_aus (Daemon nimmt den Altweg).
+  fastify.post<{ Body: { host?: string; daemon_id?: string; id?: string; folge?: number; inhalt?: string; art?: string; ausgelassen_bytes?: number; ausgelassen_zeilen?: number } }>(
+    '/api/daemon/shell/ausgabe-teil', async (request, reply) => {
+      const b = request.body ?? {};
+      const d = await pruefeDaemon(request, reply, b.host, b.daemon_id);
+      if (!d) return reply;
+      if (typeof b.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(b.id) || !Number.isInteger(b.folge) || typeof b.inhalt !== 'string'
+        || (b.art !== undefined && b.art !== 'ausgabe' && b.art !== 'ende'))
+        return reply.code(400).send({ success: false, error: 'ausgabe_teil_ungueltig' });
+      const r = await getPool().query<{ claimed_by: string | null; status: string }>('SELECT claimed_by,status FROM shell_jobs WHERE id=$1::uuid', [b.id]);
+      const job = r.rows[0];
+      if (!job || job.claimed_by !== d.daemonId || job.status !== 'running')
+        return reply.code(403).send({ success: false, error: 'ausgabe_job_nicht_berechtigt' });
+      try {
+        const zahl = (v: unknown): number | undefined => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : undefined;
+        return { success: true, ...await haengeShellAusgabeTeilAn(b.id, { folge: b.folge!, inhalt: b.inhalt, art: b.art === 'ende' ? 'ende' : 'ausgabe',
+          ausgelassen_bytes: zahl(b.ausgelassen_bytes), ausgelassen_zeilen: zahl(b.ausgelassen_zeilen) }) };
+      } catch (e) {
+        if (e instanceof ShellAusgabeFehler) return reply.code(e.code === 'shell_ausgabe_funktion_aus' || e.code === 'ausgabe_teil_luecke' ? 409 : 400).send({ success: false, error: e.code, ...e.details });
+        throw e;
+      }
     });
 
   fastify.post<{ Body: { host?: string; daemon_id?: string; aktion?: string } }>(
@@ -644,9 +670,13 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
           const ausweis = await W12_DIENSTE.ausweis.ausweisFuerStart(project, i.id, { art: 'daemon' });
           // Klartext nur in dieser TLS-/LAN-Antwort an den geprüften Daemon,
           // nie im Queue-Job, Completion, Wrapperstatus oder Projektordner.
-          const { leseRuntimeToolAusgabe, toolAusgabeUmgebung } = await import('@synapse/core');
+          const { leseRuntimeToolAusgabe, toolAusgabeUmgebung, leseRuntimeSynapseMods, runtimeModsUmgebung, cacheWaechterSchalter } = await import('@synapse/core');
           const tool_ausgabe_env = d.runtime ? toolAusgabeUmgebung(await leseRuntimeToolAusgabe(project)) : { SYNAPSE_TOOL_AUSGABE_AKTIV: '0' };
-          return { success: true, aktion, freigegeben: true, token: ausweis.token, schalter, tool_ausgabe_env,
+          const runtime_mod_env = runtimeModsUmgebung(await leseRuntimeSynapseMods(d.runtime?.runtime === 'claude' ? project : null));
+          if (d.runtime?.runtime !== 'claude') runtime_mod_env.SYNAPSE_RUNTIME_SYNAPSE_MODS_STAND = '';
+          // t223-Nachbesserung: Startstand cache_waechter fuer die Wrapper-Telemetrie (nur Claude-Runtime; AUS = kein Abruf).
+          runtime_mod_env.SYNAPSE_CACHE_WAECHTER_START = d.runtime?.runtime === 'claude' && (await cacheWaechterSchalter(project)).aktiv ? '1' : '0';
+          return { success: true, aktion, freigegeben: true, token: ausweis.token, schalter, tool_ausgabe_env, runtime_mod_env,
             ...(bezug.modus !== 'alt' ? { identity_id: i.id, agent_bezug_modus: bezug.modus } : {}) };
         } catch (err) {
           return reply.code(409).send({ success: false,

@@ -6,7 +6,8 @@
  *     Setzen: User (authentifizierter User-Eingang) global/projekt, bestaetigter Koordinator (auch Legacy-Koordinator)
  *     fuer sein eigenes Projekt UND global (P22-T57, wie jev_schalten/ausweis_fristen; Audit gesetzt_von). Vorrang: projekt+funktion > projekt+alle > global+funktion >
  *     global+alle > Standard AUS. Lesefehler (z. B. vor Schema 113) -> AUS mit letzter_fehler.
- *     Gelesen wird NUR in Verwaltungspfaden, nie pro gewoehnlichem Tool-Aufruf.
+ *     Gelesen wird NUR in Verwaltungspfaden, nie pro gewoehnlichem Tool-Aufruf. Ausnahme nur ueber den Prozess-Puffer
+ *     leseProfilProduktSchalterGepuffert (kernTtlMs), z. B. P22-T199 coedit_ohne_gate je files-Aufruf.
  * (II) INTERNE TEST-OVERRIDES w1b_durchsetzung (Token-Selbstfeldpruefung F3, Neutralisierung der
  *     REST-Vorbelegung, Profil-Gate) und w1b_antwortanpassung (Paket C). Produktionsstandard per
  *     Env SYNAPSE_W1B_DURCHSETZUNG / SYNAPSE_W1B_ANTWORTANPASSUNG ('1' = EIN), Default AUS.
@@ -61,6 +62,8 @@ export async function leseW1bSchalter(art: W1bSchalterArt): Promise<W1bSchalterS
 }
 
 export const PROFIL_PRODUKT_FUNKTIONEN = [
+  // P22-T194: nur Telemetrie, Standard AUS und nur ausdrücklich; kein automatischer Neustart.
+  'cache_waechter', 'runtime_synapse_mods',
   'agentennetzwerk', 'netzwerk_datengrundlage',
   'profilverwaltung', 'typkatalog', 'persona', 'task_bindung', 'agenten_ausweis',
   // P22-T44: Ausweis fuer mehrere Projekte (Visum/Arbeitsfreigabe), Standard AUS; wirkt nach dem Stand der Heimat (agent-ausweis-projekte.ts).
@@ -244,6 +247,9 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'api_agenten_lauf_intern',
   // P22-T202: ausdrueckliche Laufwahl CLI/API in der Web-UI, Standard AUS.
   'api_agenten_auswahl',
+  // P22-T199: Co-Edit ohne Ready-Gate (coedit-methode.ts; EIN = neue Methode, AUS = Ready-Gate wie bisher); je Projekt/global,
+  // Standard AUS, nur ausdruecklich. Gelesen je files-Aufruf ueber leseProfilProduktSchalterGepuffert.
+  'coedit_ohne_gate',
   // P22-T217: Anker-Umrechnung veralteter replace_lines/delete_lines im Plan (anker-umrechnung.ts); je Projekt/global,
   // Standard AUS, nur ausdruecklich. Gelesen je files-plan mit Kandidaten-Op ueber leseProfilProduktSchalterGepuffert.
   'anker_umrechnung',
@@ -281,9 +287,12 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   // P22-T241: Reverse-Altbestand im Projekt-.intern aufraeumen (asset-intern-inventar.ts; Inventar immer lesbar); je Projekt/global,
   // Standard AUS, nur ausdruecklich. AUS = nur Vorschau.
   'asset_intern_aufraeumen',
+  // P22-T243 (+P22-T208): volle Shell-Ausgabe in Teilen (auch ueber 1 MB, auch laufend) und gedeckelte Abrufe mit Hinweis
+  // (shell-ausgabe.ts); je Projekt/global, Standard AUS, nur ausdruecklich. AUS = Altverhalten (output 1 MB).
+  'shell_ausgabe_voll',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-export const NUR_AUSDRUECKLICH: readonly string[] = ['asset_index_wirklichkeit', 'warteschlangen_stau', 'asset_intern_aufraeumen', 'asset_publish_recovery', 'asset_pc_zustellung', 'asset_transfer_generisch', 'index_live_vorrang', 'log_strom', 'uebersicht_netzwerk', 'netzwerk_visum_sonnen', 'api_agenten_auswahl', 'anker_umrechnung', 'web_ui_neue_oberflaeche', 'seitenleiste_projekt_tasks', 'artefakt_dateien', 'tool_antwort_ueberlauf', 'runtime_tool_ausgabe', 'user_inbox', 'zeilen_anmerkungen', 'koordinator_mehrfenster', 'reverse_pipeline_halt', 'agentennetzwerk', 'netzwerk_datengrundlage', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_asset_registrierung', 'reverse_parser_adapter', 'reverse_leser', 'reverse_leser_nachzug', 'reverse_leser_hinweise', 'reverse_leser_runtime_verwaltung', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'reverse_global_sichtbar', 'reverse_intel_abruf', 'reverse_fehlerlog', 'ausweis_channels', 'kontingent_delegiert', 'plattform_agent_chat', 'main_agentenverwaltung', 'koordinator_heartbeat', 'agent_start_ort', 'runtime_agenten_uebersicht', 'runtime_agenten_steuerung', 'plattform_agent_modellwechsel', 'main_turn_wake_frist', 'ausweis_zielmodell', 'modell_lauf_bindung', 'wake_echter_absender', 'wake_antwort_identitaet', 'runtime_agenten_panel_neu', 'verlauf_tool_karten', 'agent_kennung_werbung', 'wrapper_status_ursache', 'agent_chat_einheitlich', 'mod_inbox', 'mod_inbox_vorpruefung', 'task_bindung_loesen_bei_done', 'artefakt_bewertung', 'artefakt_bewertung_melden', 'inbox_quittung', 'datei_vertrag', 'artefakt_vorlagen', 'artefakt_vorlagen_live', 'artefakt_ausweis_zeigen', 'artefakt_verweise', 'artefakt_skripte', 'verlauf_einbetten', 'verlauf_suche', 'chat_zitate', 'agent_aktuelle_task', 'agent_lauf_herkunft', 'agent_umbenennung', 'api_agenten', 'wiederkehr_plaene', 'speicher_aehnlichkeit', 'speicher_aehnlichkeit_pruefen', 'task_pins', 'api_agenten_lauf_intern'];
+export const NUR_AUSDRUECKLICH: readonly string[] = ['shell_ausgabe_voll', 'asset_index_wirklichkeit', 'warteschlangen_stau', 'asset_intern_aufraeumen', 'asset_publish_recovery', 'asset_pc_zustellung', 'asset_transfer_generisch', 'index_live_vorrang', 'log_strom', 'uebersicht_netzwerk', 'netzwerk_visum_sonnen', 'api_agenten_auswahl', 'coedit_ohne_gate', 'anker_umrechnung', 'web_ui_neue_oberflaeche', 'seitenleiste_projekt_tasks', 'cache_waechter', 'runtime_synapse_mods', 'artefakt_dateien', 'tool_antwort_ueberlauf', 'runtime_tool_ausgabe', 'user_inbox', 'zeilen_anmerkungen', 'koordinator_mehrfenster', 'reverse_pipeline_halt', 'agentennetzwerk', 'netzwerk_datengrundlage', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_asset_registrierung', 'reverse_parser_adapter', 'reverse_leser', 'reverse_leser_nachzug', 'reverse_leser_hinweise', 'reverse_leser_runtime_verwaltung', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'reverse_global_sichtbar', 'reverse_intel_abruf', 'reverse_fehlerlog', 'ausweis_channels', 'kontingent_delegiert', 'plattform_agent_chat', 'main_agentenverwaltung', 'koordinator_heartbeat', 'agent_start_ort', 'runtime_agenten_uebersicht', 'runtime_agenten_steuerung', 'plattform_agent_modellwechsel', 'main_turn_wake_frist', 'ausweis_zielmodell', 'modell_lauf_bindung', 'wake_echter_absender', 'wake_antwort_identitaet', 'runtime_agenten_panel_neu', 'verlauf_tool_karten', 'agent_kennung_werbung', 'wrapper_status_ursache', 'agent_chat_einheitlich', 'mod_inbox', 'mod_inbox_vorpruefung', 'task_bindung_loesen_bei_done', 'artefakt_bewertung', 'artefakt_bewertung_melden', 'inbox_quittung', 'datei_vertrag', 'artefakt_vorlagen', 'artefakt_vorlagen_live', 'artefakt_ausweis_zeigen', 'artefakt_verweise', 'artefakt_skripte', 'verlauf_einbetten', 'verlauf_suche', 'chat_zitate', 'agent_aktuelle_task', 'agent_lauf_herkunft', 'agent_umbenennung', 'api_agenten', 'wiederkehr_plaene', 'speicher_aehnlichkeit', 'speicher_aehnlichkeit_pruefen', 'task_pins', 'api_agenten_lauf_intern'];
 /**
  * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
  * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.
@@ -346,8 +355,7 @@ async function leseProduktGepuffert(funktion: ProfilProduktFunktion, project: st
   if (ttl > 0 && !stand.letzter_fehler) KERN_PUFFER.set(schluessel, { bis: jetzt + ttl, stand });
   return stand;
 }
-
-/** P22-T217 (aus P22-T199): Produkt-Schalter je Prozess gepuffert (kernTtlMs, wie der Ausweis-Kern) fuer Lesestellen je Tool-Aufruf. */
+/** P22-T199: Produkt-Schalter je Prozess gepuffert (kernTtlMs, wie der Ausweis-Kern) fuer Lesestellen je Tool-Aufruf. */
 export function leseProfilProduktSchalterGepuffert(funktion: ProfilProduktFunktion, project: string | null): Promise<ProfilProduktSchalterStand> {
   return leseProduktGepuffert(funktion, project);
 }

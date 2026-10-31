@@ -15,6 +15,7 @@ import { NETZWERK_ADMIN_PARAMETER, fuehreNetzwerkAdminAus } from './agentennetzw
 import {REVERSE_ADMIN_ACTIONS,REVERSE_ADMIN_PARAMETER,fuehreReverseAdminAus} from './reverse-einstellungen.js';
 import {ARTEFAKT_ADMIN_PARAMETER,fuehreArtefaktAdminAus} from './artefakt-dateien-admin.js';
 import {HEX_ADMIN_ACTIONS, HEX_ADMIN_PARAMETER, fuehreHexAdminAus} from './hex-einstellungen.js';
+import {SHELL_AUSGABE_ADMIN_ACTIONS, SHELL_AUSGABE_ADMIN_PARAMETER, fuehreShellAusgabeAdminAus} from './shell-ausgabe.js';
 import {
   W1B_DIENSTE, W12_DIENSTE, W1bNichtUmgesetzt, SCHATTEN_ZUSTAENDE, MAIN_ROLLE, darfProfilAendern, TASK_BINDUNG_LOESEN_HINWEIS, type GebundeneTask, type W1bAkteur, type AusweisAkteur, type Startart, type SchattenZustand, type ProfilInhalt, type TaskBindung,
 } from './agent-profil-vertrag.js';
@@ -62,7 +63,7 @@ const W1B_KERN_AKTIONEN = [
   'identitaet_umbenennen',
 ] as const;
 /** P22-T36: hauptagent_* additiv im selben admin-Weg; eigene Rechtepruefung (User + Main selbst) in hauptagent-dienst.ts. */
-export const W1B_ADMIN_ACTIONS = ['artefakt_einstellungen', 'agentennetzwerk', ...HEX_ADMIN_ACTIONS, ...REVERSE_ADMIN_ACTIONS, ...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS, ...AGENT_ANMELDUNGEN_ADMIN_ACTIONS, ...KOORDINATOR_HEARTBEAT_ADMIN_ACTIONS] as const;
+export const W1B_ADMIN_ACTIONS = ['artefakt_einstellungen', 'agentennetzwerk', ...HEX_ADMIN_ACTIONS, ...SHELL_AUSGABE_ADMIN_ACTIONS, ...REVERSE_ADMIN_ACTIONS, ...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS, ...AGENT_ANMELDUNGEN_ADMIN_ACTIONS, ...KOORDINATOR_HEARTBEAT_ADMIN_ACTIONS] as const;
 export type W1bAdminAction = typeof W1B_KERN_AKTIONEN[number];
 
 /** Nur NEUE Parameternamen; bestehende (project, aktiv, grund, ebene, agent_id) bleiben byte-stabil unveraendert. */
@@ -100,11 +101,13 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   anmeldung_plaene_minuten: { type: 'number', description: 'ausweis_fristen setzen: Fenster eigener offener files-Plaene in chat(anmelden) in Minuten (1..1440, Standard 30)' },
   files_plan_stunden: { type: 'number', description: 'ausweis_fristen setzen: offene files-Plaene ohne Aktivitaet laufen nach so vielen Stunden ab (1..720, Standard 48; P6-T49)' },
   shell_hinweis_minuten: { type: 'number', description: 'ausweis_fristen setzen: beendete Shell-Jobs aller Agenten erscheinen so viele Minuten nach Abschluss in shell_activity (1..1440, Standard 60; P23-T3)' },
+  coedit_aktiv_sekunden: { type: 'number', description: 'ausweis_fristen setzen: Co-Edit Ready-Gate, so viele Sekunden haelt Tool-Aktivitaet einen nicht bereiten Beitragenden aktiv (10..3600; ohne Wert wie bisher Env SYNAPSE_COEDIT_AKTIV_MIN bzw. 300; User-Entscheidung E5: 60 setzen; nur Schalter coedit_ohne_gate AUS; P22-T199)' },
   files_plan_ablauf_aktiv: { type: 'boolean', description: 'ausweis_fristen: Produkt-Schalter Fristablauf offener files-Plaene (Standard EIN; P6-T49). modus setzen: true|false auf ebene; modus entfernen + Parameter vorhanden: Wert dieser ebene entfernen' },
   frist_namen: { type: 'array', items: { type: 'string', enum: [...AUSWEIS_FRIST_NAMEN] }, description: 'ausweis_fristen modus entfernen: Werte dieser ebene entfernen (Rueckfall global bzw. Standard)' },
   neuer_name: { type: 'string', description: 'identitaet_umbenennen: neuer Name der Identitaet ziel_identity_id (Ausweis bleibt, alter Name wird Alias)' },
   ...NETZWERK_ADMIN_PARAMETER,
   ...HEX_ADMIN_PARAMETER,
+  ...SHELL_AUSGABE_ADMIN_PARAMETER,
   ...ARTEFAKT_ADMIN_PARAMETER,
   ...REVERSE_ADMIN_PARAMETER,
   ...HAUPTAGENT_ADMIN_PARAMETER,
@@ -473,7 +476,7 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
         if (fristenDa || !schalterDa) await setzeAusweisFristen({
           ebene, project: ebene === 'projekt' ? project : null, grund: a.grund,
           ...(modus === 'setzen'
-            ? { werte: { schatten_stunden: a.schatten_stunden, erstnutzung_minuten: a.erstnutzung_minuten, visum_minuten: a.visum_minuten, arbeitsfreigabe_stunden: a.arbeitsfreigabe_stunden, anmeldung_plaene_minuten: a.anmeldung_plaene_minuten, files_plan_stunden: a.files_plan_stunden, shell_hinweis_minuten: a.shell_hinweis_minuten } }
+            ? { werte: { schatten_stunden: a.schatten_stunden, erstnutzung_minuten: a.erstnutzung_minuten, visum_minuten: a.visum_minuten, arbeitsfreigabe_stunden: a.arbeitsfreigabe_stunden, anmeldung_plaene_minuten: a.anmeldung_plaene_minuten, files_plan_stunden: a.files_plan_stunden, shell_hinweis_minuten: a.shell_hinweis_minuten, coedit_aktiv_sekunden: a.coedit_aktiv_sekunden } }
             : { entfernen: a.frist_namen ?? [] }),
         }, { wer: recht.wer, setter_identity_id: recht.actor_identity_id });
         if (schalterDa) await setzeFilesPlanAblaufSchalter({
@@ -569,6 +572,8 @@ export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteu
   if (action === 'reverse_einstellungen') return fuehreReverseAdminAus(args, akteur ?? legacyKoordinatorAus(args));
   if (action === 'artefakt_einstellungen') return fuehreArtefaktAdminAus(args, akteur ?? legacyKoordinatorAus(args));
   if (action === 'hex_einstellungen') return fuehreHexAdminAus(args, akteur ?? legacyKoordinatorAus(args));
+  // P22-T243: Grenzen der Shell-Ausgabe (Koordinator/User, projekt > global > Standard).
+  if (action === 'shell_ausgabe_einstellungen') return fuehreShellAusgabeAdminAus(args, akteur ?? legacyKoordinatorAus(args));
   // P22-T36: Hauptagent-Verwaltung (User + Main selbst; Koordinatoren nur Kommunikation) – eigener Rechtepfad.
   // P22-T7: hauptagent_heartbeat (auf User-Anweisung) und agent_verbrauch kennen auch den Legacy-Koordinator; die uebrigen
   // hauptagent_*-Aktionen lehnen ihn wie bisher mit recht_fehlt ab.

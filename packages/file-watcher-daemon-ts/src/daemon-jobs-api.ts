@@ -24,6 +24,7 @@
 
 import os from 'node:os';
 import type { ShellJobCompletion, ShellJobRow, SpecialistJobCompletion, SpecialistJobRow } from '@synapse/core';
+import type { ShellAusgabeTeilEingabe, ShellAusgabeTeilErgebnis } from '@synapse/core';
 import type { ShellExecKontextDaten, ShellSicherungEingabe } from '@synapse/core';
 import { loadConfig } from './config.js';
 import { leseApiZugang } from './skills-proxy.js';
@@ -123,6 +124,15 @@ export async function meldeShellLogStromTeilApi(id:string,daemonId:string,folge:
   await anfrage('/api/daemon/shell/log-strom', {method:'POST',body:{host:DAEMON_HOST,daemon_id:daemonId,id,folge,inhalt}}, 60_000);
 }
 
+/**
+ * P22-T243 (+P22-T208): ein Teil der vollen Ausgabe eines vom Daemon geclaimten Jobs (maskiert, <= SHELL_AUSGABE_TEIL_HART_BYTES).
+ * Fehler kommen als DaemonApiFehler mit code (z. B. shell_ausgabe_funktion_aus -> Altweg).
+ */
+export async function meldeShellAusgabeTeilApi(id: string, daemonId: string, teil: ShellAusgabeTeilEingabe): Promise<ShellAusgabeTeilErgebnis> {
+  return anfrage<ShellAusgabeTeilErgebnis>('/api/daemon/shell/ausgabe-teil',
+    { method: 'POST', body: { host: DAEMON_HOST, daemon_id: daemonId, id, ...teil } }, 60_000);
+}
+
 /** Die HTTP-JSON-Huelle muss unter Fastifys Bodylimit bleiben (auch Escape-/UTF-8-Bytes). */
 const ABSCHLUSS_BODY_MAX = 900_000;
 
@@ -137,8 +147,10 @@ export async function meldeShellAbschlussApi(id: string, daemonId: string, absch
     ergebnis = {
       status: abschluss.status, exit_code: abschluss.exit_code,
       error: abschluss.error, nur_laufend: abschluss.nur_laufend,
-      output_truncated: true,
-      message: 'Shellprozess beendet; Ausgabe konnte nicht vollstaendig uebertragen werden. Lokaler Stream bleibt erhalten.',
+      // P22-T243: liegt die Ausgabe schon in Teilen, bleibt sie vollstaendig - nur die (Roh-)Kopie im Abschluss entfaellt.
+      ...(abschluss.ausgabe ? { ausgabe: abschluss.ausgabe } : {}),
+      output_truncated: abschluss.ausgabe ? abschluss.output_truncated === true : true,
+      message: abschluss.ausgabe ? abschluss.message : 'Shellprozess beendet; Ausgabe konnte nicht vollstaendig uebertragen werden. Lokaler Stream bleibt erhalten.',
     };
   };
   if (Buffer.byteLength(JSON.stringify(body()), 'utf8') > ABSCHLUSS_BODY_MAX) {

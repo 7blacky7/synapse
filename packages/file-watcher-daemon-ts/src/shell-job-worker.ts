@@ -31,8 +31,9 @@ import {
   registriereWorker,
   workerPausiert,
   meldeWorkerArbeit,
+  haengeShellAusgabeTeilAn,
 } from '@synapse/core';
-import type { ShellJobRow } from '@synapse/core';
+import type { ShellJobRow, ShellAusgabeAbschlussMeta } from '@synapse/core';
 // P9-T27: optionaler API-Weg (daemon_jobs_weg=api) statt PG LISTEN/SQL
 import {
   daemonJobsWeg,
@@ -40,6 +41,7 @@ import {
   holeShellJobsApi,
   meldeShellAbschlussApi,
   meldeShellLogStromTeilApi,
+  meldeShellAusgabeTeilApi,
   shellWartungApi,
   schlafe,
   DAEMON_JOBS_POLL_S,
@@ -49,8 +51,16 @@ import {
   meldeShellSicherungApi,
 } from './daemon-jobs-api.js';
 import type { ShellExecKontext } from '@synapse/core';
+// P22-T243 (+P22-T208): volle Ausgabe blockweise als Teile (Schalter shell_ausgabe_voll prueft der Server beim ersten Teil).
+import { ShellAusgabeUebertragung } from './shell-ausgabe-uebertragung.js';
 
 const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
+
+/** P22-T243: bis zu dieser Stream-Groesse geht die Ausgabe wie bisher im Abschluss mit (unter dem HTTP-Bodylimit). */
+const AUSGABE_DIREKT_MAX_BYTES = 700_000;
+function streamGroesse(streamId: string): number {
+  try { return fs.statSync(path.join(STREAMS_DIR, `${streamId}.log`)).size; } catch { return 0; }
+}
 
 /** Liest den vollen Log einer Stream-ID (Best-Effort, returnt undefined bei Fehler). */
 function readStreamLog(streamId: string | undefined | null): string | undefined {
@@ -308,6 +318,11 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
   let result: Record<string, unknown>;
   let logFolge=0, logFehler=false;
   let logSendung:Promise<void>=Promise.resolve();
+  // P22-T243 (+P22-T208): Teiluebertragung der vollen Ausgabe; entsteht bei Abloesung (live) oder bei grosser Ausgabe am Ende.
+  const ausgabe: { u: ShellAusgabeUebertragung | null } = { u: null };
+  const holeUebertragung = (sid: string): ShellAusgabeUebertragung =>
+    ausgabe.u ??= new ShellAusgabeUebertragung(path.join(STREAMS_DIR, `${sid}.log`),
+      (teil) => jobWeg === 'api' ? meldeShellAusgabeTeilApi(job.id, DAEMON_ID, teil) : haengeShellAusgabeTeilAn(job.id, teil));
   const sendeMaskiert=(text:string):void=>{
     if(!job.log_strom)return;
     const chars=Array.from(text);
@@ -365,6 +380,8 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
         console.error(
           `[shell-worker] Job ${job.id} laeuft im Hintergrund weiter (pid ${info.pid ?? '?'})`,
         );
+        // P22-T208: ab jetzt laufend uebertragen, damit get_stream/log/get den Zwischenstand sehen.
+        if (/^[a-f0-9]{16}$/.test(info.stream_id)) holeUebertragung(info.stream_id).starteLive();
       },
     });
     const herkunft=userHerkunftAusMetadata({herkunft:job.sicherung?.anfrage?.herkunft});
@@ -430,7 +447,21 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
   const streamId = (result['stream_id'] as string | undefined) ?? job.stream_id ?? undefined;
   // P10-T73: bestaetigt demaskiert -> Rohausgabe statt maskiertem Stream-Log (wird vorgemerkt und nachmaskiert).
   const roh = shellRohAusgabe(result);
-  const output = roh?.output ?? readStreamLog(streamId);
+  // P22-T243: abgeloeste oder grosse Ausgabe in Teilen statt als (gekapptes/verworfenes) Ganzes im Abschluss. Schalter aus
+  // (erste Teil-Antwort) -> unveraendert der Altweg; Fehler mitten drin -> Meta mit fehler (Stand unvollstaendig).
+  let output: string | undefined;
+  let ausgabeMeta: ShellAusgabeAbschlussMeta | undefined;
+  let ausgabeHinweis: string | undefined;
+  if (streamId && /^[a-f0-9]{16}$/.test(streamId) && (ausgabe.u || streamGroesse(streamId) > AUSGABE_DIREKT_MAX_BYTES)) {
+    const u = holeUebertragung(streamId);
+    await u.beende();
+    if (u.status === 'fertig') { ausgabeMeta = u.meta(); output = roh?.output; }
+    else if (u.status === 'fehler' && u.teile > 0) {
+      ausgabeMeta = u.meta();
+      output = roh?.output;
+      ausgabeHinweis = `Teiluebertragung der Ausgabe unterbrochen (${u.fehler ?? 'unbekannt'}); lokale Stream-Datei bleibt 1 h erhalten.`;
+    } else output = roh?.output ?? readStreamLog(streamId);
+  } else output = roh?.output ?? readStreamLog(streamId);
   // shell_jobs hat keine eigene Spalte dafuer; message wird von der REST-Seite
   // ohnehin durchgereicht. So sieht der Aufrufer ohne API-Deploy, welche DB-
   // Variable sein Job hatte (ohne Passwort).
@@ -445,7 +476,8 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
     output,
     ...(roh ? { demaskierung: roh.demaskierung } : {}),
     ...(result['maskiert']?{maskiert:Number(result['maskiert'])}:{}),
-    ...(result['output_truncated']===true||(streamId&&output===undefined)?{output_truncated:true}:{}),
+    ...(ausgabeMeta ? { ausgabe: ausgabeMeta } : {}),
+    ...(result['output_truncated']===true||(streamId&&output===undefined&&!ausgabeMeta)?{output_truncated:true}:{}),
     ...(abgebrochen
       ? {
           error: 'cancelled',
@@ -455,6 +487,7 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
         }
       : result['message'] ? { message: String(result['message']) } : jobEnvText ? { message: jobEnvText } : {}),
     ...(logFehler ? {message:[result['message'],jobEnvText,'Live-Log-Uebertragung unterbrochen; Abschluss gleicht die Ausgabe ab.'].filter(Boolean).join('; ')} : {}),
+    ...(ausgabeHinweis ? { message: [result['message'], jobEnvText, ausgabeHinweis].filter(Boolean).join('; ') } : {}),
   });
   console.error(`[shell-worker] Job ${job.id} ${abschluesse.has(job.id)?'lokal beendet; Abschluss ausstehend':'abgeschlossen'} mit status=${status} (output ${output ? output.length + ' bytes' : 'kein file'})`);
 }

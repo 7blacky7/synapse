@@ -6,7 +6,7 @@
       "weg": "beide",
       "sections": [
         { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer shell (Build, Test, Git, Installation im Projekt). Quelltext wird NIE per shell geaendert, sondern ueber files. Antwort executed_via zeigt local (Daemon) oder workspace (Container)." },
-        { "section": "faelle", "content": "- fall-shell-routing: wo laeuft das Kommando (auto/local/workspace).\n- fall-shell-rueckfrage-ausweis / fall-shell-rueckfrage-legacy: gefaehrlicher Befehl, stufe rueckfrage (Auswahl automatisch nach Weg).\n- fall-shell-langer-job: status running, unterbrochen_durch, Ergebnis abholen, cancel/hide.\n- fall-shell-angehaengt: attached:true statt eigenem Lauf.\n- fall-shell-demaskieren: maskierte Ausgabe.\n- fall-shell-projektdateien: Befehle, die Projektdateien nebenbei aendern, sind verboten.\n- fall-shell-testdb: Tests nur gegen synapse_test.\n- fall-shell-aufsicht: history und activity." }
+        { "section": "faelle", "content": "- fall-shell-routing: wo laeuft das Kommando (auto/local/workspace).\n- fall-shell-rueckfrage-ausweis / fall-shell-rueckfrage-legacy: gefaehrlicher Befehl, stufe rueckfrage (Auswahl automatisch nach Weg).\n- fall-shell-langer-job: status running, unterbrochen_durch, Ergebnis abholen, cancel/hide.\n- fall-shell-angehaengt: attached:true statt eigenem Lauf.\n- fall-shell-demaskieren: maskierte Ausgabe.\n- fall-shell-projektdateien: Befehle, die Projektdateien nebenbei aendern, sind verboten.\n- fall-shell-testdb: Tests nur gegen synapse_test.\n- fall-shell-aufsicht: history und activity.\n- fall-shell-log: grosse oder laufende Ausgabe lesen und durchsuchen (log statt grep, Grenzen, Hinweise, get_stream, Log-Dateien)." }
       ]
     },
     {
@@ -79,6 +79,14 @@
       "sections": [
         { "section": "uebersicht", "content": "Ausloeser: fruehere Jobs oder Tool-Aufrufe anderer Agenten nachsehen." },
         { "section": "regeln", "content": "1. history: Job-Metadaten mit Vorschau (limit bis 200, offset, status, project).\n2. activity: alle Tool-Aufrufe (nicht nur shell) zeitlich verzahnt; Filter agent_ids, tools, mutations_only, errors_only, since; detail meta (Standard) | summary | full.\n3. get detail:\"full\" liefert volle Lage und job_env." }
+      ]
+    },
+    {
+      "skill_name": "fall-shell-log",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: grosse oder laufende Job-Ausgabe lesen oder durchsuchen, ein Build-/Test-/Daemon-Log auswerten - statt grep/tail/head im Kommando. Grundsatz (P22-T243, Produkt-Schalter shell_ausgabe_voll): keine Ausgabe geht verloren, keine Antwort flutet den Kontext." },
+        { "section": "regeln", "content": "1. id ist die Job-UUID aus der exec-Antwort bzw. shell(history) - NICHT stream_id (die gilt nur lokal fuer stdio get_stream).\n2. Suchen statt blaettern: shell(action:\"log\", id, query) (Substring, ohne Gross/klein) oder regex:true; filter:\"fehler\"|\"warnungen\"|\"fehler_und_warnungen\" allein oder mit query; kontext_zeilen (bis 10) liefert vorher/nachher je Treffer; from_line/to_line grenzt die Suche ein. Durchsucht wird die VOLLE Ausgabe, auch ueber 1 MB und bei laufenden Jobs.\n3. Bereich: shell(action:\"log\", id, from_line, to_line); hoechstens log_max_zeilen (500) bzw. log_max_bytes (64 KB) je Abruf, lange Zeilen ab zeile_max_zeichen (2000) gekuerzt.\n4. Jede gekappte Antwort sagt es: total_lines, total_bytes, gekappt, naechster_bereich (Bereich) bzw. weiter_ab_zeile und 'N von M Treffern' (Suche), durchsucht.vollstaendig (Zeitbudget suche_max_ms) und hinweis. Weiter nur gezielt lesen.\n5. shell(get, id) zeigt bei grosser Ausgabe nur ausgabe.kopf/ende und total_lines, nie alles; exec liefert nur einen gedeckelten tail (tail_gekappt).\n6. Laufender Job: shell(action:\"get_stream\", id, seit_zeile) liefert neue vollstaendige Zeilen und naechste_seit_zeile; die Live-Uebertragung beginnt mit der Abloesung (~20 s) und laeuft alle live_intervall_s. Nicht pollen.\n7. Log-Dateien (z. B. ~/.synapse/file-watcher/daemon.log, Deploy-Logs): shell(exec, command:\"cat <datei>\"), danach shell(log, id, query|filter|Bereich) - kein grep/tail im Befehl. log_strom ist fuer benannte Ausgaben eigener Jobs, nicht fuer fremde Dateien.\n8. Grenze je Job max_bytes_je_job (256 MB): darueber bleiben Kopf und Ende (ende_reserve_bytes), dazwischen ein Marker mit ausgelassenen Bytes/Zeilen; message und ausgabe_stand (vollstaendig|luecke|unvollstaendig) nennen es. Einstellwerte: admin(action:\"shell_ausgabe_einstellungen\") (Koordinator/User). Ohne Schalter gilt das Altverhalten (output 1 MB, filter nicht verfuegbar)." }
       ]
     }
   ]
