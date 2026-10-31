@@ -70,6 +70,8 @@ export interface Knoten {
  plan?: NetzPlan; fade?: number;
  /** P22-T229: fremde Projekt-Sonne (rolle 'sonne'); fade folgt sonnenFade je Frame. */
  sonne?: FremdSonne;
+ /** P22-T239: Abstand der Agentenbahn um eine Projektsonne der Uebersicht (Weltpunkte); Groesse von Trabanten, Nebel und Wellen. */
+ umlauf?: number;
 }
 export interface Konstellation { name: string; x: number; y: number; winkel: number }
 export interface Szene {

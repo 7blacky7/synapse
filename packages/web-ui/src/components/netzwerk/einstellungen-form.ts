@@ -34,6 +34,9 @@ export const NETZWERK_LABELS: Record<string, string> = {
  wartet_halte_ms: 'Wartender Aufruf pulsiert (ms)',
  // P22-T229
  fremd_sonne_ausblend_sekunden: 'Fremde Projekt-Sonne blendet nach Visum-Ende aus (Sekunden)',
+ // P22-T239
+ sonnen_effekte: 'Übersicht: Projektsonnen mit allen Effekten des Kerns (1 an, 0 = schlichte Sonne)',
+ sonnen_effekte_max: 'Übersicht: Notbremse – nur so viele aktivste Sonnen mit Trabanten und Nebel (0 = alle, Standard)',
 };
 
 export const NETZWERK_GRUPPEN: ReadonlyArray<{ titel: string; namen: readonly string[] }> = [
@@ -50,7 +53,7 @@ export const NETZWERK_GRUPPEN: ReadonlyArray<{ titel: string; namen: readonly st
  // P22-T156: Effekte je Ergebnisart (falsch aufgerufen, gesperrt, nicht gefunden, Konflikt, Serverfehler, wartet).
  { titel: 'Ergebnis-Effekte', namen: ['fehler_effekte', 'fehler_effekt_ms', 'wartet_halte_ms'] },
  // P22-T229: Visum-Sonnen (Schalter netzwerk_visum_sonnen); sichtbar bis Zugangsende aus den Ausweis-Fristen.
- { titel: 'Projekt-Sonnen', namen: ['fremd_sonne_ausblend_sekunden'] },
+ { titel: 'Projekt-Sonnen', namen: ['fremd_sonne_ausblend_sekunden', 'sonnen_effekte', 'sonnen_effekte_max'] },
  { titel: 'Server', namen: ['index_cache_ms', 'index_cache_schnell_ms', 'index_billig_ms'] },
 ];
 

@@ -3,6 +3,8 @@
  * Gleiche Typen und Zeichenschleife wie das Projektnetzwerk (Agentennetzwerk.tsx mit Prop global) und dieselbe Sonnen-Logik wie die
  * Visum-Sonnen P22-T229 (sonnen.ts: sonnenSicht/sonnenFade/sonnenFarbe/zielProjekt; Knoten rolle 'sonne' mit Feld sonne, Szene.fremd).
  * - Mitte: Hauptagent. Der Kern ist ein unsichtbarer Anker (Szene.global): kein Projektstern, keine Trabanten, kein Nebel.
+ *   P22-T239: die Effekte des Projektkerns (Glut/Puls, Wellen, Trabanten, Nebel, Index-Reaktion, Commit) traegt jede Sonne
+ *   (netzwerk/sonnen-effekte.ts, Zeichnung in Agentennetzwerk.tsx); Knoten.umlauf = Abstand ihrer Agentenbahn.
  * - Sonnen: NUR Projekte mit echter Aktivitaet (projekt_aktivitaeten bzw. Zielprojekt der Ereignisse aus ?umfang=global, P22-T232),
  *   unabhaengig vom Projektstatus aktiv/Watcher. Sichtbar bis letzte Aktivitaet + inaktiv_sekunden, danach Ausblenden ueber
  *   fremd_sonne_ausblend_sekunden (bestehende Einstellungen, kein neues Zeitfenster). Das Gedaechtnis haelt eine Sonne bis zum Ende
@@ -15,6 +17,7 @@
 import type { NetzAgent, NetzEreignis, NetzSnapshot } from '../../api/agentennetzwerk';
 import { agentAvatar, agentFarbe, keinAgent, type Knoten, type Szene } from './nerven-szene';
 import { heimatProjekt, sonnenFarbe, sonnenSicht, sonnenWerte, zielProjekt, type FremdSonne, type SonnenGedaechtnis } from './sonnen';
+import { planFade, planFarbe, planZustand } from './plan-nachleuchten';
 
 /** Projekt des Hauptagenten: keine eigene Sonne, der Hauptagent steht in der Mitte. */
 export const HAUPTAGENT_PROJEKT = 'synapse-hauptagent';
@@ -106,10 +109,12 @@ export function globaleSzene(s: NetzSnapshot, jetzt: number, gedaechtnis: Sonnen
   const ort = lageVon(i), wk = Math.atan2(ort.y, ort.x);
   const sonne = merke({ id: 'projekt:' + f.projekt, name: f.projekt, rolle: 'sonne', project: f.projekt, x: ort.x, y: ort.y, radius: 22, winkel: wk, farbe: sonnenFarbe(f.projekt),
    letzte: f.letzte, aufrufe: f.aufrufe, avatar: agentAvatar(f.projekt), sonne: f, fade: f.fade,
-   info: f.aufrufe + ' Aufrufe im Fenster · ' + f.agenten.length + ' aktive Agent' + (f.agenten.length === 1 ? '' : 'en') }, ['projekt:' + f.projekt, 'workspace:' + f.projekt]);
+   info: f.aufrufe + ' Aufrufe im Fenster · ' + f.agenten.length + (f.agenten.length === 1 ? ' aktiver Agent' : ' aktive Agenten') }, ['projekt:' + f.projekt, 'workspace:' + f.projekt]);
   knoten.push(sonne); kanten.push([kern, sonne]);
   const liste2 = gruppen.get(f.projekt) ?? [], zeigen = liste2.slice(0, jeSonne), rest = liste2.slice(jeSonne);
   const plaetze = Math.max(1, zeigen.length + (rest.length ? 1 : 0)), ro = bahn(plaetze);
+  // P22-T239: Abstand der Agentenbahn; Trabanten, Nebel und Wellen der Sonne richten sich danach.
+  sonne.umlauf = ro;
   zeigen.forEach((a, j) => {
    // Erster Agent zeigt nach aussen (weg vom Hauptagenten), Koordinatoren auf einer inneren Bahn.
    const wj = wk + j * TAU / plaetze, koord = a.rolle === 'koordinator', p = polar(koord ? ro * 0.8 : ro, wj);
@@ -126,6 +131,22 @@ export function globaleSzene(s: NetzSnapshot, jetzt: number, gedaechtnis: Sonnen
   }
   aussen = Math.max(aussen, Math.hypot(ort.x, ort.y) + ro + 70);
  });
+ // P22-T239: offene Schattenplaene je Projekt als goldene Rauten an ihrer Sonne (zwischen Sonne und Beitragenden, wie im Arbeitsraum
+ // zwischen Kern und Agenten). Beendete Plaene sind kein Knoten, sondern ein Abgang (Commit-Flug in die Sonne bzw. Explosion).
+ const planVonAgent = new Map<string, string>(), planJeSonne = new Map<string, number>();
+ let planZahl = 0;
+ for (const p of (s.plaene ?? []).filter(x => x.status === 'open' && x.project)) {
+  const sonne = alias.get('projekt:' + p.project); if (!sonne || sonne.rolle !== 'sonne') continue;
+  const teilnehmer = [...new Set((p.beitraege ?? []).map(id => alias.get(id)?.id).filter((id): id is string => !!id && id !== sonne.id && id !== kern.id))];
+  const nah = teilnehmer.map(id => alias.get(id)!).filter(k => k.eltern === sonne), i = planJeSonne.get(sonne.id) ?? 0; planJeSonne.set(sonne.id, i + 1);
+  const basis = nah.length ? Math.atan2(nah.reduce((n, k) => n + k.y - sonne.y, 0), nah.reduce((n, k) => n + k.x - sonne.x, 0)) : sonne.winkel + Math.PI;
+  const wk = basis + (i % 2 ? -1 : 1) * Math.ceil(i / 2) * 0.55, ort = polar((sonne.umlauf ?? 80) * 0.55, wk), co = teilnehmer.length > 1;
+  const k: Knoten = { id: 'plan:' + p.id, name: 'Plan ' + p.id, rolle: 'plan', project: p.project ?? '', x: sonne.x + ort.x, y: sonne.y + ort.y, radius: 13, winkel: wk, avatar: 'P', farbe: planFarbe(p),
+   letzte: Date.parse(p.committed ?? p.erstellt), aufrufe: p.ops, teilnehmer, plan: p, eltern: sonne, fade: planFade(p, jetzt, s),
+   info: p.ops + ' Ops · ' + p.dateien + ' Dateien' + (co ? ' · Co-Edit ' + teilnehmer.length : '') + ' · ' + planZustand(p) };
+  knoten.push(k); alias.set(k.id, k); kanten.push([sonne, k]); planZahl++;
+  for (const id of teilnehmer) { const alt = planVonAgent.get(id); if (!alt || Number(alt) < Number(p.id)) planVonAgent.set(id, p.id); }
+ }
  // Aktive Agenten ohne sichtbare Sonne (Heimat unbekannt bzw. nur Hauptagent-Projekt): kleiner Ring um die Mitte.
  const freiZeigen = frei.slice(0, jeSonne);
  freiZeigen.forEach((a, j) => {
@@ -135,6 +156,6 @@ export function globaleSzene(s: NetzSnapshot, jetzt: number, gedaechtnis: Sonnen
  verborgen += frei.length - freiZeigen.length;
  const radius = Math.max(280, aussen);
  return { knoten, alias, kanten, projekte: [], kern, radius, breite: radius * 2, hoehe: radius * 2, verborgen,
-  inaktiv: Math.max(0, alle.length - aktiv.length - mains.length), channels: 0, zelle: 34, planVonAgent: new Map(), plaene: 0, stern: 0.5,
+  inaktiv: Math.max(0, alle.length - aktiv.length - mains.length), channels: 0, zelle: 34, planVonAgent, plaene: planZahl, stern: 0.5,
   fremd: sonnen, fremdOhneSonne: 0, global: true, mitte };
 }

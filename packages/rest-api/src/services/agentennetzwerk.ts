@@ -76,6 +76,12 @@ export async function ladeNetzwerkDatengrundlage(project: string, nur?: 'aktuell
  return {...basis,...(aktuelle_tasks ? {aktuelle_tasks} : {}),...(projekt_aktivitaeten ? {projekt_aktivitaeten} : {})};
 }
 
+/** P22-T239: Planbezug eines Aufrufs im globalen Umfang (wie planBezug im Projekt-Snapshot): nur vollstaendig lesbare Top-Level-Argumente. */
+function globalerPlanBezug(row: Pick<ToolCallRow, 'tool_name' | 'args_preview'>): string | null {
+ if (!/files|code_intel/.test(row.tool_name ?? '')) return null;
+ try { const a = JSON.parse(String(row.args_preview ?? '')), v = a?.plan_id ?? a?.schatten; return /^\d+$/.test(String(v ?? '')) ? String(v) : null; } catch { return null; }
+}
+
 /** Globaler Umfang: ein begrenzter, registrysichtbarer Ereignis-Abruf statt je Projekt ein Snapshot. */
 async function ladeGlobalesNetzwerk(project: string, sicht:NetzwerkSicht) {
  const konfiguration = await leseNetzwerkKonfiguration('');
@@ -100,7 +106,7 @@ async function ladeGlobalesNetzwerk(project: string, sicht:NetzwerkSicht) {
   const inFrist=(a:Date|null,b:Date|null)=>!!a&&!!b&&a.getTime()<=t&&b.getTime()>=t;
   const zugang=z.heimat===z.project?'heimat':inFrist(z.freigabe_ab,z.freigabe_bis)?'arbeitsfreigabe':inFrist(z.visum_ab,z.visum_bis)?'visum':null;
   const ende=[z.visum_bis,z.freigabe_bis].filter((d):d is Date=>!!d).sort((a,b)=>b.getTime()-a.getTime())[0];
-  return {...e,identity_id:z.akteur??e.identity_id,heimat_projekt:z.heimat,ziel_projekt:z.project||null,zugang,visum_bis:ende?.toISOString()??null};
+  return {...e,identity_id:z.akteur??e.identity_id,heimat_projekt:z.heimat,ziel_projekt:z.project||null,zugang,visum_bis:ende?.toISOString()??null,plan_id:globalerPlanBezug(z)};
  });
  const personen=new Map<string,{id:string;identity_id:string|null;agent:string;name:string;project:string;heimat_projekt:string;rolle:string;zuletzt_aktiv:string;kanaele:string[]}>();
  for(const e of ereignisse) {
@@ -110,7 +116,48 @@ async function ladeGlobalesNetzwerk(project: string, sicht:NetzwerkSicht) {
  const aktiv=await getPool().query<{project:string;letzte_aktivitaet:Date;aufrufe:number}>(`SELECT project,MAX(ts) AS letzte_aktivitaet,COUNT(*)::int AS aufrufe
   FROM tool_calls WHERE project=ANY($1::text[]) AND ts>=NOW()-($2::int*INTERVAL '1 second')
   GROUP BY project ORDER BY MAX(ts) DESC`,[sichtbar,konfiguration.werte.aktivitaet_sekunden]);
- return {...basis,agenten:[...personen.values()],ereignisse,channel_ereignisse:[],visa:[],
+ // P22-T239: Effekte an den Projektsonnen der Uebersicht. index_projekte = Index-Groesse (Trabanten, Nebel, Sterngroesse) der aktivsten
+ // Projekte (hoechstens sonnen_effekte_max, nach Aufrufen; Cache je Projekt ladeIndexGroesse, gleichzeitige Zaehlungen geteilt);
+ // sonnen_effekte_max 0 (Standard) = alle aktiven Projekte. Plaene siehe unten (plaene/plaene_ende).
+ // Einstellung sonnen_effekte = 0: beide leer (Web-UI zeigt die schlichte Sonne wie bis t222).
+ const effekte = konfiguration.werte.sonnen_effekte !== 0;
+ const effektProjekte = effekte ? [...aktiv.rows].sort((a,b)=>b.aufrufe-a.aufrufe||a.project.localeCompare(b.project))
+  .slice(0,konfiguration.werte.sonnen_effekte_max>0?konfiguration.werte.sonnen_effekte_max:undefined).map(z=>z.project) : [];
+ const index_projekte = (await Promise.all(effektProjekte.map(async p=>{ const ix = await ladeIndexGroesse(p, konfiguration.werte); return ix ? {project:p,...ix} : null; })))
+  .filter((x): x is {project:string;dateien:number;chunks:number;stand:string} => !!x);
+ // P22-T239: Schattenplaene je Projekt wie im Projekt-Snapshot (offen + frisch committet, je Projekt hoechstens 40, nur Metadaten) und
+ // beendete Plaene mit Zeitpunkt der Statusaenderung (status_geaendert_am, 135_agentennetzwerk.sql): Rauten an der Sonne, Commit-Flug
+ // in die Sonne, Explosion verworfener Plaene (Web-UI: dieselben Ablaeufe wie am Kern).
+ const planFenster = Math.max(konfiguration.werte.plan_nachleuchten_sekunden,konfiguration.werte.plan_nachleuchten_auto_sekunden,konfiguration.werte.abgleich_sekunden);
+ const planRows = effektProjekte.length ? (await getPool().query<{id:string;project:string;owner_agent_id:string|null;owner_identity_id:string|null;status:string;auto_commit:boolean;open_for_coedit:boolean;created_at:Date;committed_at:Date|null;ops:number;dateien:string[]|null;beitraege:string[]|null}>(`
+  SELECT * FROM (SELECT p.id::text,p.project,p.owner_agent_id,p.owner_identity_id,p.status::text AS status,p.auto_commit,p.open_for_coedit,p.created_at,p.committed_at,
+   (SELECT COUNT(*)::int FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.ops)='array' THEN p.ops ELSE '[]'::jsonb END)) AS ops,
+   (SELECT array_agg(DISTINCT o->>'file_path') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.ops)='array' THEN p.ops ELSE '[]'::jsonb END) o WHERE o->>'file_path' IS NOT NULL) AS dateien,
+   (SELECT array_agg(DISTINCT COALESCE(o->>'author_identity_id',o->>'agent_id')) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.ops)='array' THEN p.ops ELSE '[]'::jsonb END) o WHERE COALESCE(o->>'author_identity_id',o->>'agent_id') IS NOT NULL) AS beitraege,
+   ROW_NUMBER() OVER (PARTITION BY p.project ORDER BY p.created_at DESC) AS rang
+  FROM file_batch_plans p
+  WHERE p.project=ANY($1::text[]) AND (p.status='open' OR (p.status='committed' AND p.committed_at>=NOW()-($2::int*INTERVAL '1 second')))) x
+  WHERE x.rang<=40`,[effektProjekte,planFenster])).rows : [];
+ const plaene = planRows.map(p => {
+  const besitzer = p.owner_identity_id ?? (p.owner_agent_id ? netzwerkText(p.owner_agent_id) : null);
+  return { id: p.id, project: p.project, besitzer, besitzer_name: p.owner_agent_id ? netzwerkText(p.owner_agent_id) : null, status: p.status, auto_commit: p.auto_commit === true, coedit: p.open_for_coedit,
+   erstellt: p.created_at.toISOString(), committed: p.committed_at?.toISOString() ?? null, ops: p.ops, dateien: (p.dateien ?? []).length,
+   dateien_beispiele: (p.dateien ?? []).slice(0, 3).map(d => netzwerkText(d.split('/').pop() ?? d)),
+   beitraege: [...new Set([besitzer, ...(p.beitraege ?? []).map(x => netzwerkText(x))].filter((x): x is string => !!x))] };
+ });
+ let plaene_ende: Array<{id:string;project:string;status:string;geaendert:string|null}> = [];
+ if (effektProjekte.length) {
+  try {
+   plaene_ende = (await getPool().query<{id:string;project:string;status:string;geaendert:Date|null}>(`SELECT p.id::text AS id,p.project,p.status::text AS status,COALESCE(p.status_geaendert_am,p.committed_at) AS geaendert
+    FROM file_batch_plans p WHERE p.project=ANY($1::text[]) AND p.status<>'open' AND COALESCE(p.status_geaendert_am,p.committed_at)>=NOW()-($2::int*INTERVAL '1 second')
+    ORDER BY p.id DESC LIMIT 200`,[effektProjekte,Math.max(planFenster,2*konfiguration.werte.abgleich_sekunden)])).rows.map(z=>({...z,geaendert:z.geaendert?.toISOString()??null}));
+  } catch {
+   // Schema noch ohne status_geaendert_am: wie im Projekt-Snapshot die zuletzt beendeten Plaene (ohne Zeit).
+   plaene_ende = (await getPool().query<{id:string;project:string;status:string}>(`SELECT p.id::text AS id,p.project,p.status::text AS status FROM file_batch_plans p
+    WHERE p.project=ANY($1::text[]) AND p.status<>'open' ORDER BY p.id DESC LIMIT 200`,[effektProjekte])).rows.map(z=>({...z,geaendert:null}));
+  }
+ }
+ return {...basis,agenten:[...personen.values()],ereignisse,channel_ereignisse:[],visa:[],index_projekte,plaene,plaene_ende,
   projekt_aktivitaeten:aktiv.rows.map(z=>({...z,letzte_aktivitaet:z.letzte_aktivitaet.toISOString()})),
   begrenzt:Math.max(0,Number(r.rows[0]?.gesamt??0)-r.rows.length),cursor:ereignisse.at(-1)?.id??null};
 }

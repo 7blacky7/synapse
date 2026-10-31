@@ -23,12 +23,14 @@ export interface NetzVisum { identity_id:string|null; agent:string; heimat_proje
 /** P22-T156: Ergebnisarten (core agentennetzwerk-ergebnis.ts NETZ_ERGEBNIS_ARTEN). */
 export type NetzErgebnisArt='erfolg'|'leer'|'falsch_aufgerufen'|'gesperrt'|'nicht_gefunden'|'konflikt'|'serverfehler'|'wartet'|'sonstiges';
 /** P22-T95: offener (oder gerade committeter) files-Plan als Schattenplan-Knoten; nur Metadaten. */
-export interface NetzPlan { id:string; besitzer:string|null; besitzer_name:string|null; status:string; auto_commit?:boolean; coedit:boolean; erstellt:string; committed:string|null; ops:number; dateien:number; dateien_beispiele:string[]; beitraege:string[] }
+export interface NetzPlan { id:string; besitzer:string|null; besitzer_name:string|null; status:string; auto_commit?:boolean; coedit:boolean; erstellt:string; committed:string|null; ops:number; dateien:number; dateien_beispiele:string[]; beitraege:string[];
+ /** P22-T239: Projekt des Plans (globaler Umfang der Uebersicht; Raute und Abgang an dessen Sonne). */
+ project?:string }
 export interface NetzAgent { id:string;agent:string;name:string;rolle:string;project:string;identity_id:string|null;zuletzt_aktiv:string|null;kanaele:string[];aufrufe_im_fenster?:number;letzter_aufruf?:{zeit:string;tool:string;action:string}|null;typ?:string|null;modell?:string|null;ort?:string|null;ort_quelle?:string|null;letzte_anmeldung?:string|null;metadaten_quelle?:string;koordination?:{koordinator_id:string;quelle:string;beleg_id:string}|null }
 export interface NetzSnapshot {
  version:number;stand:string;project:string;schalter:{aktiv:boolean;quelle:string;bis:string|null;letzter_fehler:string|null};
  werte:Record<string,number>;einstellungen:Record<string,{wert:number;quelle:string;min:number;max:number;einheit?:string}>;
- agenten:NetzAgent[];ereignisse:NetzEreignis[];plaene?:NetzPlan[];plaene_ende?:Array<{id:string;status:string}>;channel_ereignisse?:NetzEreignis[];begrenzt:number;letzter_fehler:string|null;
+ agenten:NetzAgent[];ereignisse:NetzEreignis[];plaene?:NetzPlan[];plaene_ende?:Array<{id:string;status:string;project?:string;geaendert?:string|null}>;channel_ereignisse?:NetzEreignis[];begrenzt:number;letzter_fehler:string|null;
  /** P22-T149: indexierte Dateien und Chunks des Projekts (PG), null wenn nicht lesbar. */
  index?:{dateien:number;chunks:number;stand:string}|null;
  /** P22-T155: Aufrufe im Fenster ohne agent_id und identity_id (kein Knoten, nur Zaehler). */

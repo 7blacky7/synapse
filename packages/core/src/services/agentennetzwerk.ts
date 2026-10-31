@@ -81,6 +81,12 @@ export const NETZWERK_EINSTELLUNGEN = {
  // P22-T229 (User 31.10.2026): fremde Projekt-Sonne (Heimat eines Visum-Agenten) blendet nach Zugangsende so lange aus. Die Sichtdauer
  // selbst kommt aus den Ausweis-Fristen (visum_bis inkl. Arbeitsfreigabe), ohne Zugangsende aus inaktiv_sekunden; kein eigenes Fenster.
  fremd_sonne_ausblend_sekunden: { standard: 8, min: 1, max: 300 },
+ // P22-T239 (User 31.10.2026 ~17:38): Projektsonnen der Uebersicht mit allen Effekten des Kerns (Glut/Puls, Wellen, Trabanten, Nebel,
+ // Index-Reaktion, Commit-Flug); 0 = schlichte Sonne wie bis t222. sonnen_effekte_max: so viele Sonnen (die aktivsten) bekommen
+ // Trabanten und Nebel - nur als Notbremse: 0 = ALLE Sonnen voll (Standard, Koordinator 31.10.); n > 0 = nur die n aktivsten, die
+ // uebrigen behalten Glut, Puls, Wellen und Plaene. Sonst reduziert nur die Qualitaetsstufe der Web-UI (wie beim Projektkern).
+ sonnen_effekte: { standard: 1, min: 0, max: 1 },
+ sonnen_effekte_max: { standard: 0, min: 0, max: 500 },
 } as const;
 export type NetzwerkEinstellung = keyof typeof NETZWERK_EINSTELLUNGEN;
 export type NetzwerkWerte = Record<NetzwerkEinstellung, number>;

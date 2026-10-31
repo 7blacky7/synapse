@@ -14,6 +14,10 @@ export type GlobalesNetz = NetzSnapshot & {
  umfang?: 'global';
  projekt_aktivitaeten?: Array<{ project: string; letzte_aktivitaet: string | null; aufrufe: number }>;
  daten_schalter?: { aktiv: boolean; quelle: string; letzter_fehler?: string | null };
+ /** P22-T239: Index-Groesse je aktivem Projekt (Trabanten, Nebel, Sterngroesse der Sonne), nur mit Einstellung sonnen_effekte. */
+ index_projekte?: Array<{ project: string; dateien: number; chunks: number; stand: string }>;
+ // P22-T239: plaene (offen + frisch committet) und plaene_ende (geaendert = Zeitpunkt der Statusaenderung, status_geaendert_am) tragen
+ // im globalen Umfang das Feld project (NetzPlan.project): Rauten, Commit-Flug und Explosion an der Sonne des Projekts.
 };
 export interface UebersichtSchalter { funktion: string; aktiv: boolean; quelle: string; ebene: string | null; gesetzt_von?: string | null; letzter_fehler: string | null }
 
