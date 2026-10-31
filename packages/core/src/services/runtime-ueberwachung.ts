@@ -43,6 +43,8 @@ import { enqueueSpecialistJob } from './specialist-queue.js';
 import { RUNTIME_PROJEKTE_WURZEL, runtimeProjektPfad } from './runtime-daemon-zugang.js';
 import { randomUUID } from 'node:crypto';
 import { pruefeModellFuerRuntime } from './hauptagent-modelle.js';
+// P27-T3: Produkt-Diagnose des Stau-Waechters (Blattmodul, kein I/O) - funktioniert auch bei intern AUS.
+import { stauVerwaltungsStatus } from './warteschlangen-stau-stand.js';
 
 export const RUNTIME_UEBERWACHUNG_FUNKTION = 'runtime_ueberwachung' as const;
 export const UEBERWACHTE_RUNTIMES = ['claude', 'codex'] as const;
@@ -130,7 +132,11 @@ export async function setzeRuntimeUeberwachungSchalter(akteur: AusweisAkteur | n
 type EinstellungDef =
   | { art: 'zahl'; standard: number; min: number; max: number }
   | { art: 'bool'; standard: boolean }
-  | { art: 'liste'; standard: readonly string[]; erlaubt: readonly string[] };
+  | { art: 'liste'; standard: readonly string[]; erlaubt: readonly string[] }
+  // P27 (Koordinator 31.10.2026): Name -> Ganzzahl mit Grenzen (Schluessel [a-z0-9_], hoechstens max_eintraege).
+  | { art: 'map'; standard: Readonly<Record<string, number>>; min: number; max: number; max_eintraege: number };
+
+const kopiereStandard = (s: unknown): unknown => (Array.isArray(s) ? [...s] : s && typeof s === 'object' ? { ...(s as Record<string, unknown>) } : s);
 
 /** Container-Werte = U4-Spezifikation (thought 791212a9 Schritt 2c). */
 export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
@@ -212,10 +218,37 @@ export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
   probe_fehler_bestaetigung: { art: 'zahl', standard: 3, min: 1, max: 20 },
   probe_fehler_fenster_minuten: { art: 'zahl', standard: 5, min: 1, max: 120 },
   probe_fehler_max_minuten: { art: 'zahl', standard: 10, min: 1, max: 240 },
+  // P27-T2/T3: Stau-Waechter der Warteschlangen (warteschlangen-waechter.ts); wirkt nur bei Schalter warteschlangen_stau EIN.
+  // Takt, Zeitgrenze je Quelle, Gesamtbudget, Parallelitaet; Schwelle 'kein Fortschritt' (PG-Wert gilt fuer alle Queues, sonst
+  // Code-Standard je Queue); Erstbeobachtung; Datenalter (aelter = unbekannt); Cache fuer Schalter/Einstellwerte; Hinweis-
+  // Wiederholung, Hoechstzahl je Antwort und Hoechstalter des Schnappschusses (T3).
+  stau_takt_sekunden: { art: 'zahl', standard: 15, min: 5, max: 300 },
+  stau_erhebung_timeout_ms: { art: 'zahl', standard: 5000, min: 200, max: 60000 },
+  stau_budget_ms: { art: 'zahl', standard: 10000, min: 500, max: 120000 },
+  stau_parallel: { art: 'zahl', standard: 4, min: 1, max: 16 },
+  stau_schwelle_minuten: { art: 'zahl', standard: 10, min: 1, max: 1440 },
+  stau_grace_sekunden: { art: 'zahl', standard: 60, min: 0, max: 3600 },
+  stau_daten_max_alter_sekunden: { art: 'zahl', standard: 90, min: 15, max: 3600 },
+  stau_einstellung_cache_sekunden: { art: 'zahl', standard: 60, min: 5, max: 3600 },
+  stau_hinweis_wiederholung_minuten: { art: 'zahl', standard: 15, min: 1, max: 1440 },
+  stau_hinweis_max: { art: 'zahl', standard: 3, min: 1, max: 10 },
+  stau_snapshot_max_alter_sekunden: { art: 'zahl', standard: 60, min: 15, max: 3600 },
+  // P27 (Koordinator 31.10.2026): Schwelle 'kein Fortschritt' je Warteschlange in Minuten (Name aus warteschlange_liste).
+  // Ein PG-Wert ersetzt die Code-Standards dieser Namen; fehlende Namen -> stau_schwelle_minuten (Rueckfall).
+  stau_schwellen_je_queue_minuten: {
+    art: 'map', min: 1, max: 1440, max_eintraege: 100,
+    standard: {
+      embedding_queue: 10, db_pool: 1, parser_pool: 10, worker: 15, build_nachlauf: 15, daemon_telemetrie: 2,
+      code_chunks: 15, parser: 30, wissen_nachzug: 15, verlauf: 30, shell_jobs: 15, specialist_jobs: 10, project_init_jobs: 10,
+      compute_admission: 5, work_jobs: 15, asset_inspektion: 10, loesch_ordner: 15, runtime_auftraege: 10, zustellungen: 15,
+      specialist_inbox: 15, main_warteschlange: 10, coedit_waits: 5, reverse_leser_nachzug: 30,
+      index: 5, asset: 10, asset_transfer: 15, mod_inbox: 5,
+    },
+  },
 } as const satisfies Record<string, EinstellungDef>;
 export type RuntimeUeberwachungEinstellungName = keyof typeof RUNTIME_UEBERWACHUNG_EINSTELLUNGEN;
 export const RUNTIME_UEBERWACHUNG_EINSTELLUNG_NAMEN = Object.keys(RUNTIME_UEBERWACHUNG_EINSTELLUNGEN) as RuntimeUeberwachungEinstellungName[];
-type WertVon<D> = D extends { art: 'zahl' } ? number : D extends { art: 'bool' } ? boolean : string[];
+type WertVon<D> = D extends { art: 'zahl' } ? number : D extends { art: 'bool' } ? boolean : D extends { art: 'map' } ? Record<string, number> : string[];
 export type RuntimeUeberwachungWerte = { [K in RuntimeUeberwachungEinstellungName]: WertVon<typeof RUNTIME_UEBERWACHUNG_EINSTELLUNGEN[K]> };
 export type RuntimeUeberwachungEinstellungen = {
   [K in RuntimeUeberwachungEinstellungName]: { wert: RuntimeUeberwachungWerte[K]; quelle: 'standard' | 'einstellung'; gesetzt_von: string | null; gesetzt_am: string | null }
@@ -231,6 +264,19 @@ function pruefeWert(name: RuntimeUeberwachungEinstellungName, wert: unknown): un
     if (typeof wert !== 'boolean') fehler('einstellung_ungueltig', { name, erwartet: 'boolean' });
     return wert;
   }
+  if (d.art === 'map') {
+    if (!wert || typeof wert !== 'object' || Array.isArray(wert)) fehler('einstellung_ungueltig', { name, erwartet: 'objekt name->zahl' });
+    const eintraege = Object.entries(wert as Record<string, unknown>);
+    if (eintraege.length > d.max_eintraege) fehler('einstellung_ungueltig', { name, max_eintraege: d.max_eintraege });
+    const aus: Record<string, number> = {};
+    for (const [k, v] of eintraege) {
+      if (!/^[a-z0-9_]{1,60}$/.test(k) || typeof v !== 'number' || !Number.isInteger(v) || v < d.min || v > d.max) {
+        fehler('einstellung_ungueltig', { name, schluessel: k, min: d.min, max: d.max });
+      }
+      aus[k] = v as number;
+    }
+    return aus;
+  }
   if (!Array.isArray(wert) || wert.length === 0 || wert.some(v => typeof v !== 'string' || !d.erlaubt.includes(v)) || new Set(wert).size !== wert.length) {
     fehler('einstellung_ungueltig', { name, erlaubt: d.erlaubt });
   }
@@ -241,7 +287,7 @@ export async function leseRuntimeUeberwachungEinstellungen(db: Db = getPool()): 
   const aus = {} as Record<string, { wert: unknown; quelle: 'standard' | 'einstellung'; gesetzt_von: string | null; gesetzt_am: string | null }>;
   for (const n of RUNTIME_UEBERWACHUNG_EINSTELLUNG_NAMEN) {
     const s = RUNTIME_UEBERWACHUNG_EINSTELLUNGEN[n].standard;
-    aus[n] = { wert: Array.isArray(s) ? [...s] : s, quelle: 'standard', gesetzt_von: null, gesetzt_am: null };
+    aus[n] = { wert: kopiereStandard(s), quelle: 'standard', gesetzt_von: null, gesetzt_am: null };
   }
   const r = await db.query<{ name: string; wert: unknown; gesetzt_von: string; gesetzt_am: Date }>(
     'SELECT name, wert, gesetzt_von, gesetzt_am FROM runtime_ueberwachung_einstellungen');
@@ -261,7 +307,7 @@ export async function leseRuntimeUeberwachungWerte(db: Db = getPool()): Promise<
   const aus = {} as Record<string, unknown>;
   for (const n of RUNTIME_UEBERWACHUNG_EINSTELLUNG_NAMEN) {
     const s = RUNTIME_UEBERWACHUNG_EINSTELLUNGEN[n].standard;
-    aus[n] = e ? e[n].wert : (Array.isArray(s) ? [...s] : s);
+    aus[n] = e ? e[n].wert : kopiereStandard(s);
   }
   return aus as RuntimeUeberwachungWerte;
 }
@@ -1172,7 +1218,7 @@ export async function leseRuntimeUeberwachung(o: { ereignisse?: number } = {}): 
   ]);
   const tool_ausgabe = await (await import('./runtime-tool-ausgabe.js')).leseRuntimeToolAusgabe();
   return { schalter, tool_ausgabe, runtimes: Object.values(staende), ereignisse, umzuege, einstellungen, free_stufe: freeAusfuehrer ? 'registriert' : 'free_worker_fehlt (W6/T41)',
-    takt_in_diesem_prozess: dienste !== null, letzter_takt: letzterTakt };
+    takt_in_diesem_prozess: dienste !== null, letzter_takt: letzterTakt, warteschlangen_stau: stauVerwaltungsStatus() };
 }
 
 // ---------------------------------------------------------------------------------------------
