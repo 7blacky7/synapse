@@ -5,7 +5,8 @@
  * Aufruf (Repo-Wurzel; laut User-Vorgabe erst nach dem Deploy):  node packages/web-ui/tests/sonnen-bewegung-p22-t244.test.mjs
  * A netzwerk/sonnen-bewegung.ts: Schalter/Rueckfall, Umlauf (Richtung, Tempo, Aktivitaet), Feder mit Nachschwingen und Deckel, Stoss,
  *   bahnPunkt dreht um das eigene Zentrum (Abstand bleibt), Drift, Pause = keine Bewegung.
- * B Szene: freie Agenten haengen mit ihrer Bahn am Hauptagenten (sichtbar), nicht am Anker.
+ * B Szene: P22-T247 Nachtrag - kein Hauptagent-Knoten; freie Agenten stehen auf einem Ring aussen um die Sonnen, Kante nur zum
+ *   unsichtbaren Anker (wird nicht gezeichnet).
  * C Agentennetzwerk.tsx (statisch): Lage folgt bewegtesZiel (Kinder um die Sonne mit deren Gruppenwinkel), keine Bahn vom Anker,
  *   Ziel Anker -> Puls am Aufrufer, Puls 'kern' am Ort des Aufrufers, Stoesse bei Start/Ankunft, Debug dataset.bewegung; Proben
  *   T149/T152/T153/T196/T229 bleiben.
@@ -66,7 +67,9 @@ try {
   projekt_aktivitaeten: [{ project: 'alpha', letzte_aktivitaet: iso(3), aufrufe: 4 }], ereignisse });
  const gM = G.globaleSzene(snap([ev('a1', 'id-a1', 'alpha', 'alpha'), ev('hauptagent', 'id-main', 'synapse-hauptagent', null), ev('jev', null, null, null)]), jetzt);
  const jev = gM.alias.get('jev');
- ok(jev && gM.mitte && gM.kanten.some(([a, b]) => a === gM.mitte && b === jev) && !gM.kanten.some(([a, b]) => a === gM.kern && b === jev), 'B freier Agent: Bahn zum Hauptagenten, nicht zum Anker');
+ const randM = Math.max(...gM.knoten.filter(k => k.rolle === 'sonne').map(k => Math.hypot(k.x, k.y) + (k.umlauf ?? 0)));
+ ok(jev && !gM.mitte && !gM.knoten.some(k => k.rolle === 'main') && !gM.alias.has('id-main') && jev.eltern === gM.kern && gM.kanten.some(([a, b]) => a === gM.kern && b === jev)
+  && Math.hypot(jev.x, jev.y) >= randM + G.FREI_ABSTAND - 1e-6, 'B P22-T247 Nachtrag: kein Hauptagent-Knoten; freier Agent auf dem Ring aussen um die Sonnen, Kante nur zum Anker', { r: Math.hypot(jev?.x ?? 0, jev?.y ?? 0), randM });
  const gO = G.globaleSzene(snap([ev('a1', 'id-a1', 'alpha', 'alpha'), ev('jev', null, null, null)]), jetzt);
  ok(!gO.mitte && gO.kanten.filter(([a]) => a === gO.kern).every(([, b]) => b.rolle === 'sonne' || b.eltern === gO.kern), 'B ohne Hauptagent: nur Anker-Kanten (die der Renderer nicht zeichnet)');
 
@@ -74,14 +77,14 @@ try {
  const tsx = lies('packages/web-ui/src/components/Agentennetzwerk.tsx');
  ok(tsx.includes('const bz = bewegtesZiel(k), zx = bz ? bz.x : k.x * streckX, zy = bz ? bz.y : k.y * streckY;') && tsx.includes('return bahnPunkt(le, (k.x - e.x) * streckX, (k.y - e.y) * streckY, bewegungVon(e.id).rot, z.dr);'),
   'C Lage folgt der Bewegung: Kinder drehen mit dem Gruppenwinkel IHRER Sonne um deren aktuelle Lage');
- ok(tsx.includes("const e = k.eltern && k.eltern !== g.kern ? k.eltern : g.mitte && k !== g.mitte && k.rolle !== 'sonne' ? g.mitte : null;") && tsx.includes('drift(uhr, ph, k.rolle === \'sonne\' ? DRIFT_SONNE : DRIFT_FREI)'),
-  'C Anker ist nie Zentrum; Sonnen/Hauptagent driften, freie Agenten kreisen um den Hauptagenten');
+ ok(tsx.includes('const e = k.eltern && k.eltern !== g.kern ? k.eltern : null;') && !tsx.includes('g.mitte') && tsx.includes('drift(uhr, ph, k.rolle === \'sonne\' ? DRIFT_SONNE : DRIFT_FREI)'),
+  'C Anker ist nie Zentrum; Sonnen driften, freie Agenten driften frei (P22-T247 Nachtrag: kein g.mitte)');
  ok(tsx.includes('if (g.global && p === g.kern) continue;') && tsx.includes("if (g.global && zielK === g.kern) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern', von: q.id, nach: q.id"),
   'C keine Bahn vom Anker, kein Impuls zum Anker (Puls am Aufrufer)');
  ok(tsx.includes("o = amKern ? { x: 0, y: 0 } : lage.current.get(i.von) ?? { x: 0, y: 0 }") && tsx.includes('if (amKern) { kernPuls = Math.min(1.5, kernPuls + 0.35); welle(zeit, i.farbe); }'), 'C Puls am Ort des Aufrufers; Kern-Verhalten im Arbeitsraum unveraendert');
  ok(tsx.includes('stosse(i.von, -0.8)') && (tsx.match(/bewegeAnkunft\(i\.(nach|von)\)/g) || []).length === 3 && tsx.includes('bwDt = still ? 0 : dt') && tsx.includes('lage.current.delete(id); bewegung.delete(id);'), 'C Stoesse bei Start und Ankunft, Pause/reduced motion steht still, Zustand wird aufgeraeumt');
  ok(tsx.includes('el.dataset.bewegung = JSON.stringify({ aktiv: bwAn, omega: bw.omega, still, knoten: n, stoesse: st, je_sonne: jeSonne,'), /* P22-T247: erweitert um konstellation/kamera */ 'C Debug dataset.bewegung (je Sonne Energie, Stoesse, Gruppenwinkel)');
- ok(tsx.includes("g.global && g.mitte && !zielProjekt(e) ? g.mitte : g.kern") && /const zp = [^\n]*?zielK = [^\n]*?;\n/.test(tsx) && tsx.includes("if (zielK === q) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern'")
+ ok(tsx.includes("zielK = zs?.rolle === 'sonne' ? zs : g.kern;") && /const zp = [^\n]*?zielK = [^\n]*?;\n/.test(tsx) && tsx.includes("if (zielK === q) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern'")
   && /ebenen = indexEbenen\(s\); merkeIndex\(s, zeit\); \}/.test(tsx) && tsx.includes('welle(zeit, fc); orbitFlare'), 'C Proben T196/T229/T149/T152 bleiben');
  const rueckfall = [...tsx.matchAll(/nwWert\([^,()]+, '(\w+)', (\d+)\)/g), ...tsx.matchAll(/milli\('(\w+)', (\d+)\)/g)];
  ok(rueckfall.length === 21, 'C weiterhin 21 Rueckfallstellen (P22-T153)', rueckfall.length);

@@ -6,7 +6,7 @@
  *   Entwurf thought af36fbf5, Ergebnis 41a11794, Plan 30498; Datenvertrag P22-T232 (6733c4f7), Sonnen-Logik P22-T229 (sonnen.ts).
  * Aufruf (Repo-Wurzel, nach 'dist frisch'):  node packages/web-ui/tests/globale-uebersicht-p22-t196.test.mjs
  * A globale-szene: nur Projekte mit Aktivitaet sind Sonnen (Serverliste + Zielprojekt der Ereignisse), Projekt des Hauptagenten nie,
- *   Hauptagent in der Mitte (alle Laeufe ein Knoten), user/ohne Absender kein Knoten, Heimat-Zuordnung, Heimat-Sonne kommt mit,
+ *   Hauptagent nie ein Knoten (P22-T247 Nachtrag, alle Laeufe ausgefiltert), user/ohne Absender kein Knoten, Heimat-Zuordnung, Heimat-Sonne kommt mit,
  *   Vertrag fuer baue()/Zeichnung (rolle 'sonne', Feld sonne, Szene.fremd, Szene.global), deterministisch.
  * B Ausblenden: bis letzte Aktivitaet + inaktiv_sekunden voll, dann ueber fremd_sonne_ausblend_sekunden; Gedaechtnis haelt die Sonne,
  *   wenn das Projekt aus dem Snapshot faellt, und vergisst sie nach dem Ausblenden.
@@ -16,7 +16,7 @@
  * F OverviewView ohne lesbaren Schalter (SSR, Effekte laufen nicht) = bisherige Uebersicht; EIN-Zweig statisch.
  * G Komponente/Katalog statisch: globaler Modus in Agentennetzwerk.tsx, uebersicht_netzwerk im Katalog und nur ausdruecklich.
  * H Nachbesserung nach Abnahme 35d1ce22 (Koordinator 31562): die Uebersicht schaltet agentennetzwerk nie (nur uebersicht_netzwerk);
- *   projektlose Aufrufe (ziel_projekt null) bilden keine Sonne und laufen zum Hauptagenten in der Mitte (Szene.mitte).
+ *   projektlose Aufrufe (ziel_projekt null) bilden keine Sonne; seit P22-T247 Nachtrag pulsieren sie am Aufrufer (keine Szene.mitte).
  *   (Katalog-/Golden-Fixtures pflegt codex-rea4 in P22-T233, hier nicht angefasst.)
  */
 import assert from 'node:assert/strict';
@@ -72,9 +72,9 @@ try {
  ok(!namen.includes('beta'), 'A beta (letzte Aktivitaet vor 200 s > inaktiv 120 s + Ausblenden 8 s) hat keine Sonne');
  ok(!namen.includes('synapse-hauptagent') && !gA.alias.has('projekt:synapse-hauptagent'), 'A Projekt des Hauptagenten wird nie eine Sonne');
  ok(gA.alias.get('projekt:alpha')?.aufrufe === 10, 'A Aufrufzahl der Sonne aus projekt_aktivitaeten (nicht durch ereignis_limit gekappt)');
- const main = gA.knoten.find((k) => k.rolle === 'main');
- ok(main && main.x === 0 && main.y === 0 && main.eltern === gA.kern, 'A Hauptagent in der Mitte, Eltern = Anker');
- ok(gA.alias.get('id-main') === main && gA.alias.get('hauptagent') === main && gA.alias.get('main-123') === main, 'A alle Laeufe des Hauptagenten sind EIN Knoten (Alias Identitaet, Name, Altlauf)');
+ // P22-T247 Nachtrag (User 31.10.2026 ~21:17, thought b0b01d17): der Hauptagent erscheint in der Uebersicht nie.
+ ok(!gA.knoten.some((k) => k.rolle === 'main') && !gA.mitte, 'A kein Hauptagent-Knoten in der Uebersicht, keine Szene.mitte');
+ ok(!gA.alias.has('id-main') && !gA.alias.has('hauptagent') && !gA.alias.has('main-123'), 'A kein Lauf des Hauptagenten ist ein Knoten (Identitaet, Name, Altlauf)');
  ok(!gA.alias.has('user') && !gA.alias.has('cloud') && !gA.knoten.some((k) => ['user', 'cloud'].includes(k.id)), 'A user und Aufrufe ohne Absender werden kein Knoten');
  const rea = gA.alias.get('id-rea'), w = gA.alias.get('id-w');
  ok(rea?.eltern === gA.alias.get('projekt:alpha') && /heimat_projekt/.test(rea?.zuordnung ?? ''), 'A Agent haengt an seiner Heimat-Sonne (alpha), nicht am Zielprojekt gamma', rea?.zuordnung);
@@ -115,7 +115,7 @@ try {
  const winkel = ring.map((k) => Math.atan2(k.y, k.x));
  ok(winkel.every((wk, i) => i === 0 || Math.abs(((wk - winkel[i - 1] + 2 * Math.PI) % (2 * Math.PI)) - Math.PI / 4) < 1e-6), 'D Ring gleichmaessig verteilt (45 Grad bei 8 Sonnen)');
  const spirale = sonnen(G.globaleSzene(projekte(12), jetzt)), radien = spirale.map((k) => Math.hypot(k.x, k.y));
- ok(radien.every((r, i) => i === 0 || r > radien[i - 1]) && radien[0] >= 150, 'D ab 9 Sonnen: Goldwinkel-Spirale, Radius steigt mit dem Index, Mitte frei fuer den Hauptagenten', radien.map(Math.round));
+ ok(radien.every((r, i) => i === 0 || r > radien[i - 1]) && radien[0] >= 150, 'D ab 9 Sonnen: Goldwinkel-Spirale, Radius steigt mit dem Index (unveraendert)', radien.map(Math.round));
  let minAbstand = Infinity;
  for (let i = 0; i < spirale.length; i++) for (let j = i + 1; j < spirale.length; j++) minAbstand = Math.min(minAbstand, Math.hypot(spirale[i].x - spirale[j].x, spirale[i].y - spirale[j].y));
  ok(minAbstand >= 140, 'D Spirale: Sonnen ueberlappen nicht (kleinster Abstand ' + Math.round(minAbstand) + ')');
@@ -172,12 +172,15 @@ try {
   ev({ agent: 'rea', identity_id: 'id-rea', heimat: 'alpha', ziel: 'alpha' }),
  ] });
  const gH = G.globaleSzene(sH, jetzt);
- ok(gH.mitte && gH.mitte.rolle === 'main' && gH.alias.get('id-main') === gH.mitte && gH.mitte.x === 0 && gH.mitte.y === 0, 'H Szene.mitte = Hauptagent-Knoten in der Mitte (Ziel projektloser Aufrufe)');
+ ok(!gH.mitte && !gH.alias.has('id-main') && !gH.knoten.some((k) => k.rolle === 'main'), 'H P22-T247 Nachtrag: keine Szene.mitte, der Hauptagent ist kein Knoten');
  ok(sonnen(gH).map((k) => k.project).join() === 'alpha' && !gH.alias.has('projekt:null') && !gH.alias.has('projekt:'), 'H projektlose Aufrufe erzeugen keine Sonne');
  const jev = gH.alias.get('jev');
- ok(jev && jev.eltern === gH.kern && Math.hypot(jev.x, jev.y) < 120, 'H projektloser Agent ohne Heimat steht nahe der Mitte (Weg zum Hauptagenten kurz)');
+ const aH = gH.alias.get('projekt:alpha');
+ ok(jev && aH && Math.hypot(aH.x, aH.y) < 1e-6 && jev.eltern === gH.kern && Math.abs(Math.hypot(jev.x, jev.y) - (aH.umlauf + G.FREI_ABSTAND)) < 1e-6,
+  'H P22-T247 Nachtrag: einzige Sonne in der Mitte, projektloser Agent ohne Heimat auf dem Ring aussen um sie', { jev: jev && Math.hypot(jev.x, jev.y), umlauf: aH?.umlauf });
  const tsxH = lies('packages/web-ui/src/components/Agentennetzwerk.tsx');
- ok(tsxH.includes("g.global && g.mitte && !zielProjekt(e) ? g.mitte : g.kern") && tsxH.includes("if (zielK === q) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern'"), 'H baue(): projektloser Aufruf -> Hauptagent; eigener projektloser Aufruf pulsiert am Hauptagenten');
+ ok(tsxH.includes("zielK = zs?.rolle === 'sonne' ? zs : g.kern;") && !tsxH.includes('g.mitte')
+  && tsxH.includes("if (g.global && zielK === g.kern) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern', von: q.id, nach: q.id") && tsxH.includes("if (zielK === q) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern'"), 'H baue(): projektloser Aufruf -> Anker, global als Puls am Aufrufer (P22-T247 Nachtrag); Ziel = Aufrufer pulsiert an Ort und Stelle');
  ok(!tsxH.includes("schalteNetzwerk(project, !an, global") && tsxH.includes('{!global && <button disabled={busy || !snapshot} onClick={() => void aktion(() => schalteNetzwerk(project, !an))}'), 'H globaler Modus: kein Ein/Aus fuer agentennetzwerk');
  const apiH = lies('packages/web-ui/src/api/agentennetzwerk.ts');
  ok(!apiH.includes("'projekt'|'global'") && apiH.includes("profil_funktion:'agentennetzwerk',ebene:'projekt',aktiv"), 'H Web-UI setzt agentennetzwerk nur auf Projektebene');

@@ -4,8 +4,8 @@
  *   weg sind und starr ... alles bewegt sich, aber die Sonnen nicht"; Kamera-Variante 3 (folgt der Aktivitaet, alle Sonnen samt Nebel
  *   bleiben im Bild).
  * Aufruf (Repo-Wurzel; laut Vorgabe erst nach dem Deploy):  node packages/web-ui/tests/sonnen-konstellation-p22-t247.test.mjs
- * A globale-szene: Ring nur so gross wie noetig (Sehne = zwei Agentenbahnen + 2x sonnen_abstand), mit Hauptagent Mitte frei, eine Sonne
- *   ohne Hauptagent in der Mitte, sonnen_abstand wirkt, ab 9 Sonnen Spirale unveraendert.
+ * A globale-szene: Ring nur so gross wie noetig (Sehne = zwei Agentenbahnen + 2x sonnen_abstand), Nachtrag (User ~21:17): auch mit
+ *   laufendem Hauptagenten kein HA-Knoten und keine freie Mitte, eine Sonne in der Mitte, sonnen_abstand wirkt, ab 9 Sonnen Spirale unveraendert.
  * B sonnen-bewegung: Werte (kreisen, drift), sonnenPunkt (Konstellation dreht, Nachschwingen, Drift, Mitte), rahmen, kameraImRahmen
  *   (alles im Bild mit Rand, Zoom gedeckelt, mindestens 85 % gefuellt, Mitte geklemmt).
  * C Agentennetzwerk.tsx statisch: Sonnen ueber sonnenPunkt, Konstellationswinkel je Bild, Sonnen-Stoss, Kamera-Klemme nur global/auto,
@@ -49,9 +49,11 @@ try {
  const weit = sonnen(G.globaleSzene(snap(['alpha', 'beta'], [], { sonnen_abstand: 100 }), jetzt));
  ok(Math.abs(abstand(weit[0], weit[1]) - 2 * (bahn(0) + 100)) < 1e-6, 'A sonnen_abstand ist einstellbar (100 -> weiter auseinander)');
  const eins = sonnen(G.globaleSzene(snap(['alpha']), jetzt));
- ok(eins.length === 1 && Math.hypot(eins[0].x, eins[0].y) < 1e-6, 'A eine Sonne ohne Hauptagent steht in der Mitte');
+ ok(eins.length === 1 && Math.hypot(eins[0].x, eins[0].y) < 1e-6, 'A eine einzige Sonne steht in der Mitte');
  const mitMain = G.globaleSzene(snap(['alpha', 'beta'], [ev('hauptagent', 'id-main', 'synapse-hauptagent', null)]), jetzt), sm = sonnen(mitMain);
- ok(mitMain.mitte && sm.every(k => Math.hypot(k.x, k.y) >= G.MITTE_FREI + bahn(0) + 30 - 1e-6) && abstand(sm[0], sm[1]) < 480, 'A mit Hauptagent bleibt die Mitte frei, Sonnen trotzdem naeher als bisher', sm.map(k => Math.round(Math.hypot(k.x, k.y))));
+ // P22-T247 Nachtrag (thought b0b01d17): der Hauptagent erscheint in der Uebersicht nie; die Sonnen stehen wie ohne ihn.
+ ok(!mitMain.mitte && G.MITTE_FREI === undefined && !mitMain.knoten.some(k => k.rolle === 'main') && !mitMain.alias.has('id-main') && !mitMain.alias.has('hauptagent')
+  && sm.length === 2 && sm.every((k, i) => Math.abs(k.x - zwei[i].x) < 1e-6 && Math.abs(k.y - zwei[i].y) < 1e-6), 'A Nachtrag: auch mit laufendem Hauptagenten kein HA-Knoten und keine freie Mitte (Sonnen wie ohne ihn)', sm.map(k => Math.round(Math.hypot(k.x, k.y))));
  const acht = sonnen(G.globaleSzene(snap(Array.from({ length: 8 }, (_, i) => 'p' + i)), jetzt));
  let minAcht = Infinity; for (let i = 0; i < 8; i++) minAcht = Math.min(minAcht, abstand(acht[i], acht[(i + 1) % 8]));
  ok(Math.abs(minAcht - 2 * (bahn(0) + 30)) < 1e-6, 'A acht Sonnen: Nachbarn genau zwei Agentenbahnen + Luft auseinander (keine Ueberlappung)');

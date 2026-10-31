@@ -203,9 +203,10 @@ try {
  ok(zk(gAn, { project: 'drittes', heimat_projekt: 'moo', ziel_projekt: 'drittes' }) === gAn.kern && zk(gAn, { project: '', ziel_projekt: null }) === gAn.kern,
   'D Arbeitsraum: Zielprojekt ohne Sonne bzw. projektlos -> Kern (kein globaler Zweig)');
  ok(zk(gAus, { project: 'moo', heimat_projekt: 'moo', ziel_projekt: 'moo' }) === gAus.kern, 'D Schalter AUS: Impulsziel immer der Kern (wie bisher)');
- const mitte = gAn.alias.get('synapse-hauptagent'), gGlobal = { ...gAn, global: true, mitte };
- ok(zk(gGlobal, { project: '', ziel_projekt: null }) === mitte && zk(gGlobal, { project: 'moo', heimat_projekt: 'moo', ziel_projekt: 'moo' }) === sMoo && zk(gGlobal, { ziel_projekt: 'synapse' }) === gAn.kern,
-  'D global (P22-T196): projektloser Aufruf -> Mitte (Hauptagent), Aufruf mit Zielprojekt -> dessen Sonne bzw. Anker');
+ // P22-T247 Nachtrag (thought b0b01d17): global gibt es keine Szene.mitte mehr; projektlos -> Anker, baue() macht daraus den Puls am Aufrufer.
+ const gGlobal = { ...gAn, global: true };
+ ok(zk(gGlobal, { project: '', ziel_projekt: null }) === gAn.kern && zk(gGlobal, { project: 'moo', heimat_projekt: 'moo', ziel_projekt: 'moo' }) === sMoo && zk(gGlobal, { ziel_projekt: 'synapse' }) === gAn.kern,
+  'D global (P22-T196/T247): projektloser Aufruf -> Anker (Puls am Aufrufer), Aufruf mit Zielprojekt -> dessen Sonne bzw. Anker');
  ok(tsx.includes("if (ziel !== zielK && (ziel.rolle === 'sonne' || ziel === g.kern)) ziel = zielK;") && tsx.includes('nach: zielK.id'),
   'D Weg: Visum-Agent im Gastprojekt direkt zum Ziel (nicht ueber die Heimat-Sonne), Impuls endet am Zielknoten');
  ok(tsx.includes('roh.visum_sonnen?.aktiv ? roh : ohneHeimatAufrufe(roh)') && tsx.includes('netzwerkSzene(s, jetzt, sonnenGedaechtnis.current)') && tsx.includes('if (k.sonne) k.fade = sonnenFade(k.sonne, jetzt);'),
