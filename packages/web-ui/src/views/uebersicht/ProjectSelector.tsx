@@ -5,10 +5,13 @@ export function ProjectSelector({
   projects,
   selectedProject,
   onSelectProject,
+  autoFocus = false,
 }: {
   projects: ProjectViewModel[];
   selectedProject: string;
   onSelectProject: (project: string) => void;
+  /** P22-T230: Suchfeld sofort fokussieren (Seitenleiste 'Aktives Projekt'); Uebersicht unveraendert. */
+  autoFocus?: boolean;
 }) {
   const [query, setQuery] = useState('');
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
@@ -61,7 +64,7 @@ export function ProjectSelector({
       <header><h2>Projekte</h2><span>{visibleProjects.length} / {projects.length}</span></header>
       <div className="project-search-box">
         <span>⌕</span>
-        <input value={query} onChange={(event) => { setQuery(event.target.value); setSuggestionsOpen(true); setHighlightedSuggestion(0); }} onFocus={() => setSuggestionsOpen(true)} onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 120)} onKeyDown={handleKey} placeholder="Projekt suchen …" role="combobox" aria-autocomplete="list" aria-expanded={suggestionsOpen && suggestions.length > 0} />
+        <input value={query} onChange={(event) => { setQuery(event.target.value); setSuggestionsOpen(true); setHighlightedSuggestion(0); }} onFocus={() => setSuggestionsOpen(true)} onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 120)} onKeyDown={handleKey} autoFocus={autoFocus} placeholder="Projekt suchen …" role="combobox" aria-autocomplete="list" aria-expanded={suggestionsOpen && suggestions.length > 0} />
         {query && <button type="button" aria-label="Suche leeren" onMouseDown={(event) => event.preventDefault()} onClick={() => { setQuery(''); setSuggestionsOpen(false); setListMode('active'); }}>×</button>}
         {suggestionsOpen && suggestions.length > 0 && <div className="project-suggestions" role="listbox">{suggestions.map((item, index) => <button type="button" role="option" aria-selected={index === highlightedSuggestion} className={(index === highlightedSuggestion ? 'highlighted ' : '') + (item.isActive ? '' : 'inactive')} key={item.name} onMouseEnter={() => setHighlightedSuggestion(index)} onMouseDown={(event) => { event.preventDefault(); selectProject(item.name); }}><i className={item.isActive ? 'ready' : 'offline'} /><span><strong>{item.name}</strong><small>{item.path}{item.isActive ? '' : ' · inaktiv'}</small></span><kbd>{index === highlightedSuggestion ? 'Enter' : '↵'}</kbd></button>)}</div>}
       </div>

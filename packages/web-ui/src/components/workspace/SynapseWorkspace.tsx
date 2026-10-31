@@ -15,6 +15,7 @@ import { Switch } from '../../components/gemeinsam/Switch';
 import { PageHeader } from '../../components/gemeinsam/PageHeader';
 import { MainAgentView } from '../../views/hauptagent/MainAgentView';
 import { OverviewView } from '../../views/uebersicht/OverviewView';
+import { SeitenleisteProjekt } from './SeitenleisteProjekt';
 import { ChannelsView } from '../../views/channels/ChannelsView';
 import { ProjectAgentTeamView } from '../../views/projekt/ProjectAgentTeamView';
 import { EntityView } from '../../views/entitaeten/EntityView';
@@ -295,15 +296,16 @@ export default function SynapseWorkspace({ project: initialProject, onLogout }: 
             : <button type="button" className="sidebar-toggle" onClick={() => setSidebarCollapsed((value) => !value)} title={eingeklappt ? 'Seitenleiste ausklappen' : 'Seitenleiste einklappen'} aria-label={sidebarCollapsed ? 'Seitenleiste ausklappen' : 'Seitenleiste einklappen'} aria-expanded={!sidebarCollapsed}>{sidebarCollapsed ? '›' : '‹'}</button>}
         </div>
 
-        <div className="sidebar-project">
-          <label>Aktives Projekt</label>
-          <button type="button" title={eingeklappt ? selectedProject || 'Projekt wählen' : undefined} onClick={() => setArea('overview')}>
-            <i className={projects.find((row) => row.name === selectedProject)?.isActive ? 'ready' : 'offline'} />
-            <abbr className="collapsed-project-code">{(selectedProject || '---').slice(0, 3).toUpperCase()}</abbr>
-            <div><strong>{selectedProject || 'Projekt wählen'}</strong><small>{apiError ? 'API: ' + apiError : loadingProjects ? 'lädt …' : 'ein Projekt · ein UI-Objekt'}</small></div>
-            <span>›</span>
-          </button>
-        </div>
+        {/* P22-T230: Karte 'Aktives Projekt' (Schalter seitenleiste_projekt_tasks; AUS = bisherige Karte). */}
+        <SeitenleisteProjekt
+          projects={projects}
+          selectedProject={selectedProject}
+          onSelectProject={setSelectedProject}
+          onOpenOverview={() => setArea('overview')}
+          loadingProjects={loadingProjects}
+          apiError={apiError}
+          eingeklappt={eingeklappt}
+        />
 
         <nav>
           {navigation.map((group) => (
