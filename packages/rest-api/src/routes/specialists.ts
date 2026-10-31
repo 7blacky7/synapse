@@ -446,7 +446,7 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
     const s = await leseUiProduktSchalter('web_ui_netzwerk_details', request.params.name);
     if (!s.aktiv) return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
     const {name,art,id} = request.params;
-    if (!/^\\d+$/.test(id)) return reply.code(400).send({success:false,error:'id_ungueltig'});
+    if (!/^\d+$/.test(id)) return reply.code(400).send({success:false,error:'id_ungueltig'});
     if (art === 'version') { const v = await getFileVersion(id, false); return v && v.project === name ? {success:true,quelle:'Dateiversion',wert:v.content} : reply.code(404).send({success:false,error:'nicht_gefunden'}); }
     if (art === 'plan') {
       const p = await getBatchPlan(id);
