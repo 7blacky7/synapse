@@ -17,7 +17,8 @@ import { constants } from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 
-export type AufraeumArt = 'gleich_pc' | 'doppelt' | 'temp_download' | 'temp_zustand';
+/** P22-T248: share_bekannt = Inhalt ist als Share-Revision bekannt; frist_abgelaufen = einmaliger Inhalt aelter als fristMs. */
+export type AufraeumArt = 'gleich_pc' | 'doppelt' | 'temp_download' | 'temp_zustand' | 'share_bekannt' | 'frist_abgelaufen';
 export interface AufraeumBericht {
   ausgefuehrt: boolean;
   geprueft: number;
@@ -27,6 +28,8 @@ export interface AufraeumBericht {
   fehler: Array<{ datei: string; fehler: string }>;
   /** true = limit erreicht, weiterer Lauf noetig. */
   weiter: boolean;
+  /** P22-T248: Bestand des Zustandsordners NACH dem Lauf (alle Dateien, Bytes). */
+  zustandsordner?: { dateien: number; bytes: number };
 }
 export interface AufraeumOptionen {
   dir: string;
@@ -40,6 +43,20 @@ export interface AufraeumOptionen {
   tmpAlterMs?: number;
   limit?: number;
   jetzt?: number;
+  /** P22-T248: SHA256 der bekannten Share-Revisionen (state.bekannt) - eine Sicherung mit diesem Inhalt ist entbehrlich. */
+  shareHashes?: Set<string>;
+  /** P22-T248: einmalige Inhalte (echte PC-Fassungen von Konflikten) nur bis zu dieser Frist ab Anlage (ctime); ohne = nie. */
+  fristMs?: number;
+}
+
+/** P22-T248: Bestand eines Zustandsordners (nur oberste Ebene, wie der Queue-Zustand ihn anlegt). */
+export async function zaehleZustandsordner(dir: string): Promise<{ dateien: number; bytes: number }> {
+  let dateien = 0, bytes = 0;
+  for (const n of await fs.readdir(dir)) {
+    const st = await fs.lstat(path.join(dir, n)).catch(() => null);
+    if (st?.isFile()) { dateien++; bytes += st.size; }
+  }
+  return { dateien, bytes };
 }
 
 async function sha256Datei(p: string): Promise<string> {
@@ -53,10 +70,12 @@ export async function raeumeAssetSyncAuf(o: AufraeumOptionen): Promise<AufraeumB
   const ausfuehren = o.ausfuehren === true && o.bestaetigt === true;
   const tmpAlter = o.tmpAlterMs ?? 3_600_000, jetzt = o.jetzt ?? Date.now(), limit = o.limit ?? Number.MAX_SAFE_INTEGER;
   const bericht: AufraeumBericht = { ausgefuehrt: ausfuehren, geprueft: 0, behalten: 0,
-    arten: { gleich_pc: leer(), doppelt: leer(), temp_download: leer(), temp_zustand: leer() }, fehler: [], weiter: false };
-  // Vergleichsbasis: aktuelle PC-Dateien (Inode und Hash).
+    arten: { gleich_pc: leer(), doppelt: leer(), temp_download: leer(), temp_zustand: leer(), share_bekannt: leer(), frist_abgelaufen: leer() }, fehler: [], weiter: false };
+  const namen = (await fs.readdir(o.dir)).sort();
+  // Vergleichsbasis: aktuelle PC-Dateien (Inode und Hash). P22-T248: nur aufbauen, wenn es ueberhaupt Sicherungen gibt
+  // (der automatische Lauf soll ohne Sicherungen keine Projektdateien hashen).
   const pcInodes = new Set<string>(), pcHashes = new Set<string>();
-  for (const rel of new Set(o.pfade)) {
+  if (namen.some((n) => n.startsWith('pc-before-install-'))) for (const rel of new Set(o.pfade)) {
     const abs = path.join(o.root, rel);
     if (!path.resolve(abs).startsWith(path.resolve(o.root) + path.sep)) continue;
     try {
@@ -65,8 +84,7 @@ export async function raeumeAssetSyncAuf(o: AufraeumOptionen): Promise<AufraeumB
       pcInodes.add(st.dev + ':' + st.ino); pcHashes.add(await sha256Datei(abs));
     } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') bericht.fehler.push({ datei: rel, fehler: (e as Error).message }); }
   }
-  const gesehen = new Set<string>();
-  const namen = (await fs.readdir(o.dir)).sort(); // sortiert: pc-before-install-<sha> (dedupliziert) bleibt vor Auftrags-Namen erhalten
+  const gesehen = new Set<string>(); // sortiert: pc-before-install-<sha> (dedupliziert) bleibt vor Auftrags-Namen erhalten
   // Bereits deduplizierte Sicherungen (Name = Hash) zuerst als vorhanden merken.
   for (const n of namen) { const m = /^pc-before-install-([a-f0-9]{64})$/.exec(n); if (m) gesehen.add(m[1]); }
   const weg = async (n: string, art: AufraeumArt, st: { nlink: number; size: number }) => {
@@ -85,8 +103,11 @@ export async function raeumeAssetSyncAuf(o: AufraeumOptionen): Promise<AufraeumB
         if (pcInodes.has(st.dev + ':' + st.ino)) { await weg(n, 'gleich_pc', st); continue; }
         const sha = eigenerHash ?? await sha256Datei(p);
         if (pcHashes.has(sha)) { await weg(n, 'gleich_pc', st); continue; }
-        if (eigenerHash) { bericht.behalten++; continue; } // die eine dedupliziere Kopie dieses Inhalts
-        if (gesehen.has(sha)) { await weg(n, 'doppelt', st); continue; }
+        // P22-T248: Inhalt ist als Share-Revision gesichert -> die lokale Sicherung ist entbehrlich.
+        if (o.shareHashes?.has(sha)) { await weg(n, 'share_bekannt', st); continue; }
+        if (!eigenerHash && gesehen.has(sha)) { await weg(n, 'doppelt', st); continue; }
+        // Einmaliger Inhalt (moegliche Konfliktfassung, P13-T29): nur bis zur Frist ab Anlage der Sicherung (ctime, Hardlink).
+        if (o.fristMs !== undefined && jetzt - st.ctimeMs > o.fristMs) { await weg(n, 'frist_abgelaufen', st); continue; }
         gesehen.add(sha); bericht.behalten++; continue;
       }
       const dl = /^download-([0-9a-f-]{36})$/i.exec(n);
@@ -97,5 +118,6 @@ export async function raeumeAssetSyncAuf(o: AufraeumOptionen): Promise<AufraeumB
       }
     } catch (e) { bericht.fehler.push({ datei: n, fehler: (e as Error).message }); }
   }
+  bericht.zustandsordner = await zaehleZustandsordner(o.dir).catch(() => undefined);
   return bericht;
 }

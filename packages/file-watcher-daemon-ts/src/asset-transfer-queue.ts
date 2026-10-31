@@ -169,7 +169,11 @@ export class AssetTransferQueue {
  }
  /** P22-T240: Eingaben fuer das Aufraeumwerkzeug (Zustandsordner, Projektwurzel, Vergleichspfade, offene Auftrags-IDs). */
  async aufraeumDaten(){await this.ready;return {dir:this.dir,root:this.scope.root,
-  pfade:[...new Set([...Object.keys(this.state.bekannt),...this.state.auftraege.map(j=>j.pfad)])],aktiveJobIds:new Set(this.state.auftraege.map(j=>j.id))};}
+  pfade:[...new Set([...Object.keys(this.state.bekannt),...this.state.auftraege.map(j=>j.pfad)])],aktiveJobIds:new Set(this.state.auftraege.map(j=>j.id)),
+  // P22-T248: Inhalte bekannter Share-Revisionen (ohne Tombstones) - eine Sicherung mit diesem Inhalt ist auf dem Share gesichert.
+  shareHashes:new Set(Object.values(this.state.bekannt).filter(m=>m.sha256&&!m.deleted_at).map(m=>m.sha256!))};}
+ /** P22-T248: Warnung, wenn der Zustandsordner die Obergrenze ueberschreitet (vom Sync gesetzt; erscheint im Stau-Zustand). */
+ zustandsWarnung:string|null=null;
  /**
   * P27-T6: Zustand fuer den Stau-Waechter (synchron, ohne Platte; null = Zustand noch nicht geladen). Wiederholte und gesperrte
   * Auftraege bleiben faellige Arbeit (ein Retry ist kein Fortschritt, Vorfall 26./27.10. thought 4c11e135): Finalisierungsfehler
@@ -183,9 +187,10 @@ export class AssetTransferQueue {
   return {wartend:faellig.length,aeltester_wartend_s:null,laufend:this.draining?1:0,aeltester_laufend_s:null,
    fortschritt_zuletzt:this.letzterErfolgMs?new Date(this.letzterErfolgMs).toISOString():null,fortschritt_zaehler:this.erledigt,
    fehler_zaehler:this.fehlschlaege,wiederholung_zaehler:a.reduce((m,j)=>Math.max(m,j.versuche),0),zurueckgestellt:a.length-faellig.length,
-   frist_ueberschritten:gesperrt,letzter_fehler:this.letzterFehler,aktivierung:this.stopped?'deaktiviert':this.paused?'pausiert':'aktiviert',
+   frist_ueberschritten:gesperrt,letzter_fehler:this.letzterFehler??this.zustandsWarnung,aktivierung:this.stopped?'deaktiviert':this.paused?'pausiert':'aktiviert',
    betriebsart:'periodisch',stau_text:'Asset-Transfer ohne fertiges Asset',
-   details:{auftraege:a.length,gesperrt,bytes_erledigt:a.reduce((s,j)=>s+(j.bytes_erledigt??0),0)}};
+   details:{auftraege:a.length,gesperrt,bytes_erledigt:a.reduce((s,j)=>s+(j.bytes_erledigt??0),0),
+    ...(this.zustandsWarnung?{zustandsordner_warnung:this.zustandsWarnung}:{})}};
  }
  async kandidat(pfad:string){await this.ready;return pruefeLokalesAsset(this.scope.root,this.scope.ziel_ref,pfad,this.optionen);}
  async bekannt(pfad:string){await this.ready;return this.state.bekannt[normalisiereSpeicherPfad(pfad)];}

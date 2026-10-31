@@ -50,6 +50,10 @@ export interface DaemonAssetSyncConfig {
  chunk_bytes?:number;retry_ms?:number;scan_ms?:number;
  /** P22-T240: Download/Loeschen nach max_versuche parken (0 = aus), danach Retry alle park_retry_ms. Standard 20 / 3600000. */
  max_versuche?:number;park_retry_ms?:number;
+ /** P22-T248: automatisches, gedrosseltes Aufraeumen des Zustandsordners je Projekt (aktiv Standard AUS = nur auf Aufruf; EIN nur mit aktiv:true).
+  *  takt_ms Abstand der Laeufe (Std. 3600000), start_ms erster Lauf nach Start (Std. 300000), limit Dateien je Lauf (Std. 2000),
+  *  frist_ms Aufbewahrung einmaliger Sicherungen (Std. 7 Tage), max_dateien/max_bytes Obergrenze mit Warnung (Std. 2000 / 1 GB). */
+ aufraeumen?:{aktiv?:boolean;takt_ms?:number;start_ms?:number;limit?:number;frist_ms?:number;max_dateien?:number;max_bytes?:number};
 }
 /**
  * aktiv: Asset-Sync dieses Projekts. P22-T238 (User 31.10.2026, thought d59f32e8): Standard EIN fuer alle aktiven Projekte;

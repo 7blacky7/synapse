@@ -17,7 +17,12 @@ interface Page {eintraege:AssetSyncMeta[];cursor:string|null;aenderungs_cursor:s
 interface Delta {eintraege:Array<{metadaten:AssetSyncMeta}>;cursor:string;stand:string;vollstaendig:boolean;fullscan_erforderlich?:boolean;}
 interface Bindung {p:ProjektConfig;mode:'offen'|'legacy'|'api';ready:Promise<void>;queue?:AssetTransferQueue;timer?:NodeJS.Timeout;busy:boolean;next:number;negotiated?:boolean;lauf?:Promise<void>;stopped?:boolean;abort:AbortController;
  /** P22-T237: Meldung des bestätigten Share->PC-Stands (Debug in status()), Pause bei fehlender Route, Abgleichsintervall der Policy. */
- scanMs?:number;meldungPauseBis?:number;letzteMeldung?:{stand:string;at:string;fehler:string|null;antwort:string};}
+ scanMs?:number;meldungPauseBis?:number;letzteMeldung?:{stand:string;at:string;fehler:string|null;antwort:string};
+ /** P22-T248: automatisches Aufraeumen (Timer, laeuft gerade, letzter Bericht) und Warnung bei Obergrenze. */
+ aufraeumTimer?:NodeJS.Timeout;aufraeumtLaeuft?:boolean;letztesAufraeumen?:{am:string;geloescht:number;bytes:number;behalten:number;fehler:number;weiter:boolean;zustandsordner?:{dateien:number;bytes:number}};
+ zustandsWarnung?:string|null;}
+/** P22-T248: Code-Standards des automatischen Aufraeumens (ueberschreibbar per Daemon-Config asset_sync.aufraeumen). */
+const AUFRAEUMEN_STANDARD={takt_ms:3_600_000,start_ms:300_000,limit:2000,frist_ms:7*86_400_000,max_dateien:2000,max_bytes:1_000_000_000};
 export class DaemonAssetSync {
  private readonly bindings=new Map<string,Bindung>();private stopped=false;
  constructor(private readonly config:()=>DaemonConfig,readonly api=new AssetApiTransport(),
@@ -41,6 +46,32 @@ export class DaemonAssetSync {
   // Retry negotiation offline and periodically recover changes even without watcher events.
   const period=this.config().asset_sync?.retry_ms??5_000;
   b.timer=setInterval(()=>{void this.tick(b).catch(e=>console.error('[asset-sync] '+p.name+': '+(e as Error).message));},period);b.timer.unref();
+  this.planeAufraeumen(b,this.aufraeumKonfig().start_ms);
+ }
+ private aufraeumKonfig(){return {...AUFRAEUMEN_STANDARD,...Object.fromEntries(Object.entries(this.config().asset_sync?.aufraeumen??{}).filter(([,v])=>typeof v==='number'&&Number.isFinite(v)&&v>=0))} as typeof AUFRAEUMEN_STANDARD;}
+ /** P22-T248: Zustandsordner automatisch und gedrosselt aufraeumen (limit Dateien je Lauf, Abstand takt_ms, nie parallel zum
+  * manuellen Lauf); danach Obergrenze pruefen und bei Ueberschreitung warnen (Log, status, Stau-Zustand, pc-stand). */
+ private planeAufraeumen(b:Bindung,ms:number){
+  if(this.stopped||b.stopped)return;
+  b.aufraeumTimer=setTimeout(()=>{void this.aufraeumLauf(b).finally(()=>this.planeAufraeumen(b,this.aufraeumKonfig().takt_ms));},ms);b.aufraeumTimer.unref();
+ }
+ private async aufraeumLauf(b:Bindung){
+  // Standard AUS (Schalterregel, Koordinator 31862): nur mit ausdruecklichem asset_sync.aufraeumen.aktiv:true.
+  if(this.stopped||b.stopped||!b.queue||b.aufraeumtLaeuft||this.config().asset_sync?.aufraeumen?.aktiv!==true)return;
+  const k=this.aufraeumKonfig();b.aufraeumtLaeuft=true;
+  try{
+   const r=await raeumeAssetSyncAuf({...(await b.queue.aufraeumDaten()),ausfuehren:true,bestaetigt:true,limit:k.limit,fristMs:k.frist_ms});
+   const arten=Object.values(r.arten);
+   b.letztesAufraeumen={am:new Date().toISOString(),geloescht:arten.reduce((s,a)=>s+a.anzahl,0),bytes:arten.reduce((s,a)=>s+a.bytes,0),
+    behalten:r.behalten,fehler:r.fehler.length,weiter:r.weiter,zustandsordner:r.zustandsordner};
+   const z=r.zustandsordner;
+   b.zustandsWarnung=z&&(z.dateien>k.max_dateien||z.bytes>k.max_bytes)
+    ?'Asset-Sync-Zustandsordner ueber Obergrenze: '+z.dateien+' Dateien / '+(z.bytes/1e9).toFixed(2)+' GB (Grenze '+k.max_dateien+' / '+(k.max_bytes/1e9).toFixed(2)+' GB)':null;
+   b.queue.zustandsWarnung=b.zustandsWarnung;
+   if(b.zustandsWarnung)console.error('[asset-sync] '+b.p.name+': '+b.zustandsWarnung);
+   if(b.letztesAufraeumen.geloescht)console.error('[asset-sync] '+b.p.name+': aufgeraeumt '+b.letztesAufraeumen.geloescht+' Dateien ('+(b.letztesAufraeumen.bytes/1e6).toFixed(1)+' MB)');
+  }catch(e){console.error('[asset-sync] Aufraeumen '+b.p.name+': '+(e as Error).message);}
+  finally{b.aufraeumtLaeuft=false;}
  }
  private async verhandle(b:Bindung){
   b.negotiated=false;b.queue?.pause();
@@ -130,7 +161,7 @@ export class DaemonAssetSync {
   if(!q||!stand||!/^(0|[1-9][0-9]*)$/.test(stand)||b.stopped||(b.meldungPauseBis??0)>Date.now())return;
   try{
    const s=await q.status(),offen=s.auftraege.filter(j=>j.art!=='upload');
-   const letzter=fehler??offen.find(j=>j.fehler)?.fehler??null;
+   const letzter=fehler??offen.find(j=>j.fehler)?.fehler??b.zustandsWarnung??null;
    const r=await this.api.json<{gespeichert?:boolean;grund?:string}>(q.base+'/pc-stand',{stand,offene_downloads:offen.length,letzter_fehler:letzter},'POST',b.abort.signal);
    b.letzteMeldung={stand,at:new Date().toISOString(),fehler:letzter,antwort:r?.gespeichert?'gespeichert':(r?.grund??'unbekannt')};
   }catch(e){
@@ -172,10 +203,12 @@ export class DaemonAssetSync {
   await this.lokaleAssets(b);await q.abarbeiten();
   return stand;
  }
- async status(name:string){const b=this.bindings.get(name);return b?{modus:b.mode,...(b.queue?await b.queue.status():{}),...(b.letzteMeldung?{pc_stand_meldung:b.letzteMeldung}:{})}:undefined;}
+ async status(name:string){const b=this.bindings.get(name);return b?{modus:b.mode,...(b.queue?await b.queue.status():{}),...(b.letzteMeldung?{pc_stand_meldung:b.letzteMeldung}:{}),
+  // P22-T248: Debug des automatischen Aufraeumens und der Obergrenze.
+  aufraeumen:{aktiv:this.config().asset_sync?.aufraeumen?.aktiv===true,laeuft:b.aufraeumtLaeuft===true,letzter:b.letztesAufraeumen??null,warnung:b.zustandsWarnung??null,konfig:this.aufraeumKonfig()}}:undefined;}
  async stop(name:string){
   const b=this.bindings.get(name);if(!b)return;
-  b.stopped=true;b.abort.abort();b.negotiated=false;b.queue?.pause();
+  b.stopped=true;b.abort.abort();b.negotiated=false;b.queue?.pause();if(b.aufraeumTimer)clearTimeout(b.aufraeumTimer);
   if(b.timer)clearInterval(b.timer);await b.ready;await b.queue?.stop();await b.lauf;this.bindings.delete(name);
  }
  /** P22-T236: Manifest-Eintraege ohne Share-Bytes (legacy_local), deren Datei lokal fehlt, an die API melden. Wirft nie. */
@@ -206,7 +239,11 @@ export class DaemonAssetSync {
  /** P22-T240 (d): Aufraeumen des Zustandsordners; Standard Vorschau, Loeschen nur mit ausfuehren+bestaetigt (USER-FREIGABE). */
  async aufraeumen(name:string,o:{ausfuehren?:boolean;bestaetigt?:boolean;limit?:number}={}){
   const b=this.bindings.get(name);if(!b?.queue)return undefined;
-  return raeumeAssetSyncAuf({...(await b.queue.aufraeumDaten()),ausfuehren:o.ausfuehren,bestaetigt:o.bestaetigt,limit:o.limit});
+  // P22-T248: nie parallel zum automatischen Lauf; der manuelle Lauf nutzt dieselben Regeln (Share-Hashes, Frist).
+  if(b.aufraeumtLaeuft)return {laeuft_bereits:true} as unknown as Awaited<ReturnType<typeof raeumeAssetSyncAuf>>;
+  b.aufraeumtLaeuft=true;
+  try{return await raeumeAssetSyncAuf({...(await b.queue.aufraeumDaten()),ausfuehren:o.ausfuehren,bestaetigt:o.bestaetigt,limit:o.limit,fristMs:this.aufraeumKonfig().frist_ms});}
+  finally{b.aufraeumtLaeuft=false;}
  }
  async stopAll(){this.stopped=true;await Promise.all([...this.bindings.keys()].map(n=>this.stop(n)));}
 }
