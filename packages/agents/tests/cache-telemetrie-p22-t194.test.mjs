@@ -81,7 +81,7 @@ try{
  const apiCall=async(p,opt)=>{api.push({p,body:opt.body});return p.endsWith('/mod-inbox')?{sitzungen:[{sitzung:sid,aktiv:true,identity_id:id,cache_waechter:{aktiv:cacheFrei,quelle:'produkt-schalter'}}]}:{success:true,angenommen:true};};
  const parser=s=>{try{return JSON.parse(s).message.content.find(x=>x.input?.action==='anmelden')?.input.agent_kennung??null;}catch{return null;}};
  new Function('require','module','exports','process',ts.transpileModule(src+'\nexports.__sitzungFuer=sitzungFuer;', {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText)(
- n=>({'node:fs':fs,'node:os':os,'node:path':path,'./cli-verlauf.js':{ausweisAusZeile:parser},'./daemon-jobs-api.js':{anfrage:apiCall,DAEMON_API_ID:'daemon-test-194',DAEMON_HOST:'test'},'./skills-proxy.js':{istLoopback:ip=>ip==='127.0.0.1'}}[n]??(()=>{throw Error(n);})()),
+ n=>({'node:fs':fs,'node:os':os,'node:path':path,'@synapse/core':{registriereWarteschlange:()=>{},seiteAusListe:l=>({eintraege:l})},'./cli-verlauf.js':{ausweisAusZeile:parser},'./daemon-jobs-api.js':{anfrage:apiCall,DAEMON_API_ID:'daemon-test-194',DAEMON_HOST:'test'},'./skills-proxy.js':{istLoopback:ip=>ip==='127.0.0.1'}}[n]??(()=>{throw Error(n);})()),
  mod,mod.exports,{env:{CLAUDE_CONFIG_DIR:dir}});
  mod.exports.registriereModInbox({get(p,f){map.set('GET '+p,f);},post(p,f){map.set('POST '+p,f);}});
  mod.exports.__sitzungFuer(sid);await mod.exports.modInboxTakt();api=[];
@@ -118,4 +118,9 @@ let fehlerVersand=0;const qf=queue({meldeCacheWaechter:async()=>{fehlerVersand++
 await qf.send({sitzung:sid,lauf_id:lauf,messung:{}});
 ok(fehlerVersand===1&&qf.logs.length===1,'wrapper.ts API-Ausfall protokolliert, kein Retry/Keepalive',qf.logs);
 
+// t223-Nachbesserung (b371035c): Wrapper-Telemetrie nur mit Startfreigabe; AUS = kein Beobachter, kein /cache-waechter-Abruf.
+const decl=name=>ast.statements.find(n=>ts.isVariableStatement(n)&&n.declarationList.declarations.some(d=>d.name.getText(ast)===name))?.getText(ast);
+ok(/^const CACHE_WAECHTER_START = process\.env\.SYNAPSE_CACHE_WAECHTER_START === '1'$/.test(decl('CACHE_WAECHTER_START')??''),'wrapper.ts Startfreigabe nur ueber SYNAPSE_CACHE_WAECHTER_START=1',decl('CACHE_WAECHTER_START'));
+ok(/^const cacheStream = \(CACHE_WAECHTER_START \|\| CACHE_MOD_START\)/.test(decl('cacheStream')??''),'wrapper.ts ohne Freigabe kein Beobachter',decl('cacheStream'));
+ok(wrapperText.includes('if (m && CACHE_WAECHTER_START) void sendeCacheMetadaten(m)'),'wrapper.ts wrapper_stream-Meldung nur bei cache_waechter EIN beim Start');
 console.log('BESTANDEN '+checks+' P22-T194 lokale/Wrapper-Telemetrievertraege; Netzwerk=0, Modell=0');

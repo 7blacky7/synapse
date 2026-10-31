@@ -29,6 +29,8 @@ const ok=(v,label,ist=v)=>{assert.ok(v,'P22-T194 '+label+' | erwartet=true | ist
 const stand=aktiv=>({aktiv,quelle:'produkt-schalter',bis:null,letzter_fehler:null,produkt:{aktiv,quelle:'produkt-schalter',letzter_fehler:null}});
 const env=(m,r)=>({SYNAPSE_RUNTIME_MOD_POLICY:'1',SYNAPSE_RUNTIME_SYNAPSE_MODS_STAND:JSON.stringify(stand(m)),
  SYNAPSE_TOOL_AUSGABE_AKTIV:r?'1':'0',SYNAPSE_CLAUDE_MCP_OUTPUT_TOKENS:'100000',SYNAPSE_TOOL_AUSGABE_GUARD_SEKUNDEN:'8'});
+// t223-Nachbesserung (b371035c): verwalteter CLI-Start traegt die Marke aus process.ts; ohne Marke gilt der Live-Aufruf.
+const envV=(m,r)=>({...env(m,r),SYNAPSE_RUNTIME_MOD_VERWALTET:'1'});
 const http=(socket,method,path,body)=>new Promise((resolve,reject)=>{
  const req=request({socketPath:socket,method,path,headers:{'content-type':'application/json'}},r=>{
   let text='';r.setEncoding('utf8');r.on('data',s=>text+=s);r.on('end',()=>resolve({status:r.statusCode,body:JSON.parse(text)}));
@@ -36,13 +38,15 @@ const http=(socket,method,path,body)=>new Promise((resolve,reject)=>{
 });
 try{
  for(const m of [false,true])for(const r of [false,true]){
-  const e=env(m,r),p=C.baueRuntimeModPolicy(e,'/opt/synapse/r1/mods').managedSettings,f=T.claudeToolAusgabe(e,true);
+  const e=envV(m,r),p=C.baueRuntimeModPolicy(e,'/opt/synapse/r1/mods').managedSettings,f=T.claudeToolAusgabe(e,true);
+  const aus=T.claudeToolAusgabe(env(m,r),true);
+  ok(r?aus.flags.includes('--settings'):!aus.flags.includes('--settings'),'t223: ohne Verwaltet-Marke T190-Aufruf wie live '+m+'/'+r,aus.flags);
   ok(p.allowManagedHooksOnly&&p.disableAllHooks===(!m&&!r),'core/runtime-mod-policy Startmatrix '+m+'/'+r,p);
   ok(p.enabledPlugins[C.RUNTIME_MOD_PLUGIN]===m&&p.prependPlugins.includes('sec-default@builtin'),'nur freigegebener Mod, Builtin-Guard bleibt '+m+'/'+r,p);
   ok(!f.flags.includes('--settings'),'T190 kein konkurrierendes CLI-settings im managed Profil '+m+'/'+r,f.flags);
   ok(f.flags[f.flags.indexOf('--tools')+1]===(r?'Read':''),'Built-ins exakt nach T190 '+m+'/'+r,f.flags);
   if(r){
-   const klassisch=JSON.parse(T.claudeToolAusgabe({...e,SYNAPSE_RUNTIME_MOD_POLICY:'0'},true).flags.at(-1));
+   const klassisch=JSON.parse(T.claudeToolAusgabe({...e,SYNAPSE_RUNTIME_MOD_VERWALTET:'0'},true).flags.at(-1));
    assert.deepEqual(p.hooks,klassisch.hooks,'P22-T194 T190 gleicher Guard/Timeout/onFailure in managed');checks++;
   }else ok(!p.hooks,'kein Read-Guard ohne Read-Freigabe '+m);
  }
@@ -55,8 +59,10 @@ try{
  const ps=provisioniereRuntimeMods({HOME:home,SYNAPSE_RUNTIME_MOD_POLICY:'1',SYNAPSE_RUNTIME_MOD_MARKETPLACE:paket});
  ok(ps.bereit&&ps.sha256&&ps.home_pfad.startsWith(home+'/.claude/synapse-mods/'),'HOME-Mount nachtraeglich provisioniert',ps);
  assert.deepEqual(provisioniereRuntimeMods({HOME:home,SYNAPSE_RUNTIME_MOD_POLICY:'1',SYNAPSE_RUNTIME_MOD_MARKETPLACE:paket}),ps);checks++;
- const launcher=join(dir,'policy-helper');await symlink(join(root,'packages/agents/dist/runtime-mod-policy.js'),launcher);
- const run=spawnSync(process.execPath,[launcher],{env:{...process.env,...env(true,true),SYNAPSE_RUNTIME_MOD_MARKETPLACE:paket},encoding:'utf8'});
+ const launcher=join(dir,'policy-helper');await symlink(join(root,'packages/agents/dist/runtime-mod-policy-helper.js'),launcher);
+ const run=spawnSync(process.execPath,[launcher],{env:{...process.env,...envV(true,true),SYNAPSE_RUNTIME_MOD_MARKETPLACE:paket},encoding:'utf8'});
+ const leer=spawnSync(process.execPath,[launcher],{env:{...process.env,...env(true,true),SYNAPSE_RUNTIME_MOD_MARKETPLACE:join(dir,'fehlt')},encoding:'utf8'});
+ ok(leer.status===0&&leer.stdout==='{"managedSettings":{}}','t223: ohne Verwaltet-Marke leere managed Policy, keine Paketpruefung',{exit:leer.status,out:leer.stdout,err:leer.stderr});
  ok(run.status===0,'policyHelper laeuft auch ueber Image-Symlink',{exit:run.status,err:run.stderr});
  ok(JSON.parse(run.stdout).managedSettings.enabledPlugins[C.RUNTIME_MOD_PLUGIN],'policyHelper managedSettings-Huelle');
  const kaputt=join(paket,'synapse-inbox/hooks/hooks.json');await writeFile(kaputt,'{}');
@@ -68,11 +74,11 @@ try{
  const cliDir=join(dir,'bin');await mkdir(cliDir);
  const fake=join(cliDir,'claude');
  await writeFile(fake,'#!'+process.execPath+'\n'+
-  "if(process.argv.includes('--version')){console.log('2.1.310 (Claude Code)');}else{require('node:fs').writeFileSync(process.env.T194_ARGV,JSON.stringify({args:process.argv.slice(2),limit:process.env.MAX_MCP_OUTPUT_TOKENS,keineHooks:process.env.SYNAPSE_KEINE_HOOKS}));}\n");
+  "if(process.argv.includes('--version')){console.log('2.1.310 (Claude Code)');}else{require('node:fs').writeFileSync(process.env.T194_ARGV,JSON.stringify({args:process.argv.slice(2),limit:process.env.MAX_MCP_OUTPUT_TOKENS,keineHooks:process.env.SYNAPSE_KEINE_HOOKS,verwaltet:process.env.SYNAPSE_RUNTIME_MOD_VERWALTET}));}\n");
  await chmod(fake,0o700);
  const keys=['PATH','SYNAPSE_CLI_RECHTE','SYNAPSE_RUNTIME_MOD_POLICY','SYNAPSE_RUNTIME_MOD_MARKETPLACE',
   'SYNAPSE_RUNTIME_SYNAPSE_MODS_STAND','SYNAPSE_TOOL_AUSGABE_AKTIV','SYNAPSE_CLAUDE_MCP_OUTPUT_TOKENS',
-  'SYNAPSE_TOOL_AUSGABE_GUARD_SEKUNDEN','SYNAPSE_KEINE_HOOKS','SYNAPSE_MCP_CONFIG_FILE','SYNAPSE_MCP_STRICT','T194_ARGV'];
+  'SYNAPSE_TOOL_AUSGABE_GUARD_SEKUNDEN','SYNAPSE_KEINE_HOOKS','SYNAPSE_MCP_CONFIG_FILE','SYNAPSE_MCP_STRICT','T194_ARGV','SYNAPSE_RUNTIME_MOD_VERWALTET'];
  const vorher=Object.fromEntries(keys.map(k=>[k,process.env[k]]));
  try{
   for(const m of [false,true])for(const r of [false,true]){
@@ -90,7 +96,11 @@ try{
    await pm.start(name,'haiku','T194 Fixture',{cwd:dir,projectPath:dir,projectName:'p22-t194'});
    await ende;
    const cli=JSON.parse(await readFile(out,'utf8')),a=cli.args;
-   ok(session&&!a.includes('--settings'),'ProcessManager meldet Sitzung und setzt kein konkurrierendes settings '+m+'/'+r,a);
+   // t223-Nachbesserung: verwaltet nur bei runtime_synapse_mods EIN; AUS = Live-Argumente (--settings wie t223).
+   const si=a.indexOf('--settings'),sj=si>=0?JSON.parse(a[si+1]):null;
+   if(m)ok(session&&si<0&&cli.verwaltet==='1','ProcessManager Mod EIN: verwaltet, kein konkurrierendes settings '+m+'/'+r,{a,v:cli.verwaltet});
+   else ok(session&&cli.verwaltet===undefined&&(r?!!sj?.hooks?.PreToolUse&&sj.disableAllHooks===false:sj?.disableAllHooks===true),
+    'ProcessManager Mod AUS: nicht verwaltet, --settings wie live '+m+'/'+r,{a,v:cli.verwaltet});
    ok(a[a.indexOf('--tools')+1]===(r?'Read':'')&&a[a.indexOf('--permission-mode')+1]==='dontAsk',
     'ProcessManager Built-ins/Permission exakt '+m+'/'+r,a);
    ok(a.includes('--strict-mcp-config')&&a[a.indexOf('--mcp-config')+1]===join(dir,'eigener-mcp.json')
