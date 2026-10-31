@@ -54,8 +54,8 @@ export function MainAgentView({ project, showDashboard }: { theme: Theme; projec
   const [chatHasUnread, setChatHasUnread] = useState(false);
   // P22-T7: Steuerung des Hauptagenten (Heartbeat, Schalter, Wechsel, Verbrauch) als aufklappbarer Zusatz.
   const [steuerungOffen, setSteuerungOffen] = useState(false);
-  const [collapseDelay, setCollapseDelay] = useState(5);
-  const [collapseUnit, setCollapseUnit] = useState<'ms' | 'sec' | 'min'>('min');
+  const [collapseDelay, setCollapseDelay] = useState(3);
+  const [collapseUnit, setCollapseUnit] = useState<'sec' | 'min'>('sec');
   const [lastInteraction, setLastInteraction] = useState(() => Date.now());
   const [mainWindowPosition, setMainWindowPosition] = useState({ x: 70, y: 70 });
   const mainWindowDragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
@@ -119,7 +119,7 @@ export function MainAgentView({ project, showDashboard }: { theme: Theme; projec
 
   useEffect(() => {
     if (chatMode !== 'auto' || chatCollapsed || thinking) return;
-    const unitFactor = collapseUnit === 'ms' ? 1 : collapseUnit === 'sec' ? 1000 : 60_000;
+    const unitFactor = collapseUnit === 'sec' ? 1000 : 60_000;
     const timer = window.setTimeout(() => setChatCollapsed(true), Math.max(1, collapseDelay) * unitFactor);
     return () => window.clearTimeout(timer);
   }, [chatMode, chatCollapsed, collapseDelay, collapseUnit, thinking, lastInteraction, messages.length]);
@@ -485,11 +485,11 @@ export function MainAgentView({ project, showDashboard }: { theme: Theme; projec
       <section className={shellClass + ' floating-agent-window'} {...zitat.debug} tabIndex={-1} style={chatStyle} onPointerDown={(event) => { if (!(event.target as HTMLElement).closest('button,input,textarea,select,a')) event.currentTarget.focus({ preventScroll: true }); if (chatPeeking) openChat(); else registerInteraction(); }}>
         {chatCollapsed && !chatPeeking && <button type="button" className="agent-side-launcher" onClick={openChat}><span>HA</span><strong>Hauptagent</strong>{chatHasUnread && <i />}</button>}
         <div className="conversation-head" onPointerDown={startMainWindowDrag} onPointerMove={moveMainWindow} onPointerUp={stopMainWindowDrag} onPointerCancel={stopMainWindowDrag}>
-          <div className="agent-identity"><span>HA</span><div><strong>Hauptagent</strong><small>{chatMode === 'fixed' ? 'fixiert' : 'Auto · ' + collapseDelay + ' ' + collapseUnit}</small></div></div>
+          <div className="agent-identity"><span>HA</span><div><strong>Hauptagent</strong><small>{chatMode === 'fixed' ? 'fixiert' : 'Auto · ' + collapseDelay + ' ' + (collapseUnit === 'sec' ? 'Sek.' : 'Min.')}</small></div></div>
           <div className="chat-display-controls">
             {chatHasUnread && <i className="chat-unread-dot" title="Neue Nachricht" />}
             {thinking && runtimeMode !== 'mock' && <button type="button" className="main-runtime-stop" onClick={() => runtimeAbortRef.current?.abort()}>■ Abbrechen</button>}
-            {chatMode === 'auto' && <label className="chat-auto-time">nach <input type="number" min="1" step={collapseUnit === 'ms' ? 100 : 1} value={collapseDelay} onChange={(event) => setCollapseDelay(Math.max(1, Number(event.target.value)))} /><select value={collapseUnit} onChange={(event) => setCollapseUnit(event.target.value as 'ms' | 'sec' | 'min')}><option value="ms">ms</option><option value="sec">Sek.</option><option value="min">Min.</option></select></label>}
+            {chatMode === 'auto' && <label className="chat-auto-time">nach <input type="number" min="1" step={1} value={collapseDelay} onChange={(event) => setCollapseDelay(Math.max(1, Number(event.target.value)))} /><select value={collapseUnit} onChange={(event) => setCollapseUnit(event.target.value as 'sec' | 'min')}><option value="sec">Sek.</option><option value="min">Min.</option></select></label>}
             <button type="button" className={steuerungOffen ? 'active' : ''} onClick={() => setSteuerungOffen(!steuerungOffen)} title="Hauptagent steuern: Heartbeat, Schalter, Runtime, Verbrauch">⚙ Steuerung</button>
             <button type="button" className="chat-mode-cycle active" onClick={cycleChatMode} title="Auto → Fixiert → Minimiert">{chatCollapsed ? '□ Öffnen' : chatMode === 'auto' ? '◌ Auto · weiter' : '● Fixiert · weiter'}</button>
             {/* P22-T62/T64: die Statuspille ist selbst die Modell-/Runtime-Wahl ('Claude · <modell> · bereit', Klick = Auswahl). */}
