@@ -119,7 +119,8 @@ try{
  // B5 get: nie die ganze Ausgabe
  const g=await mit(()=>Q.getShellJobById(j1,{anzeige:'kompakt'}));
  check('B5 get: Kopf + Ende statt output',{output:null,kopf:20,ende:true,total:60000,letzte:Z(60000),hinweis:true},
-  {output:g.output,kopf:g.ausgabe?.kopf?.length,ende:(g.ausgabe?.ende?.length??0)>0&&g.ausgabe.ende.length<=40,total:g.ausgabe?.total_lines,
+  // Vertrag (t224 #24): die kompakte MCP-Anzeige (kompaktiereToolAntwort) laesst null-Felder weg -> output fehlt ganz.
+  {output:g.output??null,kopf:g.ausgabe?.kopf?.length,ende:(g.ausgabe?.ende?.length??0)>0&&g.ausgabe.ende.length<=40,total:g.ausgabe?.total_lines,
    letzte:g.ausgabe?.ende?.at(-1),hinweis:/shell\(log/.test(g.ausgabe?.hinweis??'')});
 
  // B6 Core-Weg (stdio/alter Daemon) mit Grenze: Kopf + Marker + Ende, nie still

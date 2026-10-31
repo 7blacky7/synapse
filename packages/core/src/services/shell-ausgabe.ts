@@ -663,7 +663,8 @@ export async function leseShellAusgabeNeu(id: string, opts: { seit_zeile?: numbe
   }
   let hinweis: string | undefined;
   if (laufend && !k.ausgabe_teile) {
-    hinweis = `Noch keine Live-Ausgabe in PG: die Uebertragung beginnt, sobald der Job abgeloest ist (~20 s), danach alle ${w.live_intervall_s} s `
+    hinweis = `Noch keine Live-Ausgabe in PG: entweder hat der Job noch keine vollstaendige Zeile ausgegeben, oder die Uebertragung hat noch nicht begonnen `
+      + `(sie startet mit der Abloesung nach ~20 s und laeuft dann alle ${w.live_intervall_s} s) `
       + '(Daemon mit P22-T243-Stand). Bis dahin ist nichts verloren - die volle Ausgabe kommt spaetestens mit dem Abschluss.';
   } else if (gekappt) {
     hinweis = `Gekappt (hoechstens ${w.stream_max_zeilen} Zeilen / ${formatiereAusgabeBytes(w.log_max_bytes)} je Abruf); weiter mit seit_zeile=${letzte + 1}. ` + HINWEIS_GEZIELT;
@@ -696,7 +697,10 @@ export async function shellAusgabeAnzeige(job: { id: string; project: string; st
   };
   const g = gesamtVon(k);
   const laufend = LAUFEND.has(k.status);
-  if (!k.ausgabe_teile && g.total_bytes <= w.anzeige_max_bytes && g.total_lines <= w.anzeige_kopf_zeilen + w.anzeige_ende_zeilen) return null;
+  // Klein genug: unveraendert lassen. Mit Teilen nur bei fertigen Jobs (output ist dann der vollstaendige Kopf);
+  // laufende Jobs haben noch kein output und zeigen ihren bisherigen Stand ueber ausgabe.
+  if ((!k.ausgabe_teile || (!laufend && g.total_bytes < KOPF_MAX_ZEICHEN))
+    && g.total_bytes <= w.anzeige_max_bytes && g.total_lines <= w.anzeige_kopf_zeilen + w.anzeige_ende_zeilen) return null;
   const budget = Math.floor(w.anzeige_max_bytes / 2);
   const zeileMax = Math.min(w.zeile_max_zeichen, 500);
   const kopf: string[] = [];
@@ -735,7 +739,7 @@ export async function shellAusgabeAnzeige(job: { id: string; project: string; st
 }
 
 /** exec-Antwort: tail nach Zeilen und Bytes deckeln (Schalter an). */
-export async function begrenzeShellTail(project: string | undefined, tail: unknown): Promise<{ tail: unknown; tail_gekappt?: { zeilen: number; hinweis: string } }> {
+export async function begrenzeShellTail(project: string | undefined, tail: unknown, angefordert?: number): Promise<{ tail: unknown; tail_gekappt?: { zeilen: number; hinweis: string } }> {
   if (!project || !Array.isArray(tail) || !(await shellAusgabeSchalter(project)).aktiv) return { tail };
   const w = (await leseShellAusgabeEinstellungen(project)).werte;
   const roh = tail.slice(-w.exec_tail_max_zeilen).map((z) => String(z));
@@ -749,8 +753,11 @@ export async function begrenzeShellTail(project: string | undefined, tail: unkno
   }
   const weg = tail.length - aus.length;
   const gekuerzt = quelle.some((z, i) => z !== roh[i]);
-  return weg > 0 || gekuerzt
-    ? { tail: aus, tail_gekappt: { zeilen: weg, hinweis: `tail gekappt (hoechstens ${w.exec_tail_max_zeilen} Zeilen / ${formatiereAusgabeBytes(w.anzeige_max_bytes)}, lange Zeilen gekuerzt); volle Ausgabe per shell(log, id).` } }
+  // Abnahme P22-T243: tail_lines ueber der Grenze wird schon beim Einreihen gedeckelt - das muss die Antwort trotzdem sagen.
+  const ueberGrenze = typeof angefordert === 'number' && Number.isFinite(angefordert) && angefordert > w.exec_tail_max_zeilen;
+  return weg > 0 || gekuerzt || ueberGrenze
+    ? { tail: aus, tail_gekappt: { zeilen: weg, hinweis: `tail gekappt (hoechstens ${w.exec_tail_max_zeilen} Zeilen / ${formatiereAusgabeBytes(w.anzeige_max_bytes)}, lange Zeilen gekuerzt)`
+      + (ueberGrenze ? `; tail_lines=${angefordert} auf ${w.exec_tail_max_zeilen} begrenzt` : '') + '; volle Ausgabe per shell(log, id).' } }
     : { tail: aus };
 }
 

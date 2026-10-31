@@ -83,6 +83,8 @@ const W1B_AKTIONEN=[
  'agentennetzwerk',
  // P21-T3/T13: Hex-Einstellungen stehen im Schema VOR den Kernaktionen
  'hex_einstellungen',
+ // P22-T243 (t224 #31): Grenzen der Shell-Ausgabe direkt nach Hex (SHELL_AUSGABE_ADMIN_ACTIONS)
+ 'shell_ausgabe_einstellungen',
  // P18-T86: Reverse-Einstellungen direkt nach Hex (P22-T139: nachgetragen, Basis 194b92de war ohne diesen Eintrag rot)
  'reverse_einstellungen',
  'profil_schalter_status','profil_schalter_setzen','profil_uebersicht','schattenprofil_liste','schattenprofil_korrigieren','schattenprofil_bestaetigen','schattenprofil_ablehnen',
@@ -122,6 +124,8 @@ const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','z
  'netzwerk_modus','netzwerk_werte',
  // P21-T3/T13: Hex-Einstellungen (im Schema vor den Hauptagent-Parametern)
  'hex_werte','hex_namen',
+ // P22-T243 (t224 #31): Parameter der Shell-Ausgabe-Grenzen direkt nach Hex (SHELL_AUSGABE_ADMIN_PARAMETER)
+ 'shell_ausgabe_werte','shell_ausgabe_namen',
  // P22-T227/T233: Altersschwelle benannter Log-Stroeme im vorhandenen Admin-Katalog.
  'log_strom_veraltet_tage',
  // P22-T191: nach den Hex-Parametern in W1B_ADMIN_PARAMETER.

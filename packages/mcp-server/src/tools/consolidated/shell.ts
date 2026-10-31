@@ -508,7 +508,7 @@ export const shellTool: ConsolidatedTool = {
 
     // P22-T243: tail gedeckelt (Schalter shell_ausgabe_voll); im Workspace-Weg war er ohne tail_lines die ganze stdout.
     if (Array.isArray(result['tail'])) {
-      const b = await begrenzeShellTail(project, result['tail']);
+      const b = await begrenzeShellTail(project, result['tail'], tailLines);
       result['tail'] = b.tail;
       if (b.tail_gekappt) result['tail_gekappt'] = b.tail_gekappt;
     }

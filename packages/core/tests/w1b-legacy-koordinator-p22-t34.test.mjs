@@ -152,6 +152,8 @@ try{
   // P22-T93 Netzwerk, P21 Hex, P18-T86 Reverse: Verwaltungsrechte (User, Koordinator inkl. Legacy).
   agentennetzwerk:()=>({netzwerk_modus:'status'}),
   hex_einstellungen:()=>({modus:'status'}),
+  // P22-T243 (t224 #29): Grenzen der Shell-Ausgabe, gleicher Verwalterpfad wie Hex (User/Koordinator/Legacy lesen, Subagent nicht).
+  shell_ausgabe_einstellungen:()=>({modus:'status'}),
   // P22-T191: gleicher Verwalterpfad; User/Koordinator/Legacy lesen, Subagent nicht.
   artefakt_einstellungen:()=>({modus:'status'}),
   reverse_einstellungen:()=>({modus:'status'}),

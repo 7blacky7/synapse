@@ -5935,7 +5935,7 @@ async function handleToolCallKern(
             ...(r.quellen_pruefung_ausstehend?{quellen_pruefung_ausstehend:true,...(r.id?{id:r.id}:{})}:{}),
             ...(r.quellen_wiederhergestellt?.length?{quellen_wiederhergestellt:r.quellen_wiederhergestellt,...(r.id?{id:r.id}:{})}:{}),
             // P22-T243: ohne tail_lines war tail bisher die ganze stdout - jetzt gedeckelt (Schalter shell_ausgabe_voll).
-            ...await begrenzeShellTail(project, tail),
+            ...await begrenzeShellTail(project, tail, tailLines),
             stderr_tail: r.stderr ? r.stderr.split('\n').slice(-20) : undefined,
             duration_ms: r.durationMs,
             ...(r.timedOut
@@ -5994,7 +5994,7 @@ async function handleToolCallKern(
         stream_id: result.stream_id,
         exit_code: result.exit_code,
         // P22-T243: tail gedeckelt (Schalter shell_ausgabe_voll), volle Ausgabe per shell(log, id).
-        ...await begrenzeShellTail(project, result.tail),
+        ...await begrenzeShellTail(project, result.tail, tailLines),
         error: result.error,
         // Beim Anhaengen erklaert die Meldung aus enqueue, WARUM kein eigener
         // Lauf gestartet wurde — die haette das Job-Ergebnis sonst ueberschrieben.
