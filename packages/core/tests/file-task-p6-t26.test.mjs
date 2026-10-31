@@ -94,7 +94,9 @@ try {
     await call({ action: 'task_zuordnen', task_id: 'P6-T26', plan_id: noTaskPlan.plan_id });
     assert.ok((await pool.query('SELECT task_id FROM file_versions WHERE project=$1 AND batch_id=$2', [P, noTaskPlan.plan_id])).rows.every((v) => v.task_id === T));
     const pending = await call({ action: 'plan', ops: [{ action: 'create', file_path: 'pending.txt', content: 'pending\n' }] });
-    await call({ action: 'plan_update', plan_id: pending.plan_id, task_id: 'P6-T26', ops: [{ action: 'create', file_path: 'pending.txt', content: 'pending\n' }] });
+    // P22-T219: seit P6-T51 haengt plan_update ohne op_index an (zweites create scheiterte ungeprueft) -> op_index 0.
+    const pendingUpdate = await call({ action: 'plan_update', plan_id: pending.plan_id, op_index: 0, task_id: 'P6-T26', ops: [{ action: 'create', file_path: 'pending.txt', content: 'pending\n' }] });
+    assert.equal(pendingUpdate.success, true, JSON.stringify(pendingUpdate));
     const committed = await call({ action: 'commit', plan_id: pending.plan_id });
     assert.ok(!Object.hasOwn(committed, 'warnung_task'), 'Plan-Task uebernommen');
     const probe = await call({ action: 'create', file_path: 'coedit-test/probe.txt', content: 'probe\n' });

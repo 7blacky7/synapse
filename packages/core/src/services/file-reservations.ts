@@ -185,6 +185,38 @@ export function normalizeReservationFilePaths(filePaths: readonly string[]): str
   return [...result];
 }
 
+/**
+ * P22-T216 (Stresstest P22-T214 B1, thought c9092c3b): Dateilisten-Parameter mit Alias. reservation_add/release/list
+ * lesen file_path, coedit_no_changes liest files; jeder Weg nimmt den anderen Namen als Alias. wert/aliasWert kommen
+ * schon per strArray gelesen (undefined = nicht gesetzt). Beide gesetzt und verschieden -> Fehler; fehlt eine
+ * Pflichtliste, nennt der Fehler den erwarteten Namen und einen fertigen Aufruf.
+ */
+export function waehleReservierungsDateiliste(eingabe: {
+  action: string;
+  name: string;
+  alias: string;
+  wert: readonly string[] | undefined;
+  aliasWert: readonly string[] | undefined;
+  required?: boolean;
+}): string[] {
+  const { action, name, alias } = eingabe;
+  const haupt = eingabe.wert && eingabe.wert.length > 0 ? normalizeReservationFilePaths(eingabe.wert) : undefined;
+  const neben = eingabe.aliasWert && eingabe.aliasWert.length > 0 ? normalizeReservationFilePaths(eingabe.aliasWert) : undefined;
+  const beispiel = `files(action:"${action}", project:"<projekt>"${action === 'coedit_no_changes' ? ', plan_id:"<plan_id>"' : ''}, ${name}:["src/a.ts", "src/b.ts"])`;
+  if (haupt && neben) {
+    const a = [...haupt].sort();
+    const b = [...neben].sort();
+    if (a.length !== b.length || a.some((pfad, i) => pfad !== b[i])) {
+      throw new Error(`Parameter "${name}" und Alias "${alias}" sind beide gesetzt und verschieden (${name}: ${JSON.stringify(haupt)}, ${alias}: ${JSON.stringify(neben)}). Nur einen angeben, z. B. ${beispiel}`);
+    }
+    return haupt;
+  }
+  const gewaehlt = haupt ?? neben;
+  if (gewaehlt) return gewaehlt;
+  if (eingabe.required) throw new Error(`Parameter "${name}" ist erforderlich (Alias "${alias}" geht auch). Beispiel: ${beispiel}`);
+  return [];
+}
+
 function optionalPaths(filePaths: readonly string[] | undefined): string[] {
   return filePaths && filePaths.length > 0
     ? normalizeReservationFilePaths(filePaths)

@@ -63,6 +63,7 @@ import {
   updateFileReservations,
   listFileReservations,
   normalizeReservationFilePaths,
+  waehleReservierungsDateiliste,
   getDirectWriteReservationHint,
 } from '@synapse/core';
 import {refVergleich,REF_VERGLEICH_PARAMETER} from '@synapse/core';
@@ -113,7 +114,7 @@ export const filesTool: ConsolidatedTool = {
         task_id: { type: 'string', description: 'Optional: Task-UUID oder Kurz-ID P<n>-T<m>, wird validiert; plan gilt fuer alle Ops, ops[].task_id ueberschreibt.' },
         file_path: {
           oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }],
-          description: 'Projekt-relativer Pfad. Array nur fuer reservation_add/release/list; bestehende Datei-Actions erwarten weiter einen String.',
+          description: 'Projekt-relativer Pfad. Array nur fuer reservation_add/release/list; bestehende Datei-Actions erwarten weiter einen String. Alias: reservation_add/release/list nehmen auch files, coedit_no_changes nimmt file_path statt files; beide gesetzt und verschieden -> Fehler.',
         },
         release_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit freizugebende Pfade.' },
         keep_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit beizubehaltende Pfade.' },
@@ -306,6 +307,10 @@ export const filesTool: ConsolidatedTool = {
           items: { type: 'string' },
           description: 'coedit_no_changes: konkrete gemeinsame Dateien ohne eigenen Beitrag.',
         },
+        zurueckziehen: {
+          type: 'boolean',
+          description: 'coedit_no_changes (P22-T218): hast du auf den Dateien schon eigene Ops im Zielplan, zieht true sie zurueck wie cancel als Beitragender (nur eigene Ops, fremde bleiben, dein Wait schliesst). Ohne: Fehler eigene_ops_vorhanden mit op_indexe und fertigem Aufruf.',
+        },
         auto_commit: {
           type: 'boolean',
           description: '(optional fuer plan): wenn true, wird direkt nach plan() automatisch commit() aufgerufen — spart einen Tool-Call wenn kein User-Review vor commit gewuenscht. Versionierung bleibt aktiv (file_versions + batch_id), Rollback via restore_batch jederzeit moeglich.',
@@ -375,7 +380,13 @@ export const filesTool: ConsolidatedTool = {
     const pfadFehler = await pruefeFilesPfadArgs(project, args);
     if (pfadFehler) return pfadFehler;
 
+    // P22-T216: Dateilisten mit Alias (file_path <-> files), Fehler mit Beispiel (core waehleReservierungsDateiliste).
+    const dateiliste = (name: 'file_path' | 'files', required: boolean): string[] => {
+      const alias = name === 'file_path' ? 'files' : 'file_path';
+      return waehleReservierungsDateiliste({ action: action ?? '', name, alias, wert: strArray(args, name), aliasWert: strArray(args, alias), required });
+    };
     const reservationPaths = async (key: string, required = false): Promise<string[]> => {
+      if (key === 'file_path' || key === 'files') return dateiliste(key, required);
       const raw = strArray(args, key);
       if (!raw || raw.length === 0) {
         if (required) throw new Error(`Parameter "${key}" ist erforderlich`);
@@ -398,7 +409,7 @@ export const filesTool: ConsolidatedTool = {
     }
     if (action === "coedit_no_changes") {
       if (!agentId) throw new Error("agent_id ist fuer coedit_no_changes erforderlich");
-      return markCoeditNoChanges({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, files: await reservationPaths("files", true) });
+      return markCoeditNoChanges({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, files: await reservationPaths("files", true), zurueckziehen: (args as Record<string, unknown>).zurueckziehen === true });
     }
     if (action === "shared_plan_status") {
       if (!agentId) throw new Error("agent_id ist fuer shared_plan_status erforderlich");
@@ -582,6 +593,7 @@ export const filesTool: ConsolidatedTool = {
           plan_id: planId,
           agent_id: agentId,
           ops: (opsRaw as FileBatchOp[]).map((op) => ({ ...op, task_id: op.task_id ?? str(args, 'task_id') })),
+          task_id: str(args, 'task_id'),
           op_index: num(args, 'op_index'),
           // P6-T51: ohne op_index haengt plan_update an; ersetzen_alle ersetzt alle eigenen Ops.
           anhaengen: args.anhaengen === true,

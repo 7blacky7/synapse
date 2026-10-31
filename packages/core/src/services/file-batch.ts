@@ -73,6 +73,8 @@ import {
   type ForeignActiveReservationPrimary,
 } from './file-reservations.js';
 import { lesePlanloseReservierungen, type PlanloseReservierung } from './file-reservation-intents.js';
+// P22-T217: veraltete Zeilen-Ops mit eindeutigem Anker umrechnen (Schalter anker_umrechnung, Standard AUS).
+import { ankerUmrechnungVorbereiten, ankerUmrechnungImPlan, ankerFundstellenText, ergaenzeAnkerVorschau, type AnkerUmrechnung } from './anker-umrechnung.js';
 
 /**
  * Keine Beschraenkung beim Aendern (User-Vorgabe 29.09.2026): so viele Ops je plan/coedit_add,
@@ -372,6 +374,8 @@ export interface OpPreview {
   withdrawn_from?: string;
   /** Nur an committeten Plaenen (V2 ohne Grenze): was diese Op auf ihrer Datei ersetzt hat. */
   zeilen?: ZeilenSplice;
+  /** P22-T217 (Schalter anker_umrechnung): Op wurde per eindeutigem Anker von line_start von nach verschoben. */
+  umgerechnet?: AnkerUmrechnung;
 }
 
 /**
@@ -2577,6 +2581,8 @@ async function planBatchKern(args: {
   _replan_attempt?: number;
   /** Intern (V4): Zaehler fuer das Neu-Planen, wenn der Ziel-Plan zum Anhaengen gerade gesperrt ist. */
   _merge_attempt?: number;
+  /** Intern (P22-T217): schon umgerechnete Ops, bleibt beim Neu-Planen erhalten (dann passt der Anker bereits). */
+  _anker_umgerechnet?: Record<number, AnkerUmrechnung>;
 }): Promise<PlanBatchResult> {
   if (!args.ops || args.ops.length === 0) {
     throw new Error('ops[] darf nicht leer sein');
@@ -2596,6 +2602,10 @@ async function planBatchKern(args: {
   // P15-T36: Pfade jeder Op normalisieren (projekt-pfad.ts, inkl. Pflicht "Op i: file_path fehlt") und F3:
   // Schreibziele auf gesperrten Pfaden ablehnen - BEVOR etwas geladen oder als Plan gespeichert wird.
   args = { ...args, ops: await normalisiereOps(args.project, opsMitTasks) };
+  // P22-T217: replace_lines/delete_lines mit veraltetem line_start und eindeutigem Anker vor Overlap-Check und
+  // Trockenlauf verschieben; gespeichert wird die verschobene Op (anker-umrechnung.ts, Schalter AUS = null).
+  const anker = await ankerUmrechnungVorbereiten(args.project, args.ops);
+  if (anker) args = { ...args, ops: anker.ops, _anker_umgerechnet: { ...args._anker_umgerechnet, ...anker.umgerechnet } };
   const applyPlan = prepareOpsForApply(args.ops);
 
   // 1. Group by file_path, lade aktuelle Dateien nur einmal.
@@ -2622,6 +2632,7 @@ async function planBatchKern(args: {
     weiterBeiFehler: true,
   }, applyPlan);
   trocken.previews.forEach((preview, index) => { previews[index] = preview; });
+  ergaenzeAnkerVorschau(previews, args._anker_umgerechnet, anker?.fundstellen);
   const schattenStand: SchattenStand = { basen: schattenBasen, buffers: fileBuffers, angewendet: trocken, drift: new Map() };
   const planDiffFuer = (nurDateien?: Set<string>, indexMap?: Map<number, number>): PlanDiff => planDiffAus({
     ops: args.ops, owner: resolveAgentId(args.agent_id) ?? null, stand: schattenStand, start: schattenStart, previews, nurDateien, indexMap,
@@ -4408,6 +4419,8 @@ export async function markCoeditNoChanges(args: {
   plan_id: string;
   agent_id?: string;
   files: string[];
+  /** P22-T218: eigene Ops im Zielplan auf diesen Dateien zurueckziehen (wie cancel als Beitragender). */
+  zurueckziehen?: boolean;
 }): Promise<CoeditLifecycleResult> {
   const caller = resolveAgentId(args.agent_id);
   if (!caller) throw new Error("agent_id ist fuer coedit_no_changes erforderlich");
@@ -4449,6 +4462,45 @@ export async function markCoeditNoChanges(args: {
     if (invalid.length > 0) throw new Error(`Dateien ausserhalb des konkreten Shared-Plan-Scope: ${invalid.join(", ")}`);
 
     const requested = new Set(requestedFiles);
+    // P22-T218 (Stresstest B3, a0e03e58): hat der Aufrufer auf diesen Dateien schon eigene Ops im Zielplan, passt
+    // no_changes nicht (vorher still linked, der commit wartete weiter auf ihn). Klare Antwort ohne Aenderung;
+    // mit zurueckziehen:true derselbe Rueckzug wie cancel als Beitragender (nur eigene Ops, fremde bleiben).
+    const callerKey = fileCallerKey(plan.project, caller);
+    const eigeneOps = plan.ops
+      .map((op, index) => ({ op, index }))
+      .filter(({ op }) => opAgentKey(op, plan) === callerKey && touchedPaths(op).some((filePath) => requested.has(filePath)));
+    if (eigeneOps.length > 0) {
+      await client.query("ROLLBACK");
+      const fremdeOps = plan.ops.filter((op) => opAgentKey(op, plan) !== callerKey).length;
+      if (args.zurueckziehen === true && fremdeOps > 0) {
+        const rueckzug = await cancelBatch(args.plan_id, caller, "coedit_no_changes mit zurueckziehen");
+        const antwort = buildCancelResponse(args.plan_id, rueckzug);
+        return {
+          ...antwort,
+          success: rueckzug.ok && rueckzug.mode === "withdrawn", plan_id: args.plan_id, status: "closed",
+          completed_files: [], remaining_files: [], zurueckgezogen: true, message: String(antwort.message),
+        };
+      }
+      const zielWaits = waitsRes.rows.map(wait => waitImZiel(wait, plan.expected_hashes));
+      const dateien = uniqueStrings(eigeneOps.flatMap(({ op }) => touchedPaths(op).filter((filePath) => requested.has(filePath))));
+      const opIndexe = eigeneOps.map(({ index }) => index);
+      return {
+        success: false, plan_id: args.plan_id, status: "linked",
+        completed_files: uniqueStrings(zielWaits.flatMap(completedWaitFiles)),
+        remaining_files: uniqueStrings(zielWaits.flatMap(remainingWaitFiles)),
+        error: "eigene_ops_vorhanden", eigene_ops: eigeneOps.length, op_indexe: opIndexe, dateien,
+        fertig: `files({action:"coedit_ready", project:"${args.project}", plan_id:"${args.plan_id}"})`,
+        ...(fremdeOps > 0 ? {
+          rueckzug: `files({action:"cancel", project:"${args.project}", plan_id:"${args.plan_id}"})`,
+          rueckzug_alternativ: `files({action:"coedit_no_changes", project:"${args.project}", plan_id:"${args.plan_id}", files:${JSON.stringify(requestedFiles)}, zurueckziehen:true})`,
+        } : {}),
+        message: `Du hast in Plan ${args.plan_id} schon ${eigeneOps.length} eigene Op(s) auf ${dateien.join(", ")} (op_index ${opIndexe.join(", ")}) - no_changes passt nicht, nichts geaendert. `
+          + "Fertig mit deinem Beitrag: coedit_ready (Aufruf in fertig). "
+          + (fremdeOps > 0
+            ? "Beitrag zurueckziehen (nur deine Ops, fremde bleiben, dein Wait schliesst): cancel mit plan_id als Beitragender (rueckzug) oder coedit_no_changes mit zurueckziehen:true."
+            : "Der Plan enthaelt nur deine Ops: cancel wuerde ihn ganz verwerfen, zurueckziehen:true tut das bewusst nicht."),
+      };
+    }
     const seenSourceOps = new Set<string>();
     for (const wait of waitsRes.rows) {
       wait.deferred_op_indexes.forEach((sourceIndex, position) => {
@@ -5980,7 +6032,7 @@ const ersetztAlle = (args: { op_index?: number | null; ersetzen_alle?: boolean }
  * NICHTS geaendert. Waits und Beitraege bleiben an derselben plan_id.
  */
 async function updatePlanInPlace(
-  args: { project: string; plan_id: string; ops: FileBatchOp[]; op_index?: number; anhaengen?: boolean; ersetzen_alle?: boolean },
+  args: { project: string; plan_id: string; ops: FileBatchOp[]; op_index?: number; anhaengen?: boolean; ersetzen_alle?: boolean; task_id?: string },
   caller: string | null | undefined,
 ): Promise<PlanBatchResult & { in_place: true } & PlanUpdateBilanz> {
   if (!caller) throw new Error('agent_id ist fuer plan_update erforderlich');
@@ -6039,6 +6091,9 @@ async function updatePlanInPlace(
       replacedFrom = args.op_index;
     }
     if (nextOps.length === 0) throw new Error('plan_update wuerde den Plan leeren — dafuer cancel verwenden');
+    // P22-T219: plan_update mit task_id ordnet auch die schon geplanten eigenen Ops ohne Task zu; fremde bleiben.
+    const planTask = args.task_id;
+    if (planTask) nextOps = nextOps.map((op) => !op.task_id && opAgentKey(op,plan) === fileCallerKey(plan.project,caller) ? { ...op, task_id: planTask } : op);
     const isReplaced = (index: number) => index >= replacedFrom && index < replacedFrom + replacement.length;
 
     // P6-T21 (a): nur Dateien, die nach der Aenderung noch eine Op haben. Eine Datei ohne Op bliebe
@@ -6049,6 +6104,8 @@ async function updatePlanInPlace(
       Object.entries(plan.expected_hashes).filter(([filePath]) => verbleibend.has(filePath)),
     );
     const baselines = new Map<string, string>();
+    // P22-T217: Dateien mit Drift (nur ohne Gate) rechnet die Anker-Umrechnung nicht um - ihre Zeilen meinen die alte Basis.
+    const driftDateien = new Set<string>();
     for (const filePath of uniqueStrings([...Object.keys(expected), ...verbleibend])) {
       const content = (await getFileContentFromPg(args.project, filePath)) ?? '';
       const hash = contentHash(content);
@@ -6058,6 +6115,11 @@ async function updatePlanInPlace(
       expected[filePath] = hash;
       baselines.set(filePath, content);
     }
+    // P22-T217 (Abnahme ed19eafd): ersetzte/angehaengte replace_lines/delete_lines mit veraltetem line_start und eindeutigem
+    // Anker wie bei plan verschieben (Schalter anker_umrechnung, AUS = null); fremde und unveraenderte Ops bleiben.
+    const anker = await ankerUmrechnungImPlan(args.project, nextOps, new Map([...baselines].filter(([filePath]) => !driftDateien.has(filePath))), isReplaced);
+    if (anker) nextOps = anker.ops;
+    const ankerZusatz = Object.values(anker?.fundstellen ?? {}).map(ankerFundstellenText).join('');
     const overlaps = detectCrossAgentConflicts(nextOps, baselines)
       .filter((conflict) => isReplaced(conflict.left_op_index) || isReplaced(conflict.right_op_index));
     if (overlaps.length > 0) {
@@ -6065,7 +6127,8 @@ async function updatePlanInPlace(
         + `Vollstaendig ansehen: files(action:'plan_status', plan_id:'${args.plan_id}', op_indices:[${uniqueStrings(overlaps.flatMap((c) => [String(c.left_op_index), String(c.right_op_index)])).join(',')}])`);
     }
     const combined = buildCombinedCoeditPreview({ ...plan, ops: nextOps, expected_hashes: expected }, baselines);
-    if (!combined.ok) throw new Error(`${combined.conflict.message} — nichts geaendert`);
+    if (!combined.ok) throw new Error(`${combined.conflict.message}${ankerZusatz} — nichts geaendert`);
+    ergaenzeAnkerVorschau(combined.previews, anker?.umgerechnet, anker?.fundstellen);
     await client.query(
       `UPDATE file_batch_plans SET ops = $2::jsonb, expected_hashes = $3::jsonb, previews = $4::jsonb, status = 'open' WHERE id = $1::bigint`,
       [args.plan_id, JSON.stringify(nextOps), JSON.stringify(expected), JSON.stringify(combined.previews)],
@@ -6109,9 +6172,20 @@ async function updatePlanInPlace(
  * von JEDEM Agenten im selben Plan geaendert (updatePlanInPlace).
  */
 export async function replanBatch(args:Parameters<typeof replanBatchKern>[0]):ReturnType<typeof replanBatchKern> {
-  const ops=await normalisiereOps(args.project,args.ops.map(withoutCoeditMetadata));
+  // P22-T219 (Stresstest P22-T214 B4): Ops ohne task_id erben die Task des Plans, sonst verlor plan_update sie.
+  const task_id=args.task_id!==undefined ? await resolveProjectTaskId(args.project,args.task_id) : undefined;
+  const geerbt=!task_id && args.ops.some((op)=>!op.task_id) ? await geerbteTaskId(args) : undefined;
+  const ops=await normalisiereOps(args.project,args.ops.map(withoutCoeditMetadata).map((op)=>geerbt && !op.task_id ? {...op,task_id:geerbt} : op));
   const fs_pruefung=await pruefeFsDrift(args.project,ops.flatMap(touchedPaths));
-  return {...await replanBatchKern({...args,ops}),fs_pruefung};
+  return {...await replanBatchKern({...args,ops,task_id}),fs_pruefung,...(geerbt ? {task_geerbt:geerbt} : {})};
+}
+/** P22-T219: geerbte Task fuer plan_update - die der ersetzten Op (op_index) bzw. die einheitliche Task aller Plan-Ops. */
+async function geerbteTaskId(args:{project:string;plan_id:string;op_index?:number}):Promise<string|undefined> {
+  const plan=await getBatchPlan(args.plan_id);
+  if (!plan || plan.project!==args.project || !Array.isArray(plan.ops)) return undefined;
+  if (args.op_index!==undefined && args.op_index!==null) return plan.ops[args.op_index]?.task_id || undefined;
+  const tasks=new Set(plan.ops.map((op)=>op.task_id ?? ''));
+  return tasks.size===1 ? [...tasks][0] || undefined : undefined;
 }
 async function replanBatchKern(args: {
   project: string;
@@ -6125,7 +6199,9 @@ async function replanBatchKern(args: {
   ersetzen_alle?: boolean;
   open_for_coedit?: boolean;
   reason?: string;
-}): Promise<PlanBatchResult & { superseded_plan_id?: string; in_place?: boolean; message?: string } & Partial<PlanUpdateBilanz>> {
+  /** P22-T219: Task des plan_update-Aufrufs; ordnet auch die schon geplanten eigenen Ops ohne Task zu. */
+  task_id?: string;
+}): Promise<PlanBatchResult & { superseded_plan_id?: string; in_place?: boolean; message?: string; task_geerbt?: string } & Partial<PlanUpdateBilanz>> {
   if (!Array.isArray(args.ops) || args.ops.length === 0) throw new Error('ops[] darf nicht leer sein');
   args = { ...args, ops: await Promise.all(args.ops.map(async (op) => op.task_id !== undefined ? { ...op, task_id: await resolveProjectTaskId(args.project, op.task_id) } : op)) };
   const plan = await getBatchPlan(args.plan_id);
@@ -6170,6 +6246,9 @@ async function replanBatchKern(args: {
     entfernt = [{ op: baseOps[args.op_index], index: args.op_index }];
     nextOps.splice(args.op_index, 1, ...args.ops.map(withoutCoeditMetadata));
   }
+
+  // P22-T219: plan_update mit task_id ordnet auch die uebrigen Entwurfs-Ops ohne Task zu (alle Ops sind eigene).
+  if (args.task_id) nextOps = nextOps.map((op) => op.task_id ? op : { ...op, task_id: args.task_id });
 
   // Befund 693bbf48 (e): der ersetzte Entwurf vermerkt seinen Folgeplan (plan_status.superseded_by).
   const supersede = (newPlanId: string) => getPool().query(

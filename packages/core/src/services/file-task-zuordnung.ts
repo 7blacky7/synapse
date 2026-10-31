@@ -2,6 +2,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { aktuelleAgentIdentityId, aktuellerAgentPrincipal } from './agent-bezug.js';
 import { posix } from 'node:path';
+import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { resolveProjectTaskId } from './task-id-resolver.js';
 
@@ -29,7 +30,9 @@ export async function mitFileTaskWarnung<T>(args: Record<string, unknown>, run: 
     const missing = (neueVersionen.getStore() ?? []).filter((v) => !v.task_id && !probePfad(v.file_path)
       && !v.edit_action?.startsWith('fs_') && !v.edit_action?.startsWith('restore:'));
     let plannedMissing = false;
-    if (response.success !== false && ['plan', 'plan_update', 'coedit_add'].includes(action) && !args.task_id) {
+    // P22-T219: plan_update vererbt die Plan-Task an Ops ohne task_id (task_geerbt) - dann fehlt nichts.
+    const geerbt = response.task_geerbt ?? (response.plan as Record<string, unknown> | undefined)?.task_geerbt;
+    if (response.success !== false && ['plan', 'plan_update', 'coedit_add'].includes(action) && !args.task_id && !geerbt) {
       const input = Array.isArray(args.ops) ? args.ops as Array<{ task_id?: string; file_path?: string }> : [];
       plannedMissing = input.some((op) => !op.task_id && op.file_path && !probePfad(op.file_path));
     }
@@ -75,6 +78,28 @@ export interface FileTaskZuordnung {
   grund?: string;
 }
 
+/**
+ * P22-T219 (Stresstest P22-T214 B4): batch_id/plan_id ohne Versionen. task_zuordnen trifft nur committete
+ * Versionen; ein offener oder per plan_update ersetzter Plan bekommt Ursache und fertigen Aufruf genannt.
+ */
+async function meldungPlanOhneVersionen(client: PoolClient, args: FileTaskZuordnung, batch: string): Promise<string> {
+  const plan = (await client.query<{ status: string; reason: string | null }>(
+    'SELECT status::text AS status, reason FROM file_batch_plans WHERE project = $1 AND id = $2::bigint',
+    [args.project, batch])).rows[0];
+  const task = JSON.stringify(args.task_id);
+  const selector = args.batch_id !== undefined ? 'batch_id' : 'plan_id';
+  if (!plan) return `Version(en) nicht gefunden in diesem Projekt: zu ${selector} ${batch} gibt es weder Versionen noch einen Plan`;
+  const folge = /\[ersetzt durch Plan (\d+)\]/.exec(plan.reason ?? '')?.[1];
+  if (folge) return `Plan ${batch} wurde durch Folgeplan ${folge} ersetzt (plan_update) und hat keine Versionen. `
+    + `Folgeplan mit Task committen: files(action:"commit", plan_id:"${folge}", task_id:${task}); `
+    + `ist er schon committet: files(action:"task_zuordnen", plan_id:"${folge}", task_id:${task}).`;
+  if (plan.status !== 'committed') return `Plan ${batch} ist noch nicht committet (status ${plan.status}); task_zuordnen gilt nur fuer committete Versionen. `
+    + `Task beim Commit setzen: files(action:"commit", plan_id:"${batch}", task_id:${task}) (gilt fuer Ops ohne eigene task_id) `
+    + `oder vorher plan_update mit task_id; nach dem Commit: files(action:"task_zuordnen", plan_id:"${batch}", task_id:${task}).`;
+  return `Plan ${batch} ist committet, unter batch_id ${batch} liegen aber keine Versionen (z. B. Teilcommit mit eigener batch_id). `
+    + `Versionen per files(action:"history") suchen und mit version_ids zuordnen.`;
+}
+
 /** Explizite Nachzuordnung: gesamter Satz autorisiert und atomar; niemals automatischer Backfill. */
 export async function ordneFileTasksZu(args: FileTaskZuordnung): Promise<Record<string, unknown>> {
   const agent = args.agent_id?.trim();
@@ -96,6 +121,7 @@ export async function ordneFileTasksZu(args: FileTaskZuordnung): Promise<Record<
       `SELECT id::text AS id, agent_id, author_identity_id, task_id FROM file_versions
         WHERE project = $1 AND ${ids ? 'id = ANY($2::bigint[])' : 'batch_id = $2::bigint'}
         ORDER BY id::bigint FOR UPDATE`, [args.project, ids ?? batch]);
+    if (!selected.rows.length && batch !== undefined) throw new Error(await meldungPlanOhneVersionen(client, args, batch));
     if (!selected.rows.length || (ids && selected.rows.length !== ids.length)) throw new Error('Version(en) nicht gefunden in diesem Projekt');
     if (selected.rows.some((v) => !(identityId ? v.author_identity_id === identityId : !v.author_identity_id && v.agent_id === agent) && !coordinator)) throw new Error('Nicht berechtigt: nur Autor oder Koordinator darf Versionen zuordnen');
     const changed = selected.rows.filter((v) => v.task_id !== taskId && (v.task_id === null || args.ueberschreiben === true));

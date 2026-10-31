@@ -25,6 +25,9 @@ export {
 } from './services/speicher-aehnlichkeit.js';
 export type { AehnlicherEintrag, SpeicherAehnlichkeitSchalter, SpeicherAehnlichkeitEinstellungenStand } from './services/speicher-aehnlichkeit.js';
 export { SPEICHER_AEHNLICHKEIT_SCHEMA_SQL } from './db/speicher-aehnlichkeit-schema.js';
+// P22-T217: Anker-Umrechnung veralteter Zeilen-Ops im Plan (Schalter anker_umrechnung, Standard AUS).
+export { ANKER_UMRECHNUNG_FUNKTION, leseAnkerUmrechnung, ankerUmrechnungAn, rechneAnkerUm } from './services/anker-umrechnung.js';
+export type { AnkerUmrechnung, AnkerUmrechnungStand, AnkerFundstellen } from './services/anker-umrechnung.js';
 // P10-T88 N1: Pins in plan(get, task_id) und gebundenen Tasks (Schalter task_pins).
 export { TASK_PINS_FUNKTION, leseTaskPinsSchalter, ergaenzeTaskPins } from './services/task-pins.js';
 export type { TaskPinsSchalter } from './services/task-pins.js';
@@ -1860,6 +1863,7 @@ export {
   updateFileReservations,
   listFileReservations,
   normalizeReservationFilePaths,
+  waehleReservierungsDateiliste,
   findForeignActiveReservationPrimaries,
   getDirectWriteReservationHint,
   getReservationTtlConfig,

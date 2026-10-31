@@ -188,6 +188,7 @@ import {
   updateFileReservations,
   listFileReservations,
   normalizeReservationFilePaths,
+  waehleReservierungsDateiliste,
   pruefeFilesPfadArgs,
   EnvSchreibweg,
   schwaerzeEnvWerteInAntwort,
@@ -1136,7 +1137,7 @@ export const MCP_TOOLS = [
         ueberschreiben: { type: 'boolean', description: 'task_zuordnen: vorhandene Zuordnung nur mit true und grund ersetzen.' },
         grund: { type: 'string', description: 'Audit-Begruendung; Pflicht beim Ueberschreiben.' },
         task_id: { type: 'string', description: 'Optional: Task-UUID oder Kurz-ID P<n>-T<m>; plan gilt fuer alle Ops, ops[].task_id ueberschreibt.' },
-        file_path: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Projekt-relativer Pfad. Array nur fuer reservation_add/release/list; bestehende Datei-Actions erwarten weiter einen String.' },
+        file_path: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Projekt-relativer Pfad. Array nur fuer reservation_add/release/list; bestehende Datei-Actions erwarten weiter einen String. Alias: reservation_add/release/list nehmen auch files, coedit_no_changes nimmt file_path statt files; beide gesetzt und verschieden -> Fehler.' },
         release_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit freizugebende Pfade.' },
         keep_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: explizit beizubehaltende Pfade.' },
         add_paths: { type: 'array', items: { type: 'string' }, description: 'reservation_update: neu hinzuzunehmende Pfade.' },
@@ -1229,6 +1230,7 @@ export const MCP_TOOLS = [
         wait_seconds: { type: 'number', description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds). commit: wartet der gemeinsame Plan auf aktive, noch nicht bereite Beitragende (status waiting_for_contributors, kein Fehler), haelt der Server bis max. 50 s und schreibt, sobald alle ready/no_changes sind oder inaktiv werden.' },
         wait_sync: { type: 'boolean', description: 'Optional fuer commit: nach dem Commit bis SYNAPSE_COMMIT_WAIT_SYNC_MAX_SECONDS (Default 5, max. 30) auf den Datei-Hash auf dem verbundenen lokalen Daemon warten. Ohne Daemon bleibt auf_platte unbekannt.' },
         files: { type: 'array', items: { type: 'string' }, description: 'coedit_no_changes: konkrete gemeinsame Dateien ohne eigenen Beitrag.' },
+        zurueckziehen: { type: 'boolean', description: 'coedit_no_changes (P22-T218): hast du auf den Dateien schon eigene Ops im Zielplan, zieht true sie zurueck wie cancel als Beitragender (nur eigene Ops, fremde bleiben, dein Wait schliesst). Ohne: Fehler eigene_ops_vorhanden mit op_indexe und fertigem Aufruf.' },
         auto_commit: { type: 'boolean', description: '(optional fuer plan): wenn true, wird direkt nach plan() automatisch commit() aufgerufen — spart einen Tool-Call wenn kein User-Review vor commit gewuenscht. Versionierung bleibt aktiv (file_versions + batch_id), Rollback via restore_batch jederzeit moeglich.' },
         agent_note: { type: 'string', description: '(optional fuer plan/commit): KI-eigene Beobachtungen/Analyse zum Batch (zusaetzlich zum reason des Users). Wird in alle file_versions dieser Batch geschrieben. Empfohlen ab ≥3 Ops oder Multi-File Batches.' },
         reason: { type: 'string', description: 'Optionale Begruendung — landet in file_versions.reason und ist via "history"-Action abrufbar. Fuer Crash-Recovery nuetzlich.' },
@@ -1328,12 +1330,13 @@ export const MCP_TOOLS = [
         wait_seconds: { type: 'number', description: 'plan_status/shared_plan_status: Long-Poll bis max. 50 s — der Server wartet, bis sich Status/Zielplan/Wait-Stand aendern (Antwort: changed, waited_seconds). commit: wartet der gemeinsame Plan auf aktive, noch nicht bereite Beitragende (status waiting_for_contributors, kein Fehler), haelt der Server bis max. 50 s und schreibt, sobald alle ready/no_changes sind oder inaktiv werden.' },
         wait_sync: { type: 'boolean', description: 'Optional fuer commit: nach dem Commit bis SYNAPSE_COMMIT_WAIT_SYNC_MAX_SECONDS (Default 5, max. 30) auf den Datei-Hash auf dem verbundenen lokalen Daemon warten. Ohne Daemon bleibt auf_platte unbekannt.' },
         files: { type: 'array', items: { type: 'string' }, description: 'coedit_no_changes: konkrete gemeinsame Dateien ohne eigenen Beitrag.' },
+        zurueckziehen: { type: 'boolean', description: 'coedit_no_changes (P22-T218): hast du auf den Dateien schon eigene Ops im Zielplan, zieht true sie zurueck wie cancel als Beitragender (nur eigene Ops, fremde bleiben, dein Wait schliesst). Ohne: Fehler eigene_ops_vorhanden mit op_indexe und fertigem Aufruf.' },
         auto_commit: { type: 'boolean', description: 'plan + commit in einem Call (default false). Versionierung bleibt aktiv.' },
         befunde_quittieren: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, grund: { type: 'string' } }, required: ['id', 'grund'] }, description: 'commit: Pruefbefunde quittieren [{id, grund}]; Syntax nur bei absichtlich fehlerhaftem Inhalt.' },
         agent_note: { type: 'string', description: '(optional): KI-eigene Beobachtungen pro Batch (zusaetzlich zum User-reason).' },
         reason: { type: 'string', description: 'Optional fuer Audit-Trail (file_versions.reason)' },
         since: { type: 'string', description: 'history: ISO-Timestamp ab dem Eintraege gelistet werden' },
-        file_path: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'history: String-Filter; reservation_add/release/list: String oder Array.' },
+        file_path: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'history: String-Filter; reservation_add/release/list: String oder Array (Alias files); coedit_no_changes: Alias zu files.' },
         limit: { type: 'number', description: 'history: Max Eintraege (Standard 50)' },
         feature_tag: { type: 'string', description: 'Logischer Feature-Group-Tag (z.B. "idea-thought-task-link"). history(feature_tag=...) filtert danach.' },
         parent_version_id: { type: 'string', description: 'Referenziert vorherige Version. BIGINT als String.' },
@@ -4939,7 +4942,13 @@ async function handleToolCallKern(
       if (pfadFehler) return pfadFehler;
 
 
+      // P22-T216: Dateilisten mit Alias (file_path <-> files), Fehler mit Beispiel (core waehleReservierungsDateiliste).
+      const dateiliste = (name: 'file_path' | 'files', required: boolean): string[] => {
+        const alias = name === 'file_path' ? 'files' : 'file_path';
+        return waehleReservierungsDateiliste({ action: action ?? '', name, alias, wert: strArray(args, name), aliasWert: strArray(args, alias), required });
+      };
       const reservationPaths = (key: string, required = false): string[] => {
+        if (key === 'file_path' || key === 'files') return dateiliste(key, required);
         const raw = strArray(args, key);
         if (!raw || raw.length === 0) {
           if (required) throw new Error(`Parameter "${key}" ist erforderlich`);
@@ -4961,7 +4970,7 @@ async function handleToolCallKern(
       }
       if (action === "coedit_no_changes") {
         if (!agentId) throw new Error("agent_id ist fuer coedit_no_changes erforderlich");
-        return markCoeditNoChanges({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, files: reservationPaths("files", true) });
+        return markCoeditNoChanges({ project, plan_id: reqStr(args, "plan_id"), agent_id: agentId, files: reservationPaths("files", true), zurueckziehen: bool(args, "zurueckziehen") === true });
       }
       if (action === "shared_plan_status") {
         if (!agentId) throw new Error("agent_id ist fuer shared_plan_status erforderlich");
@@ -5315,6 +5324,7 @@ async function handleToolCallKern(
             plan_id: planId,
             agent_id: agentId,
             ops: (opsRaw as import('@synapse/core').FileBatchOp[]).map((op) => ({ ...op, task_id: op.task_id ?? str(args, 'task_id') })),
+            task_id: str(args, 'task_id'),
             op_index: num(args, 'op_index'),
             // P6-T51: ohne op_index haengt plan_update an; ersetzen_alle ersetzt alle eigenen Ops.
             anhaengen: args.anhaengen === true,

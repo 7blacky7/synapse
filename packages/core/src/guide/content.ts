@@ -582,7 +582,8 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Markiert konkrete gemeinsame Dateien als erledigt, ohne Ops an den Plan anzufuegen.',
         params: 'project, plan_id, agent_id, files (Array)',
         example: 'files({ action: "coedit_no_changes", project: "synapse", plan_id: "42", agent_id: "agent-b", files: ["src/x.ts"] })',
-        tips: 'Nur fuer konkret gepruefte Dateien ohne eigenen Aenderungsbedarf verwenden. Das zaehlt fuer die Vollstaendigkeitspruefung von coedit_ready, fuegt aber keine Operation hinzu.',
+        tips: 'Nur fuer konkret gepruefte Dateien ohne eigenen Aenderungsbedarf verwenden. Das zaehlt fuer die Vollstaendigkeitspruefung von coedit_ready, fuegt aber keine Operation hinzu. '
+          + 'Hast du auf den Dateien schon eigene Ops im Zielplan, endet der Aufruf mit error eigene_ops_vorhanden (eigene_ops, op_indexe, dateien, nichts geaendert): fertig = coedit_ready; Rueckzug = cancel mit plan_id als Beitragender oder zurueckziehen:true (nur eigene Ops, fremde bleiben, dein Wait schliesst; P22-T218).',
       },
       coedit_ready: {
         description: 'Markiert den eigenen Beitrag als fertig. Bleiben gemeinsame Dateien ohne Beitrag oder no_changes, wird der Abschluss abgelehnt und remaining_files geliefert.',
