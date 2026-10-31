@@ -43,12 +43,15 @@ export const NETZWERK_LABELS: Record<string, string> = {
  // P22-T247
  sonnen_abstand: 'Übersicht: Luft zwischen benachbarten Sonnen (Weltpunkte)', sonnen_kreisen_mrad_s: 'Übersicht: Sonnen kreisen um den gemeinsamen Schwerpunkt (mrad/s)',
  sonnen_drift: 'Übersicht: Drift der Sonnen (Weltpunkte)',
+ // P22-T251
+ plan_trabanten: 'Plan-Trabanten: je Op und je Datei ein Punkt um den Plan-Knoten (1 an, 0 = nur die Raute)',
+ plan_trabanten_max: 'Plan-Trabanten: sichtbare Punkte je Sorte (darüber „+n“)',
 };
 
 export const NETZWERK_GRUPPEN: ReadonlyArray<{ titel: string; namen: readonly string[] }> = [
  { titel: 'Anzeige und Fenster', namen: ['aktivitaet_sekunden', 'inaktiv_sekunden', 'sichtbare_agenten', 'sichtbare_channels', 'ereignis_limit', 'animation_limit',
   'animation_ms', 'bilder_pro_sekunde', 'frame_budget_ms', 'buendel_ms', 'abgleich_sekunden', 'orbit_nebel', 'an_user_animation'] },
- { titel: 'Pläne', namen: ['plan_nachleuchten_sekunden', 'plan_nachleuchten_auto_sekunden', 'plan_mindestanzeige_sekunden'] },
+ { titel: 'Pläne', namen: ['plan_nachleuchten_sekunden', 'plan_nachleuchten_auto_sekunden', 'plan_mindestanzeige_sekunden', 'plan_trabanten', 'plan_trabanten_max'] },
  { titel: 'Stern, Trabanten, Nebel', namen: ['stern_voll_dateien', 'stern_min_promille', 'stern_max_promille', 'dateien_je_trabant', 'trabanten_einzeln', 'trabanten_bahnen_max',
   'chunks_je_nebelpunkt', 'nebel_max', 'deko_sterne'] },
  { titel: 'Nebel-Bewegung', namen: ['nebel_treiben_x_promille', 'nebel_treiben_y_promille', 'nebel_treiben_x_mrad_s', 'nebel_treiben_y_mrad_s', 'nebel_drehung_mrad',

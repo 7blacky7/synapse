@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ladeNetzwerk, schalteNetzwerk, stelleNetzwerkEin, type NetzSnapshot, type NetzEreignis } from '../api/agentennetzwerk';
 import { netzwerkSzene, STILE, stil, rgb, kurve, gleichmaessig, werkzeugName, ereignisArt, type Knoten, type Szene, type Rgb, type Punkt } from './netzwerk/nerven-szene';
 import { indexEbenen, nebelPunkte, RUECKFALL, NEBEL_HART, type IndexEbenen } from './netzwerk/index-ebenen';
@@ -15,11 +15,16 @@ import { globaleSzene } from './netzwerk/globale-szene';
 import { sonnenEffekteWerte, sonnenEbenen, sonnenStern, sonnenNebel, effektSonnen, neuerSonnenZustand, merkeSonnenIndex, klingeSonneAb, sonnenEffektDebug, OHNE_TRABANTEN, SONNE_NEBEL_RADIUS, type SonnenSnapshot, type SonnenZustand } from './netzwerk/sonnen-effekte';
 import { ladeGlobalesNetzwerk, type GlobalesNetz } from '../api/uebersicht-netzwerk';
 // P22-T244: Bewegung in der Uebersicht (Umlauf um die eigene Sonne, Stoss/Nachschwingen, Drift), nie zur leeren Mitte.
+// P22-T250: Impulse und Rueckfluss werden je Frame mit der aktuellen Lage von Start- und Zielknoten mitgefuehrt (treffen bewegte Ziele).
+import { rohPunkt, mitgefuehrt, ankunftAbweichung, type Anker } from './netzwerk/impuls-ziel';
+// P22-T251: Trabanten um files-Plan-Knoten (je Op ein Dreieck, je Datei ein Quadratrahmen; Einflug, Aufloesen, Commit-Einsaugen).
+import { planTrabantenWerte, neuerPlanTrabantenZustand, gleichePlanAb, raeumePlan, trabantLage, planPlusText, planTrabantenDebug, loeseAuf, planSichtbar, AUFLOES_MS, type PlanTrabantenZustand } from './netzwerk/plan-trabanten';
 import { bewegungsWerte, neueBewegung, schritt as bewegungsSchritt, stoss, bahnPunkt, drift, energie, DRIFT_SONNE, DRIFT_FREI, sonnenPunkt, rahmen, kameraImRahmen, type BewegungsZustand, type Rahmen } from './netzwerk/sonnen-bewegung';
 import '../agentennetzwerk.css';
 // P22-T172: Name + aktuelle Task an Agenten-Knoten (Etikett) und in der Knotenkarte (klickbar).
-import { AgentTaskMarke, useAktuelleTasks } from './AgentTaskMarke';
-import { findeAktuelleTask } from './agent-task-logik';
+// P22-T249: Task je Agent aus SEINEM Projekt (Puffer aller sichtbaren Projekte).
+import { AgentTaskMarke, useAktuelleTasksJeProjekt } from './AgentTaskMarke';
+import { aktuelleTaskProjekte, findeAktuelleTaskJeProjekt } from './agent-task-logik';
 export { netzwerkSzene, agentAvatar } from './netzwerk/nerven-szene';
 
 /**
@@ -40,6 +45,8 @@ const RUECK: Rgb = rgb('#bff4ff'), GOLD: Rgb = rgb('#fcd34d'), GLUT_HELL: Rgb = 
 const WEISS: Rgb = [1, 1, 1], KERN: Rgb = rgb('#F97316'), KERN_HEISS: Rgb = rgb('#ffd3a1'), BLITZ: Rgb = rgb('#cfefff'), FEHLER: Rgb = rgb('#f87171');
 /** P22-T149: Commit-Arten unterscheiden sich nur durch die Farbe des Flugs (wie die Legende: grün committet, blau auto-committet). */
 const COMMIT_GRUEN: Rgb = rgb(PLAN_FARBEN.committet), COMMIT_BLAU: Rgb = rgb(PLAN_FARBEN.auto);
+/** P22-T251: Datei-Trabanten am Plan-Knoten in Blau (Ops in der Plangold-Farbe des Knotens). */
+const PLAN_DATEI: Rgb = rgb('#7dd3fc');
 
 export function gruppiereEreignisse(ereignisse: NetzEreignis[]) {
  const gruppen: Array<{ e: NetzEreignis; anzahl: number; ids: string[] }> = [];
@@ -97,7 +104,10 @@ export default function Agentennetzwerk({ project, fallback, global }: {
  const anzeige = useRef({ pause, auswahl, karte, erklaerungen });
  anzeige.current = { pause, auswahl, karte, erklaerungen };
  // P22-T172: aktuelle Task je Agent fuer die Zeichenschleife (geteilter Puffer api/aktuelle-tasks.ts).
- const aktuelleTasksStand = useAktuelleTasks(project), aktuelleTasks = useRef(aktuelleTasksStand);
+ // P22-T249: Uebersicht und Hauptagent-Netz zeigen Agenten mehrerer Projekte -> Puffer aller sichtbaren Projekte (Agenten, Heimat, Visa, Ereignisse).
+ const taskProjekte = useMemo(() => aktuelleTaskProjekte(project, snapshot ? [...snapshot.agenten.flatMap(a => [a.project, (a as { heimat_projekt?: string | null }).heimat_projekt]),
+  ...(snapshot.visa ?? []).map(v => v.heimat_projekt), ...snapshot.ereignisse.flatMap(e => [e.project, e.heimat_projekt])] : []), [project, snapshot]);
+ const aktuelleTasksStand = useAktuelleTasksJeProjekt(taskProjekte), aktuelleTasks = useRef(aktuelleTasksStand);
  aktuelleTasks.current = aktuelleTasksStand;
  useEffect(() => { try { localStorage.setItem('synapse.agentennetzwerk.erklaerungen.v1', erklaerungen ? '1' : '0'); } catch { /* Anzeige funktioniert auch ohne Storage */ } if (!erklaerungen) setLegende(false); }, [erklaerungen]);
  useEffect(() => {
@@ -197,6 +207,11 @@ export default function Agentennetzwerk({ project, fallback, global }: {
   // P22-T244: Bewegungszustand je Knoten der Uebersicht (Gruppenwinkel, Ausschlag, Stoesse).
   const bewegung = new Map<string, BewegungsZustand>();
   const bewegungVon = (id: string) => { let z = bewegung.get(id); if (!z) { z = neueBewegung(hash(id)); bewegung.set(id, z); } return z; };
+  // P22-T251: Trabanten-Zustand je Plan-Knoten (Ops/Dateien, Einflug/Aufloesen), vergessen mit dem Knoten.
+  const planTrab = new Map<string, PlanTrabantenZustand>();
+  // Punkte verschwundener Plaene loesen sich an deren letztem Ort auf (Cancel/Ablauf); bereit = erstes Bild gezeichnet (danach fliegt jeder neue Plan ein).
+  const planReste: Array<{ z: PlanTrabantenZustand; x: number; y: number }> = [];
+  let planTrabBereit = false;
   // Chunk-Nebel als einmal vorgezeichnete Ebene; neu gezeichnet nur bei anderer Punktzahl, anderem Netzradius (40er-Raster) oder Designwechsel.
   type NebelBild = { bild: HTMLCanvasElement; schluessel: string; r: number; f: number };
   let nebelBild: NebelBild | null = null;
@@ -254,12 +269,24 @@ export default function Agentennetzwerk({ project, fallback, global }: {
    if (!se.aktiv) return;
    for (const f of gr.fremd) { const eb = sonnenEbenen(sn, f.projekt); sonnenEb.set(f.projekt, eb); merkeSonnenIndex(zustandVon(f.projekt), eb, zeit, rw); }
   };
+  // P22-T250: jede Bahn (Impuls, Rueckfluss) kennt ihre Endknoten; punkt() fuehrt sie je Frame mit deren aktueller Lage mit.
+  // Debug: groesste Ankunftsabweichung in px (mitgefuehrt ~0) und wie weit die feste Bahn verfehlt haette (roh).
+  const anker = new WeakMap<Float32Array, Anker>(), ankunft = { max_px: 0, roh_max_px: 0, ankuenfte: 0, rueck: 0 };
+  const liveLage = (id: string) => lage.current.get(id) ?? null;
+  const messeAnkunft = (p: Float32Array, rueckweg: boolean) => {
+   const a = anker.get(p); if (!a) return;
+   const m = ankunftAbweichung(p, liveLage(a.von), liveLage(a.nach), kamera.current.zoom); if (!liveLage(a.nach)) return;
+   ankunft.ankuenfte++; if (rueckweg) ankunft.rueck++;
+   ankunft.max_px = Math.max(ankunft.max_px, m.px); ankunft.roh_max_px = Math.max(ankunft.roh_max_px, m.roh_px);
+  };
   // P22-T97: Rueckfluss des Ergebnisses vom Ziel (Projekt/Schattenplan/Channel) zum aufrufenden Agenten.
-  const rueck: Array<{ pfad: Float32Array; start: number; dauer: number; staerke: number; fehler: boolean; farbe: Rgb; seed: number; ab: number; leer: boolean }> = [];
+  const rueck: Array<{ pfad: Float32Array; start: number; dauer: number; staerke: number; fehler: boolean; farbe: Rgb; seed: number; ab: number; leer: boolean; gemessen?: boolean }> = [];
   let rueckZahl = 0, leerZahl = 0;
   const zurueck = (i: Impuls, ab: number, zeit: number, ms: number) => {
    const p = i.pfad, n = p.length / 2, r = new Float32Array(p.length);
    for (let k = 0; k < n; k++) { r[k * 2] = p[(n - 1 - k) * 2]; r[k * 2 + 1] = p[(n - 1 - k) * 2 + 1]; }
+   // P22-T250: Rueckweg vom Ziel zum Aufrufer; das Ende folgt dem (bewegten) Agentenpunkt.
+   anker.set(r, { von: i.nach, nach: i.von });
    rueck.push({ pfad: r, start: zeit, dauer: ms * 0.7, staerke: Math.max(0.12, Math.min(1, Math.log10(i.bytes + 1) / 5)), fehler: i.art === 'fehler', farbe: mische(i.farbe, RUECK, 0.6), seed: i.seed, ab, leer: i.leer && i.art !== 'fehler' });
    rueckZahl++; if (i.leer && i.art !== 'fehler') leerZahl++; if (rueck.length > 120) rueck.shift();
   };
@@ -329,10 +356,8 @@ export default function Agentennetzwerk({ project, fallback, global }: {
    const ruf: Impuls = { ...basis, ...p, art: erfolgreich ? 'aufruf' : 'fehler', von: q.id, nach: zielK.id, dauer: w.animation_ms * (0.7 + 0.3 * Math.min(1, p.laenge / 520)) };
    return effekt ? mitEffekt(ruf, knickAnteile(segmente)) : ruf;
   };
-  const punkt = (p: Float32Array, f: number) => {
-   const n = p.length / 2 - 1, i = Math.max(0, Math.min(n, f * n)), a = Math.floor(i), b = Math.min(n, a + 1), t = i - a;
-   return { x: p[a * 2] + (p[b * 2] - p[a * 2]) * t, y: p[a * 2 + 1] + (p[b * 2 + 1] - p[a * 2 + 1]) * t };
-  };
+  // P22-T250: Bahnpunkt mitgefuehrt mit der aktuellen Lage der Endknoten (ohne Anker: feste Bahn wie bisher).
+  const punkt = (p: Float32Array, f: number) => { const a = anker.get(p); return a ? mitgefuehrt(p, f, liveLage(a.von), liveLage(a.nach)) : rohPunkt(p, f); };
   /**
    * P22-T156: Ergebnis-Effekt eines nicht erfolgreichen Aufrufs. Der Kopf laeuft bis zur Haelfte der Bahn Agent -> Projekt (i.halb)
    * und endet dort je Art: abprallen (falsch aufgerufen), Schildring (gesperrt), Nebel (nicht gefunden), Gegenstoss mit Doppelblitz
@@ -475,7 +500,9 @@ export default function Agentennetzwerk({ project, fallback, global }: {
      const pid = id.slice(5), zeile = s.plaene?.find(p => p.id === pid), st = s.plaene_ende?.find(p => p.id === pid)?.status ?? zeile?.status;
      if (st && st !== 'open' && !geflogen.has(pid)) startAbgang(st === 'committed' ? 'commit' : 'explosion', l.x, l.y, zeit, pid, zeile?.auto_commit ?? l.auto ?? false, l.ziel);
     }
-    lage.current.delete(id); bewegung.delete(id);
+    const pz = planTrab.get(id);
+    if (pz) { loeseAuf(pz, zeit, s.plaene_ende?.find(p => 'plan:' + p.id === id)?.status === 'committed'); planReste.push({ z: pz, x: l.x, y: l.y }); if (planReste.length > 24) planReste.shift(); }
+    lage.current.delete(id); bewegung.delete(id); planTrab.delete(id);
    }
    // P22-T149: zwischen zwei Snapshots committete Plaene (meist auto_commit) waren nie als Raute zu sehen; ihr Flug startet am Besitzer.
    for (const p of s.plaene ?? []) {
@@ -576,7 +603,7 @@ export default function Agentennetzwerk({ project, fallback, global }: {
    const koepfe: Array<{ x: number; y: number; i: Impuls; e: NetzEreignis }> = [];
    if (!still) for (const p of partikel.current) {
     if (((++imp & 15) === 0 && performance.now() - start > s.werte.frame_budget_ms) || (stufe > 1 && imp > 60)) { abgewiesen.current++; break; }
-    if (p.impuls === undefined) p.impuls = baue(p.e, g, s.werte);
+    if (p.impuls === undefined) { p.impuls = baue(p.e, g, s.werte); if (p.impuls) anker.set(p.impuls.pfad, { von: p.impuls.von, nach: p.impuls.nach }); }
     const i = p.impuls; if (!i) continue;
     const t = (zeit - p.start) / i.dauer; if (t < 0) continue;
     if (!p.gestartet) { p.gestartet = true; hitze.set(i.von, Math.min(1.5, (hitze.get(i.von) ?? 0) + 0.6)); stosse(i.von, -0.8); }
@@ -644,7 +671,7 @@ export default function Agentennetzwerk({ project, fallback, global }: {
     } else if (!fehlt) {
      const u = Math.min(1, (t - ankunft) / (1.3 - ankunft)), z = punkt(i.pfad, 1);
      if (!i.angekommen && i.nach !== g.kern.id && i.nach.startsWith('projekt:')) sonnenZiel[i.nach.slice(8)] = (sonnenZiel[i.nach.slice(8)] ?? 0) + 1;
-     if (!i.angekommen) { i.angekommen = true; if (i.art !== 'lesen') zurueck(i, 0, zeit, s.werte.animation_ms); if (i.nach === g.kern.id) { kernPuls = Math.min(1.5, kernPuls + 0.16); welle(zeit, i.farbe); } else { hitze.set(i.nach, Math.min(1.5, (hitze.get(i.nach) ?? 0) + (i.art === 'aufruf' ? 0.4 : 0.8))); sonnenAnkunft(i.nach, i.farbe, zeit); bewegeAnkunft(i.nach); } }
+     if (!i.angekommen) { i.angekommen = true; messeAnkunft(i.pfad, false); if (i.art !== 'lesen') zurueck(i, 0, zeit, s.werte.animation_ms); if (i.nach === g.kern.id) { kernPuls = Math.min(1.5, kernPuls + 0.16); welle(zeit, i.farbe); } else { hitze.set(i.nach, Math.min(1.5, (hitze.get(i.nach) ?? 0) + (i.art === 'aufruf' ? 0.4 : 0.8))); sonnenAnkunft(i.nach, i.farbe, zeit); bewegeAnkunft(i.nach); } }
      licht.sprite(z.x, z.y, 18 + u * (i.art === 'aufruf' ? 46 : 90), r, gg, b, (1 - u) * 0.75, 1);
      if (i.art === 'post' || i.art === 'plan') { licht.sprite(z.x, z.y, 10 + u * 150, r, gg, b, (1 - u) * 0.35, 1); schreibend++; }
      licht.sprite(z.x, z.y, 40, heiss[0], heiss[1], heiss[2], (1 - u) * 0.4, 0);
@@ -688,6 +715,33 @@ export default function Agentennetzwerk({ project, fallback, global }: {
     if (eb.dichte > 0 && stufe < 2) for (let b2 = 0; b2 < bahnen; b2++) licht.sprite(l.x, l.y, (innen + b2 * abstand) / 0.35, tf[0], tf[1], tf[2], (0.04 + 0.1 * eb.dichte) * fade, 1);
     if (sel) knotenLicht(l.x, l.y, 200 * Math.max(0.3, sg) * skala, 1, 1, 1, 0.3 * fade, 1);
    };
+   // P22-T251: Plan-Trabanten - je Op ein Dreieck (Plangold), je Datei ein Quadratrahmen (Blau); Lage relativ zur aktuellen Lage des
+   // Plan-Knotens (bewegt sich mit). Werte ueber netzwerk/plan-trabanten.ts (keine neue nwWert-Stelle hier).
+   const pw = planTrabantenWerte(s.werte);
+   const zeichneTrabanten = (z: PlanTrabantenZustand, l: Punkt, f: Rgb, a: number) => {
+    for (const t of [...z.ops, ...z.dateien]) {
+     const q = trabantLage(t, uhr, zeit), al = q.alpha * a; if (al < 0.01) continue;
+     const c = t.sorte === 'op' ? f : PLAN_DATEI, x = l.x + q.x, y = l.y + q.y;
+     knotenLicht(x, y, q.groesse, c[0], c[1], c[2], 0.9 * al, t.sorte === 'op' ? 6 : 3);
+     if (q.glanz > 0.02) knotenLicht(x, y, q.groesse * 2.8, c[0], c[1], c[2], 0.45 * q.glanz * a, 0);
+    }
+    // Commit: Abschlussring, waehrend die Punkte in die Raute gesogen werden.
+    if (z.commit !== null) { const u = Math.min(1, (zeit - z.commit) / AUFLOES_MS); if (u < 1) knotenLicht(l.x, l.y, 20 + 46 * glatt(u), f[0], f[1], f[2], 0.6 * (1 - u) * a, 1); }
+   };
+   // Jede Aktualisierung des Plans (plan, plan_update, Beitrag, Commit) blendet genau die hinzugekommenen Punkte ein und die weggefallenen aus;
+   // ein neu erscheinender Plan fliegt ein, nur das erste Bild nach dem Oeffnen nicht (Initialhistorie).
+   const zeichnePlanTrabanten = (kn: Knoten, l: Punkt, f: Rgb, a: number) => {
+    const p = kn.plan; if (!p) return;
+    let z = planTrab.get(kn.id); const erst = !z && !planTrabBereit; if (!z) { z = neuerPlanTrabantenZustand(); planTrab.set(kn.id, z); }
+    gleichePlanAb(z, p.ops, p.dateien, pw.max, zeit, erst, planAnimation(p) === 'abklingen'); raeumePlan(z, zeit); z.farbe = f;
+    zeichneTrabanten(z, l, f, a);
+   };
+   // Verschwundene Plaene: ihre Punkte loesen sich am letzten Ort auf (bzw. werden nach einem Commit eingesogen).
+   for (let i = planReste.length - 1; i >= 0; i--) {
+    const r = planReste[i]; raeumePlan(r.z, zeit);
+    if (!planSichtbar(r.z)) { planReste.splice(i, 1); continue; }
+    if (pw.aktiv && stufe < 3) zeichneTrabanten(r.z, r, (r.z.farbe as Rgb | undefined) ?? GOLD, 1);
+   }
    const bahnenMax = nwWert(s.werte, 'trabanten_bahnen_max', 8);
    for (const kn of g.knoten) {
     const l = lage.current.get(kn.id); if (!l) continue;
@@ -721,6 +775,7 @@ export default function Agentennetzwerk({ project, fallback, global }: {
      for (let i = 0; i < n; i++) { const r2 = 4 * Math.sqrt(i + 1), wkl = i * 2.399; licht.sprite(l.x + Math.cos(wkl) * r2, l.y + Math.sin(wkl) * r2, 4.5, f[0], f[1], f[2], 0.55 * a, 8, 1, 0.3, i, 2); }
      continue;
     }
+    if (kn.rolle === 'plan' && kn.plan && pw.aktiv && stufe < 3) zeichnePlanTrabanten(kn, l, f, (kn.fade ?? 1) * a);
     if (kn.rolle === 'plan' && kn.plan && planAnimation(kn.plan) === 'abklingen') {
      // P22-T104: committet/auto-committet klingt ruhig ab: kein Puls, kein Aktivitaetshalo; Raute und Schein schrumpfen mit.
      const fa = planAbklingen(kn.fade ?? 0) * a;
@@ -795,7 +850,7 @@ export default function Agentennetzwerk({ project, fallback, global }: {
      if (r0.fehler) { const tk = Math.floor(zeit / 60); licht.sprite(q.x + zitter(r0.seed, j, tk) * 5, q.y + zitter(r0.seed, j + 9, tk) * 5, 10 * m, cr, cg, cb, (0.45 + 0.55 * Math.abs(Math.sin(zeit * 0.03 + j))) * m, 4); }
      else { licht.sprite(q.x, q.y, (8 + r0.staerke * 14) * m, cr, cg, cb, 0.9 * m, 1); if (!j) licht.sprite(q.x, q.y, 24 + r0.staerke * 32, cr, cg, cb, 0.22, 0); }
     }
-    if (t > 0.85 && !r0.fehler) { const z = punkt(r0.pfad, 1), u = (t - 0.85) / 0.15; licht.sprite(z.x, z.y, 14 + u * (30 + r0.staerke * 40), cr, cg, cb, (1 - u) * 0.6, 1); }
+    if (t > 0.85 && !r0.fehler) { if (!r0.gemessen) { r0.gemessen = true; messeAnkunft(r0.pfad, true); } const z = punkt(r0.pfad, 1), u = (t - 0.85) / 0.15; licht.sprite(z.x, z.y, 14 + u * (30 + r0.staerke * 40), cr, cg, cb, (1 - u) * 0.6, 1); }
    }
    // P22-T95: Plan-Abgaenge. Commit fliesst auf einer Bahn ins Projekt und geht darin auf; Verwerfen explodiert mit Schockwelle.
    const kz0 = lage.current.get(g.kern.id) ?? g.kern;
@@ -917,13 +972,19 @@ export default function Agentennetzwerk({ project, fallback, global }: {
    for (const { kn, l: lg, act } of reihe) {
     const l = lg!, x = sx(l.x), y = sy(l.y); if (x < -80 || y < -40 || x > w + 80 || y > h + 40) continue;
     // P22-T172: Agenten-Knoten heissen 'Name · Task' (Schalter agent_aktuelle_task AUS bzw. ohne Task: nur der Name).
-    const tk = kn.agent && (kn.rolle === 'arbeitsagent' || kn.rolle === 'koordinator') ? findeAktuelleTask(aktuelleTasks.current, { identityId: kn.agent.identity_id, name: kn.agent.agent })?.task_id : undefined;
+    const tk = kn.agent && (kn.rolle === 'arbeitsagent' || kn.rolle === 'koordinator') ? findeAktuelleTaskJeProjekt(aktuelleTasks.current, { projekte: [kn.project, kn.agent.project, project], identityId: kn.agent.identity_id, name: kn.agent.agent })?.eintrag.task_id : undefined;
     const roh = tk ? kn.name + ' · ' + tk : kn.name, sel = kn.id === auswahl || kn.id === karte, max = (kompakt ? 14 : 22) + (tk ? tk.length + 3 : 0), name = roh.length > max ? roh.slice(0, max - 1) + '…' : roh;
     if (kn === g.kern && g.global) continue;
     if (kn === g.kern) { etikett(kn.name.toUpperCase(), x, y + Math.max(16, 52 * k.zoom * Math.max(0.3, g.stern)), '#fed7aa', '600 10px "IBM Plex Mono", monospace', 0.95, true); continue; }
     if (kn.rolle === 'sonne') { etikett(kn.name.toUpperCase() + (g.global ? '' : ' · VISUM'), x, y + Math.max(16, 30 * k.zoom), '#fde68a', '600 10px "IBM Plex Mono", monospace', 0.9 * l.a * (kn.fade ?? 1), true); continue; }
     if (kn.rolle === 'koordinator' || kn.rolle === 'main') { etikett(name, x, y + Math.max(18, 32 * k.zoom), sel ? '#F97316' : '#fde3c8', '600 11px "IBM Plex Mono", monospace', 0.95 * l.a, true); continue; }
-    if (kn.rolle === 'plan') { etikett(kn.name, x, y + Math.max(15, 24 * k.zoom), sel ? '#F97316' : kn.farbe, '500 10px "IBM Plex Mono", monospace', (0.6 + 0.4 * Math.min(1, act)) * l.a * (kn.fade ?? 1), sel); continue; }
+    if (kn.rolle === 'plan') {
+     etikett(kn.name, x, y + Math.max(15, 24 * k.zoom), sel ? '#F97316' : kn.farbe, '500 10px "IBM Plex Mono", monospace', (0.6 + 0.4 * Math.min(1, act)) * l.a * (kn.fade ?? 1), sel);
+     // P22-T251: ueber plan_trabanten_max hinaus '+n' (z. B. '+3 Ops · +1 Datei') ueber der Raute.
+     const pz = pw.aktiv ? planTrab.get(kn.id) : undefined, plus = pz ? planPlusText(pz, pw.max) : '';
+     if (plus) etikett(plus, x, y - Math.max(16, 30 * k.zoom), '#fde68a', '600 9px "IBM Plex Mono", monospace', 0.85 * l.a * (kn.fade ?? 1));
+     continue;
+    }
     if (kn.rolle === 'channel' || kn.rolle === 'channel-cluster') { etikett(kn.rolle === 'channel' ? name : kn.avatar + ' Channels', x, y + Math.max(15, 28 * k.zoom), sel ? '#F97316' : '#d8ccff', '500 10px "IBM Plex Mono", monospace', (0.55 + 0.45 * Math.min(1, act)) * l.a, sel); continue; }
     if (kn.rolle === 'cluster') { etikett('+' + kn.count, x, y, '#ffedd5', '700 12px "IBM Plex Mono", monospace', l.a, true); etikett('aktive Agenten', x, y + Math.max(16, 34 * k.zoom), '#fdba74', '9px "IBM Plex Mono", monospace', 0.7 * l.a); continue; }
     if (kn.rolle === 'arbeitsagent' && (sel || ((alleNamen || act > (kompakt ? 0.5 : 0.15)) && namenFrei-- > 0))) etikett(name, x, y + Math.max(13, 20 * k.zoom), sel ? '#F97316' : '#cbd5e1', '10px "IBM Plex Mono", monospace', (sel ? 1 : 0.4 + 0.6 * Math.min(1, act)) * l.a, sel);
@@ -954,6 +1015,11 @@ export default function Agentennetzwerk({ project, fallback, global }: {
     const r2 = (x: number) => Math.round(x);
     el.dataset.bewegung = JSON.stringify({ aktiv: bwAn, omega: bw.omega, still, knoten: n, stoesse: st, je_sonne: jeSonne, konstellation: { rot: Number((bewegung.get(g.kern.id)?.rot ?? 0).toFixed(3)), omega: bw.kreisen, drift: bw.sonnenDrift },
      kamera: kameraRahmen ? { min_x: r2(kameraRahmen.minX), max_x: r2(kameraRahmen.maxX), min_y: r2(kameraRahmen.minY), max_y: r2(kameraRahmen.maxY), x: r2(k.x), y: r2(k.y), zoom: Number(k.zoom.toFixed(3)) } : null }); } else el.dataset.bewegung = '';
+   // P22-T250: Ankunft von Impuls und Rueckfluss am bewegten Ziel (max_px soll ~0 sein; roh_max_px = Abweichung der festen Bahn).
+   el.dataset.ankunftAbweichung = JSON.stringify({ max_px: Number(ankunft.max_px.toFixed(3)), roh_max_px: Number(ankunft.roh_max_px.toFixed(1)), ankuenfte: ankunft.ankuenfte, rueck: ankunft.rueck });
+   // P22-T251: Plan-Trabanten je Plan (ops, dateien, sichtbar, +n, neu, weg, commit); hoechstens 20 Plaene im Debug.
+   el.dataset.planTrabanten = JSON.stringify({ aktiv: pw.aktiv, max: pw.max, reste: planReste.length, plaene: [...planTrab].slice(0, 20).map(([id, z]) => planTrabantenDebug(id, z, pw.max)) });
+   planTrabBereit = true;
    el.dataset.sonnenZiel = JSON.stringify(sonnenZiel); el.dataset.global = g.global ? '1' : '0'; el.dataset.visumSonnen = s.visum_sonnen?.aktiv ? '1' : '0';
    // P22-T239: Debug je Projektsonne der Uebersicht (voll = Trabanten/Nebel, Stern, Index, Puls, Ankuenfte, Commits, Wellen, Reaktion).
    el.dataset.sonnenEffekte = se ? JSON.stringify({ aktiv: se.aktiv, max: se.max, sonnen: g.fremd.map(f => { const eb = sonnenEb.get(f.projekt) ?? OHNE_TRABANTEN; return sonnenEffektDebug(f.projekt, zustandVon(f.projekt), eb, sonnenVoll.has(f.projekt), sonnenNebel(eb), g.knoten.filter(k => k.plan && k.project === f.projekt).length); }) }) : '';
@@ -1058,7 +1124,7 @@ export default function Agentennetzwerk({ project, fallback, global }: {
     {kartenKnoten && <aside className="nw-card" role="dialog" aria-label={'Knoten ' + kartenKnoten.name}>
      <div><strong>{kartenKnoten.name}</strong><button aria-label="Knotenkarte schließen" onClick={() => { setKarte(''); setAuswahl(''); }}>×</button></div>
      <dl><dt>Rolle</dt><dd>{kartenKnoten.rolle}</dd>
-      {kartenKnoten.agent && <><dt>Aktuelle Task</dt><dd><AgentTaskMarke project={kartenKnoten.agent.project || project} identityId={kartenKnoten.agent.identity_id} name={kartenKnoten.agent.agent} trenner="" leer="–" /></dd></>}
+      {kartenKnoten.agent && <><dt>Aktuelle Task</dt><dd><AgentTaskMarke project={findeAktuelleTaskJeProjekt(aktuelleTasksStand, { projekte: [kartenKnoten.project, kartenKnoten.agent.project, project], identityId: kartenKnoten.agent.identity_id, name: kartenKnoten.agent.agent })?.project ?? (kartenKnoten.project || kartenKnoten.agent.project || project)} identityId={kartenKnoten.agent.identity_id} name={kartenKnoten.agent.agent} trenner="" leer="–" /></dd></>}
       {kartenKnoten.agent ? <><dt>Typ</dt><dd>{kartenKnoten.agent.typ || 'Legacy / nicht erfasst'}</dd><dt>Modell</dt><dd>{kartenKnoten.agent.modell || 'Nicht erfasst'}</dd><dt>Ort</dt><dd>{kartenKnoten.agent.ort || 'Nicht erfasst'}</dd><dt>Letzte Anmeldung</dt><dd>{datum(kartenKnoten.agent.letzte_anmeldung)}</dd><dt>Aufrufe</dt><dd>{kartenKnoten.aufrufe} im Fenster</dd></> : <><dt>Aktivität</dt><dd>{kartenKnoten.info || kartenKnoten.aufrufe + ' Aufrufe'}</dd></>}
       {kartenKnoten.plan && <><dt>Status</dt><dd>{planZustand(kartenKnoten.plan)}{kartenKnoten.plan.status==='open'&&kartenKnoten.plan.coedit ? ' · Co-Edit offen' : ''}</dd><dt>Besitzer</dt><dd>{kartenKnoten.plan.besitzer_name || 'Nicht erfasst'}</dd><dt>Beitragende</dt><dd>{kartenKnoten.plan.beitraege.length}</dd><dt>Dateien</dt><dd>{kartenKnoten.plan.dateien}{kartenKnoten.plan.dateien_beispiele.length ? ' · ' + kartenKnoten.plan.dateien_beispiele.join(', ') : ''}</dd><dt>Erstellt</dt><dd>{datum(kartenKnoten.plan.erstellt)}</dd></>}
       {/* P22-T235 (B2): Sonnen tragen keinen Einzelaufruf; sie zeigen die letzte Aktivitaet des Projekts (projekt_aktivitaeten bzw. Ereignisse). */}

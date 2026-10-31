@@ -99,6 +99,12 @@ export const NETZWERK_EINSTELLUNGEN = {
  sonnen_abstand: { standard: 30, min: 0, max: 400 },
  sonnen_kreisen_mrad_s: { standard: 40, min: 0, max: 2000 },
  sonnen_drift: { standard: 18, min: 0, max: 120 },
+ // P22-T251 (User 31.10.2026 ~22:33): um jeden files-Plan-Knoten kreisen Trabanten - je Op ein Dreieck, je Datei ein Quadratrahmen;
+ // Einflug bei neuen, Aufloesen bei wegfallenden, Einsaugen beim Commit (1 an, 0 = nur die Raute wie bisher). plan_trabanten_max:
+ // sichtbare Punkte je Sorte, darueber '+n' am Knoten. Web-UI-Rueckfall: netzwerk/plan-trabanten.ts PLAN_TRABANTEN_STANDARD.
+ // Nachtrag User: strikt je Op und je Datei ein Punkt -> hoher Standard (200); die Grenze ist nur Notbremse, ohne Codeaenderung einstellbar.
+ plan_trabanten: { standard: 1, min: 0, max: 1 },
+ plan_trabanten_max: { standard: 200, min: 0, max: 1000 },
 } as const;
 export type NetzwerkEinstellung = keyof typeof NETZWERK_EINSTELLUNGEN;
 export type NetzwerkWerte = Record<NetzwerkEinstellung, number>;
