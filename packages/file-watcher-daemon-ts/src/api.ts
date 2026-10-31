@@ -154,6 +154,18 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
     return {success:true,...(state??{modus:'aus'})};
   });
 
+  // P22-T240 (d): Aufraeumwerkzeug des Asset-Sync-Zustandsordners (pc-before-install-Duplikate, verwaiste Temp-Dateien).
+  // Nur lokal. Standard Vorschau; Loeschen nur mit {ausfuehren:true, bestaetigt:true} (USER-FREIGABE). limit = max. Dateien je Lauf.
+  app.post<{Params:{name:string};Body:{ausfuehren?:unknown;bestaetigt?:unknown;limit?:unknown}}>('/projects/:name/asset-sync/aufraeumen',async(req,reply)=>{
+    if(!istLoopback(req.ip)||req.headers.origin!==undefined)return reply.code(403).send({success:false,error:'nur_lokal'});
+    if(!manager.get(req.params.name))return reply.code(404).send({success:false,error:'projekt_unbekannt'});
+    const b=req.body??{},limit=typeof b.limit==='number'&&Number.isSafeInteger(b.limit)&&b.limit>0?b.limit:undefined;
+    if(b.ausfuehren===true&&b.bestaetigt!==true)return reply.code(400).send({success:false,error:'bestaetigung_fehlt',hinweis:'Ausfuehren braucht bestaetigt:true (User-Freigabe).'});
+    const r=await manager.assetSync.aufraeumen(req.params.name,{ausfuehren:b.ausfuehren===true,bestaetigt:b.bestaetigt===true,limit});
+    if(!r)return reply.code(409).send({success:false,error:'asset_sync_nicht_verwaltet'});
+    return {success:true,...r};
+  });
+
   // ---- GET /reverse/status -----------------------------------------------
   // P18-T16/RV6: Vertrag fuer den Tray (RV7). Nur Loopback ohne Origin; nur Metadaten, keine Zugangsdaten.
   // { aktiv, pfad, modus:'aus'|'offen'|'api'|'fehler', fehler?, policy?, auftraege:[{pfad,art,bytes_erledigt,groesse,fehler}], erkannt, wartend_stabil }

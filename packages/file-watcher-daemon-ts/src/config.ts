@@ -48,8 +48,13 @@ export function getWorkspaceRoot(): string {
 export interface DaemonAssetSyncConfig {
  aktiv?:boolean;richtung?:'both'|'pc_to_share'|'share_to_pc';
  chunk_bytes?:number;retry_ms?:number;scan_ms?:number;
+ /** P22-T240: Download/Loeschen nach max_versuche parken (0 = aus), danach Retry alle park_retry_ms. Standard 20 / 3600000. */
+ max_versuche?:number;park_retry_ms?:number;
 }
-/** aktiv: Asset-Sync fuer dieses Projekt einschalten (User-Vorgabe 14.10.2026: Standard aus, je Projekt). */
+/**
+ * aktiv: Asset-Sync dieses Projekts. P22-T238 (User 31.10.2026, thought d59f32e8): Standard EIN fuer alle aktiven Projekte;
+ * fehlendes Feld = EIN (Bestands-config.json ohne Feld wird damit ohne Umschreiben migriert), nur aktiv:false = bewusst aus.
+ */
 export interface ProjektAssetSyncConfig {aktiv?:boolean;richtung?:'both'|'pc_to_share'|'share_to_pc';verwaltet?:boolean;host?:string;optionen?:AssetTransferOptionen;}
 export interface ProjektConfig {
   name: string;
