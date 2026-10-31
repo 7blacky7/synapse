@@ -21,6 +21,9 @@ import { rohPunkt, mitgefuehrt, ankunftAbweichung, type Anker } from './netzwerk
 import { planTrabantenWerte, neuerPlanTrabantenZustand, gleichePlanAb, raeumePlan, trabantLage, planPlusText, planTrabantenDebug, loeseAuf, planSichtbar, AUFLOES_MS, type PlanTrabantenZustand } from './netzwerk/plan-trabanten';
 import { bewegungsWerte, neueBewegung, schritt as bewegungsSchritt, stoss, bahnPunkt, drift, energie, DRIFT_SONNE, DRIFT_FREI, sonnenPunkt, rahmen, kameraImRahmen, type BewegungsZustand, type Rahmen } from './netzwerk/sonnen-bewegung';
 import '../agentennetzwerk.css';
+import { useChannelFenster } from './ChannelFenster';
+import { leseArbeitsbereichSchalter, type ArbeitsbereichSchalter } from '../api/arbeitsbereich-schalter';
+import { NetzErgebnisFenster } from './netzwerk/NetzErgebnisFenster';
 // P22-T172: Name + aktuelle Task an Agenten-Knoten (Etikett) und in der Knotenkarte (klickbar).
 // P22-T249: Task je Agent aus SEINEM Projekt (Puffer aller sichtbaren Projekte).
 import { AgentTaskMarke, useAktuelleTasksJeProjekt } from './AgentTaskMarke';
@@ -89,6 +92,10 @@ export default function Agentennetzwerk({ project, fallback, global }: {
  const [legende, setLegende] = useState(false), [zoom, setZoom] = useState(1), [karte, setKarte] = useState('');
  const [werte, setWerte] = useState<Record<string, number>>({}), [busy, setBusy] = useState(false), [mess, setMess] = useState(LEER), [auswahl, setAuswahl] = useState('');
  const [ohneLicht, setOhneLicht] = useState(false);
+ const channelFenster = useChannelFenster();
+ const [detailSchalter, setDetailSchalter] = useState<ArbeitsbereichSchalter>({aktiv:false,quelle:'standard',fehler:null});
+ const [detail, setDetail] = useState<{project:string;id:string}|null>(null);
+ useEffect(() => { let lebt = true; void leseArbeitsbereichSchalter(project,'web_ui_netzwerk_details').then(s => { if (lebt) setDetailSchalter(s); }); return () => { lebt = false; }; }, [project]);
  // Kamera: auto = folgt sanft der staerksten Aktivitaet; user = eigene Lage nach Zoom/Ziehen, "Einpassen" kehrt zurueck.
  const sicht = useRef({ modus: 'auto' as 'auto' | 'user', faktor: 1, x: 0, y: 0 }), zug = useRef<{ id: number; x: number; y: number; bewegt: boolean } | null>(null);
  const kamera = useRef<Kamera & { fit: number }>({ x: 0, y: 0, zoom: 1, fit: 1 });
@@ -1117,7 +1124,7 @@ export default function Agentennetzwerk({ project, fallback, global }: {
       }
       if (ev.pointerType !== 'touch') { const k = treffer(welt(ev)); setKarte(k?.id || auswahl); }
      }}
-     onClick={ev => { if (zug.current?.bewegt) return; const k = treffer(welt(ev)); if (global && k?.rolle === 'sonne') { global.onSonne(k.project); return; } setAuswahl(k?.id || ''); setKarte(k?.id || ''); }} />
+     onClick={ev => { if (zug.current?.bewegt) return; const k = treffer(welt(ev)); if (global && k?.rolle === 'sonne') { global.onSonne(k.project); return; } if (detailSchalter.aktiv && k?.rolle === 'channel' && channelFenster) { channelFenster.oeffne(k.project || project, k.id.replace(/^channel:/, '')); return; } setAuswahl(k?.id || ''); setKarte(k?.id || ''); }} />
     <div className="nw-viewport"><button aria-label="Netzwerk verkleinern" disabled={zoom <= 0.5} onClick={() => zoomSetzen(zoom - 0.5)}>−</button><button aria-label="Netzwerk vergrößern" disabled={zoom >= 4} onClick={() => zoomSetzen(zoom + 0.5)}>+</button><button onClick={() => zoomSetzen(1)}>Einpassen</button></div>
     {erklaerungen && <output className="nw-hud">{mess.fps} FPS · {mess.ms} ms · {mess.sprites} Lichter</output>}
     {ohneLicht && <p className="nw-empty">Diese Ansicht braucht WebGL2 oder Canvas.</p>}
@@ -1143,8 +1150,10 @@ export default function Agentennetzwerk({ project, fallback, global }: {
    {erklaerungen && <output className="nw-debug">Stream: {status} · {mess.rate} Ereignisse/s · {mess.fps} FPS · {mess.ms} ms/Frame · {mess.sprites} Lichter · Qualitätsstufe {mess.stufe} · {mess.gezeichnet} Impulsframes · {mess.ausgelassen} Animationen/Budgetüberschreitungen · Renderer: {glCanvas.current?.dataset.renderer ?? '–'} · Snapshot begrenzt: {snapshot.begrenzt} · ohne Absender: {snapshot.ohne_absender ?? 0} · Ergebnisse: {FEHLER_ARTEN.filter(a => ergebnisAnzahl[a]).map(a => ERGEBNIS_NAMEN[a] + ' ' + ergebnisAnzahl[a]).join(', ') || 'keine Fehler'}{nwWert(snapshot.werte, 'fehler_effekte', 1) === 0 ? ' (Effekte aus)' : ''} · Quelle: {snapshot.schalter.quelle} · Stand: {new Date(snapshot.stand).toLocaleTimeString('de-DE')}{snapshot.letzter_fehler || snapshot.schalter.letzter_fehler ? ' · ' + (snapshot.letzter_fehler || snapshot.schalter.letzter_fehler) : ''} · Index: {snapshot.index ? snapshot.index.dateien + ' Dateien / ' + snapshot.index.chunks + ' Chunks' : 'nicht geliefert'} · Stern {(g?.stern ?? 1).toFixed(2)} · {ie?.trabanten ?? 0} Trabanten ({ie?.einzeln ?? 0} einzeln) · {ie?.nebel ?? 0} Nebelpunkte{ie?.aktiv ? '' : ' · Rückfall ohne Index-Ebenen'} · Visum-Sonnen: {snapshot.visum_sonnen ? (snapshot.visum_sonnen.aktiv ? (g?.fremd.length ? g.fremd.map(f => sonnenDebug(f, Date.now())).join('; ') : 'keine') + (g?.fremdOhneSonne ? ' · ' + g.fremdOhneSonne + ' Aufrufe ohne Sonne' : '') : 'aus') + ' (' + snapshot.visum_sonnen.quelle + (snapshot.visum_sonnen.letzter_fehler ? ', ' + snapshot.visum_sonnen.letzter_fehler : '') + ')' : 'nicht geliefert'}</output>}
    {erklaerungen && auswahl && g?.alias.get(auswahl)?.zuordnung && <p className="nw-assignment">{g.alias.get(auswahl)!.zuordnung}</p>}
    <details className="nw-feed" open><summary>Echte Ereignisse {auswahl ? '· Auswahl aktiv' : ''} <button onClick={e => { e.preventDefault(); setAuswahl(''); setKarte(''); }}>Alle</button></summary>
-    <ol>{ereignisse.map(({ e, anzahl, ids }) => <li key={e.id}><time>{new Date(e.zeit).toLocaleTimeString('de-DE')}</time><b className="nw-event-icon" style={{ color: stil(e.tool).farbe }}>{stil(e.tool).icon}</b><span><strong>{e.agent}</strong> {e.tool}.{e.action}{e.empfaenger.length ? ' → ' + e.empfaenger.join(', ') : ''}{e.channel ? ' #' + e.channel : ''}{anzahl > 1 && <em> ×{anzahl}</em>}</span><code title={'Quelle tool_calls, Projekt ' + e.project + ' · IDs ' + ids.join(', ')}>#{e.id}</code>{(() => { const a = ergebnisArt(e); return <small className={'nw-ergebnis nw-ergebnis-' + a} title={'Ergebnis: ' + ERGEBNIS_NAMEN[a] + (e.fehler_code ? ' · Fehlercode ' + e.fehler_code : '')}>{istErfolg(a) ? (a === 'leer' ? '✓ ∅' : '✓') : ERGEBNIS_SYMBOL[a] + ' ' + ERGEBNIS_NAMEN[a] + (e.fehler_code ? ' · ' + e.fehler_code : '')}</small>; })()}</li>)}</ol>
+    <ol>{ereignisse.map(({ e, anzahl, ids }) => <li key={e.id}><time>{new Date(e.zeit).toLocaleTimeString('de-DE')}</time><b className="nw-event-icon" style={{ color: stil(e.tool).farbe }}>{stil(e.tool).icon}</b><span><strong>{e.agent}</strong> {e.tool}.{e.action}{e.empfaenger.length ? ' → ' + e.empfaenger.join(', ') : ''}{e.channel ? ' #' + e.channel : ''}{anzahl > 1 && <em> ×{anzahl}</em>}</span>{detailSchalter.aktiv ? <span>{ids.map(id => <button key={id} type="button" title={'Ergebnis aus ' + e.project} onClick={() => setDetail({project:e.project || project,id})}>#{id}</button>)}</span> : <code title={'Quelle tool_calls, Projekt ' + e.project + ' · IDs ' + ids.join(', ')}>#{e.id}</code>}{(() => { const a = ergebnisArt(e); return <small className={'nw-ergebnis nw-ergebnis-' + a} title={'Ergebnis: ' + ERGEBNIS_NAMEN[a] + (e.fehler_code ? ' · Fehlercode ' + e.fehler_code : '')}>{istErfolg(a) ? (a === 'leer' ? '✓ ∅' : '✓') : ERGEBNIS_SYMBOL[a] + ' ' + ERGEBNIS_NAMEN[a] + (e.fehler_code ? ' · ' + e.fehler_code : '')}</small>; })()}</li>)}</ol>
    </details>
   </>}
+ {detailSchalter.aktiv && detail && <NetzErgebnisFenster project={detail.project} id={detail.id} onClose={() => setDetail(null)} />}
+ {erklaerungen && <output className="nw-debug">Netzwerkdetails: {detailSchalter.aktiv ? 'ein' : 'aus'} · Quelle {detailSchalter.quelle}{detailSchalter.fehler ? ' · ' + detailSchalter.fehler : ''}</output>}
  </section>;
 }

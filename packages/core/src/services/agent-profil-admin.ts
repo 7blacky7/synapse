@@ -306,13 +306,25 @@ async function fuehreAusweisAktionAus(action: AusweisAktion, args: Args, akteur:
   }
 }
 
+/** P22-T253: Status zeigt den befristeten Debug-Override nur bei aktivem intern-Tool. */
+export async function leseUiProduktSchalter(f: Parameters<typeof leseProfilProduktSchalter>[0], project: string) {
+  const produkt = await leseProfilProduktSchalter(f, project);
+  if (f !== 'web_ui_arbeitsbereich' && f !== 'web_ui_channel_suche' && f !== 'web_ui_netzwerk_details') return produkt;
+  const { internToolAktiv } = await import('./intern-tool-aktiv.js');
+  if (!internToolAktiv()) return produkt;
+  try {
+    const r = await getPool().query<{aktiv: boolean; bis: Date}>("SELECT aktiv, bis FROM intern_schalter WHERE name=$1 AND modus='freigegeben' AND bis > NOW()", [f]);
+    return r.rows[0] ? { ...produkt, aktiv: r.rows[0].aktiv, quelle: 'intern', bis: r.rows[0].bis } : produkt;
+  } catch (e) { return { ...produkt, letzter_fehler: e instanceof Error ? e.message : String(e) }; }
+}
+
 async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, project: string, a: Args, akteurRoh: AusweisAkteur): Promise<Record<string, unknown>> {
   // P22-T34: der Legacy-Koordinator ohne Ausweis gilt fuer ALLE Aktionen wie Koordinator mit Ausweis (Rechtepruefung in den Diensten bzw.
   // pruefeProfilVerwalter; 'nur User' bleibt: web_ui_koordinator_token, globale Kataloge; globale Produkt-Schalter seit P22-T57 auch Koordinator). Die Dienste pruefen den Akteur zur Laufzeit.
   const akteur = akteurRoh as W1bAkteur;
   switch (action) {
     case 'profil_schalter_status':
-      return { project, schalter: await Promise.all([...PROFIL_PRODUKT_FUNKTIONEN, ...ALT_AUSWEIS_FUNKTIONEN].map(f => leseProfilProduktSchalter(f, project))), ausweis_kern: await leseAusweisKern(project) };
+      return { project, schalter: await Promise.all([...PROFIL_PRODUKT_FUNKTIONEN, ...ALT_AUSWEIS_FUNKTIONEN].map(f => leseUiProduktSchalter(f, project))), ausweis_kern: await leseAusweisKern(project) };
     case 'profil_schalter_setzen': {
       const ebene = (s(a, 'ebene') ?? 'projekt') as 'global' | 'projekt';
       const funktion = pflicht(s(a, 'profil_funktion'), 'profil_funktion_fehlt') as ProfilProduktFunktion | 'alle';
@@ -321,7 +333,7 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
         akteurRoh.art === 'user' ? { system: 'user' }
           : akteurRoh.art === 'legacy_koordinator' ? { legacy_koordinator: akteurRoh.agent_id, aufruf_project: project }
           : { identity_id: akteurRoh.art === 'identitaet' ? akteurRoh.principal.identity_id : undefined, aufruf_project: project });
-      return { project, schalter: await Promise.all([...PROFIL_PRODUKT_FUNKTIONEN, ...ALT_AUSWEIS_FUNKTIONEN].map(f => leseProfilProduktSchalter(f, project))), ausweis_kern: await leseAusweisKern(project) };
+      return { project, schalter: await Promise.all([...PROFIL_PRODUKT_FUNKTIONEN, ...ALT_AUSWEIS_FUNKTIONEN].map(f => leseUiProduktSchalter(f, project))), ausweis_kern: await leseAusweisKern(project) };
     }
     case 'profil_uebersicht': {
       // Tokenfrei: nur Profil-/Teamdaten und ob ein Token abrufbar ist, nie ein Tokenwert.

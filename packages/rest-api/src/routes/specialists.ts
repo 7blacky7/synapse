@@ -14,6 +14,7 @@ import {
   postToInbox,
   getPool,
   listChannels,
+  userChannelUngelesen, userChannelGelesen, leseUiProduktSchalter, getFileVersion, getBatchPlan, istMaskierteDatei,
   getChannelMessages,
   postChannelMessage,
   mitUserHerkunft,
@@ -434,19 +435,59 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
     }
   });
 
+  // P22-T254: ausschließlich angemeldete Web-User; nie eine Agentenidentität als User ausgeben.
+  async function channelUser(request: import('fastify').FastifyRequest): Promise<boolean> {
+    const token = /^Bearer\s+(.+)$/i.exec(request.headers.authorization ?? '')?.[1];
+    const p = token ? await validateToken(token) : null;
+    return p?.kind === 'session' && p.scope === null;
+  }
+  fastify.get<{Params:{name:string;art:string;id:string}}>('/api/projects/:name/netzwerk-original/:art/:id', async (request, reply) => {
+    if (!(await channelUser(request))) return reply.code(403).send({success:false,error:'user_erforderlich'});
+    const s = await leseUiProduktSchalter('web_ui_netzwerk_details', request.params.name);
+    if (!s.aktiv) return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
+    const {name,art,id} = request.params;
+    if (!/^\\d+$/.test(id)) return reply.code(400).send({success:false,error:'id_ungueltig'});
+    if (art === 'version') { const v = await getFileVersion(id, false); return v && v.project === name ? {success:true,quelle:'Dateiversion',wert:v.content} : reply.code(404).send({success:false,error:'nicht_gefunden'}); }
+    if (art === 'plan') {
+      const p = await getBatchPlan(id);
+      if (!p || p.project !== name) return reply.code(404).send({success:false,error:'nicht_gefunden'});
+      const ops = p.ops.map(op => istMaskierteDatei(op.file_path) ? {action:op.action,file_path:op.file_path,inhalt:'[sensibler Inhalt maskiert]'} : op);
+      return {success:true,quelle:'Dateiplan',wert:{id:p.id,status:p.status,ops}};
+    }
+    return reply.code(400).send({success:false,error:'art_ungueltig'});
+  });
+  fastify.get<{Params:{name:string}}>('/api/projects/:name/channels-user-ungelesen', async (request, reply) => {
+    if (!(await channelUser(request))) return reply.code(403).send({success:false,error:'user_erforderlich'});
+    const s = await leseUiProduktSchalter('web_ui_channel_suche', request.params.name);
+    if (!s.aktiv) return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
+    return {success:true, channels:await userChannelUngelesen(request.params.name), debug:s};
+  });
+  fastify.post<{Params:{name:string;channel:string};Body:{bis_id?:number}}>('/api/projects/:name/channels/:channel/user-gelesen', async (request, reply) => {
+    if (!(await channelUser(request))) return reply.code(403).send({success:false,error:'user_erforderlich'});
+    const s = await leseUiProduktSchalter('web_ui_channel_suche', request.params.name);
+    const netz = await leseUiProduktSchalter('web_ui_netzwerk_details', request.params.name);
+    if (!s.aktiv && !netz.aktiv) return reply.code(403).send({success:false,error:'funktion_aus',debug:{suche:s,netz}});
+    const id = request.body?.bis_id;
+    if (!Number.isSafeInteger(id) || Number(id) < 1) return reply.code(400).send({success:false,error:'bis_id_ungueltig'});
+    const ok = await userChannelGelesen(request.params.name, request.params.channel, Number(id));
+    return ok ? {success:true} : reply.code(404).send({success:false,error:'nachricht_nicht_gefunden'});
+  });
+
   /**
    * GET /api/projects/:name/channels/:channel/feed
    * Kanal-Historie abrufen
    */
   fastify.get<{
     Params: { name: string; channel: string };
-    Querystring: { limit?: string };
+    Querystring: { limit?: string; before_id?: string };
   }>('/api/projects/:name/channels/:channel/feed', async (request, reply) => {
     const { name, channel } = request.params;
     const limit = request.query.limit ? Number(request.query.limit) : 50;
 
     try {
-      const messages = await getChannelMessages(name, channel, { limit });
+      const beforeId = request.query.before_id ? Number(request.query.before_id) : undefined;
+      if (beforeId !== undefined && (!Number.isSafeInteger(beforeId) || beforeId < 1)) return reply.code(400).send({success:false,error:'before_id_ungueltig'});
+      const messages = await getChannelMessages(name, channel, { limit: Math.max(1, Math.min(200, limit || 50)), beforeId });
       return {
         success: true,
         project: name,
