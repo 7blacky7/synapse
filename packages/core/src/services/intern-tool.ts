@@ -110,6 +110,7 @@ export const INTERN_DEFINITION = {
     'agent_bezug_modus (alt | beide | neu): aktiv:true setzt den gewaehlten Testmodus, aktiv:false erzwingt alt; Ablauf/Lesefehler/ohne intern -> SYNAPSE_AGENT_BEZUG_MODUS (Default alt). schalter_liste.agent_bezug zeigt wirksamen Modus, Produktionsstandard, Quelle, Ablauf und letzten Fehler. ' +
     'Jeder Schalter laeuft ab (Default und Obergrenze 12 h), ohne Ablauf nur mit dauerhaft:true. ' +
     'schalter_liste zeigt alle Schalter mit Ablauf und runtime_tool_ausgabe samt Produktbasis, Werten, Quellen und Fehler. ' +
+    'runtime_synapse_mods (modus freigegeben): befristeter EIN/AUS-Testoverride der verwalteten Container-Mods, Produktstandard AUS; nur Synapse-Image-Mods, keine Inbox-Zustellung. Laden ab naechstem CLI-Start, Messung zusaetzlich durch cache_waechter; schalter_liste zeigt Produktstand, Quelle, Ablauf und Fehler. ' +
     'runtime_tool_ausgabe: Read nur fuer tool-results und hoehere CLI-Ausgabelimits (Produktstandard AUS); schalter_setzen name runtime_tool_ausgabe aktiv true/false setzt ausschliesslich befristeten Testoverride (modus freigegeben). ' +
     'runtime_tool_ausgabe ohne Werte liest den Debugstand; tool_ausgabe_werte setzt claude_mcp_output_tokens (Standard100000), codex_tool_output_tokens (100000), tool_ausgabe_kontext_prozent (25), tool_ausgabe_guard_sekunden (10) ueber denselben PG-Katalog und dieselben User/Main/Koordinator-Rechte wie admin runtime_ueberwachung; tool_ausgabe_entfernen setzt benannte Werte auf Standard, grund Pflicht. Wirkt ab naechstem CLI-Start, Messaging-Hooks bleiben aus. ' +
     'ollama_status: geladene Modelle (VRAM, CPU/GPU-Anteil, Kontext, Ablauf), Version, installierte Embedding-Modelle; ' +
@@ -324,6 +325,8 @@ export async function fuehreInternAus(
         });
         const message = name === 'agent_bezug_modus'
           ? `Agenten-Bezug-Testoverride ${stand.aktiv ? stand.modus : 'alt'} (${stand.dauerhaft ? 'dauerhaft' : `bis ${stand.bis}`}). Ohne intern/nach Ablauf/bei Lesefehler gilt SYNAPSE_AGENT_BEZUG_MODUS (Standard alt).`
+          : name === 'runtime_synapse_mods'
+          ? `Verwaltete Container-Mods ${stand.aktiv ? 'EIN' : 'AUS'} bis ${stand.bis}; PG-Produktstandard AUS, Laden ab naechstem CLI-Start. Cache-Telemetrie braucht zusaetzlich cache_waechter; keine Mod-Inbox im Container.`
           : name === 'runtime_tool_ausgabe'
           ? `CLI-Tool-Ausgabe-Testoverride ${stand.aktiv ? 'EIN' : 'AUS'} bis ${stand.bis}; ohne intern/nach Ablauf gilt der PG-Produktwert (Standard AUS). Wirkt ab naechstem CLI-Start; Debug: intern runtime_tool_ausgabe.`
           : name === 'token_identitaet'
@@ -346,6 +349,7 @@ export async function fuehreInternAus(
           ausweis_kern: await (await import('./agent-profil-schalter.js')).leseAusweisKern(),
           agent_bezug: await (await import('./agent-bezug.js')).leseAgentBezugModus(),
           runtime_tool_ausgabe: await (await import('./runtime-tool-ausgabe.js')).leseRuntimeToolAusgabe(text(a, 'project') ?? null),
+          runtime_synapse_mods: await (await import('./runtime-synapse-mods.js')).leseRuntimeSynapseMods(text(a, 'project') ?? null),
         };
       case 'runtime_tool_ausgabe': {
         const { leseRuntimeToolAusgabe } = await import('./runtime-tool-ausgabe.js');

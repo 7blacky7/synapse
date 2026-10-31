@@ -136,6 +136,8 @@ export const FAEHIGKEITEN = [
   'items',
   'status',
   'verbrauch',
+  // P22-T194: existing API transport, separately visible metadata diagnostics.
+  'cache-waechter',
   // P22-T58: Abo-Kontingent der Runtime (erschoepft/frei) fuer die Runtime-Ueberwachung der API.
   'kontingent',
   // P22-T63: vollstaendige Sitzung des Hauptagenten fuer seinen Verlauf.
@@ -311,6 +313,10 @@ export interface WrapperTransport {
   bucheVerbrauch(runtime: string, eintraege: VerbrauchEintrag[]): Promise<VerbrauchErgebnis>
   /** P22-T58: Wechsel des Abo-Kontingents melden (nur Zustandswechsel). Wirft bei Transportfehlern. */
   meldeKontingent?(runtime: string, meldung: KontingentMeldung): Promise<void>
+  /** P22-T194: container only, server derives provenance and checks default-OFF flag. */
+  leseCacheModFreigabe?(): Promise<{ aktiv: boolean; quelle?: string; [key: string]: unknown }>
+  meldeCacheWaechterMod?(meldung: import('../cache-waechter-stream.js').CacheStreamMeldung): Promise<{ angenommen: boolean; grund: string | null }>
+  meldeCacheWaechter?(meldung: import('../cache-waechter-stream.js').CacheStreamMeldung): Promise<{ angenommen: boolean; grund: string | null }>
   /**
    * P22-T63: Sitzungs-Eintraege (verlauf-melden.ts) an den Verlauf des Hauptagenten. grund nicht_main = dieser Agent ist
    * nicht der Hauptagent (nie wieder melden), funktion_aus = Schalter AUS. Wirft bei Transportfehlern.

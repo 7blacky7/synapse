@@ -27,6 +27,10 @@ import { readFile, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { ProcessManager } from './process.js'
+import { CacheStreamBeobachter, type CacheStreamMeldung } from './cache-waechter-stream.js'
+import { starteCacheModBruecke } from './cache-waechter-mod-bruecke.js'
+import { runtimeModStartStand } from '@synapse/core'
+import { dirname } from 'node:path'
 import { readStatus, updateSpecialist } from './status.js'
 import { erzeugeTransport } from './transport/index.js'
 import { erzeugeWissen, gewaehlteWissensQuelle } from './wissen/index.js'
@@ -95,6 +99,37 @@ const KEEP_ALIVE = process.env.SYNAPSE_KEEP_ALIVE === '1'
 // P22-T6: im Runtime-Container stellt der Daemon Inbox/Chat/Channel/Event-Nachrichten selbst zu (Ledger in der API).
 // Der Wrapper verarbeitet diese Inhalte dann nicht noch einmal: er rueckt nur die Wasserstaende vor, quittiert nichts.
 const ZUSTELLUNG_DAEMON = process.env.SYNAPSE_ZUSTELLUNG_DAEMON === '1'
+// P22-T194: container infrastructure selection; the product release remains API/PG default OFF.
+// t223-Nachbesserung (D0 2445a89d): nur wenn beim Start freigegeben. cache_waechter EIN im API-Startstand
+// (SYNAPSE_CACHE_WAECHTER_START=1) schaltet die wrapper_stream-Meldung frei, runtime_synapse_mods EIN die Mod-Bruecke.
+// Beides AUS (Standard): kein Beobachter, kein Abruf von /cache-waechter, der Wrapper verhaelt sich wie live.
+const CACHE_WAECHTER_START = process.env.SYNAPSE_CACHE_WAECHTER_START === '1'
+const CACHE_MOD_START = process.env.SYNAPSE_RUNTIME_MOD_POLICY === '1' && runtimeModStartStand(process.env).aktiv
+const cacheStream = (CACHE_WAECHTER_START || CACHE_MOD_START)
+  && process.env.SYNAPSE_CLI_RECHTE === 'container' && resolveModel(AGENT_MODEL)?.provider === 'anthropic'
+  && process.env.SYNAPSE_AGENT_IDENTITY_ID && process.env.SYNAPSE_AGENT_TOKEN
+  ? new CacheStreamBeobachter(process.env.SYNAPSE_AGENT_IDENTITY_ID, process.env.SYNAPSE_AGENT_TOKEN) : null
+let offeneCacheMeldung: CacheStreamMeldung | null = null
+let cacheSendend = false
+let cacheModBruecke: Awaited<ReturnType<typeof starteCacheModBruecke>> | null = null
+async function sendeCacheMetadaten(meldung: CacheStreamMeldung): Promise<void> {
+  if (!transport.meldeCacheWaechter) return
+  offeneCacheMeldung = meldung
+  if (cacheSendend) return
+  cacheSendend = true
+  try {
+    // One pending snapshot, no timer/retry/model request. Existing stream events alone trigger this.
+    while (offeneCacheMeldung) {
+      const m = offeneCacheMeldung; offeneCacheMeldung = null
+      try {
+        const r = await transport.meldeCacheWaechter(m)
+        log('cache-waechter: wrapper_stream session=%s lauf=%s angenommen=%s grund=%s', m.sitzung, m.lauf_id, r.angenommen, r.grund ?? 'ok')
+      } catch (err) {
+        log('cache-waechter: wrapper_stream Meldung fehlgeschlagen (kein Keepalive): %s', err instanceof Error ? err.message : String(err))
+      }
+    }
+  } finally { cacheSendend = false }
+}
 // P7-T18: nach so vielen Leer-Antworten (HEARTBEAT_OK) auf Leer-Weckrufe hintereinander
 // gibt es keinen Leer-Weckruf mehr, bis ein echter Anlass kommt. 0 = wie bisher (nie Pause).
 const LEERLAUF_SCHWELLE = leseLeerlaufSchwelle()
@@ -856,6 +891,17 @@ async function startAgentProcess(systemPrompt: string): Promise<void> {
   letzteCliMeldung = ''
   cliHatGeantwortet = false
   cliGestartetUm = Date.now()
+  if (cacheStream && transport.art === 'api' && process.env.SYNAPSE_RUNTIME_MOD_POLICY === '1'
+    && runtimeModStartStand(process.env).aktiv && !cacheModBruecke) {
+    const socket = join(dirname(SOCKET_PATH), 'cache-' + process.pid + '.sock')
+    cacheModBruecke = await starteCacheModBruecke(socket, {
+      bindung: () => cacheStream.bindungsStand(),
+      freigabe: () => transport.leseCacheModFreigabe ? transport.leseCacheModFreigabe() : Promise.resolve({ aktiv: false }),
+      melden: m => transport.meldeCacheWaechterMod ? transport.meldeCacheWaechterMod(m) : Promise.reject(Error('cache_mod_transport_fehlt')),
+      log: s => log('%s', s),
+    })
+    process.env.SYNAPSE_CACHE_MOD_SOCKET = socket
+  }
   await processManager.start(AGENT_NAME, AGENT_MODEL, systemPrompt, {
     cwd: PROJECT_PATH,
     effort: AGENT_EFFORT,
@@ -1738,6 +1784,20 @@ function setupProcessManagerEvents() {
     }
   })
 
+  // P22-T194: Sitzungsbindung vor Mod-session.start, auch vor dem ersten Prompt.
+  processManager.on('sitzung-start', (name: string, sitzung: string) => {
+    if (name === AGENT_NAME) cacheStream?.begin(sitzung, Date.now())
+  })
+  // P22-T194: passive stream metadata bleibt zusaetzliche Quelle; Zustellung beim Daemon.
+  processManager.on('turn-beginn', (name: string, sitzung: string, at: number) => {
+    if (name === AGENT_NAME) cacheStream?.begin(sitzung, at)
+  })
+  processManager.on('cli-stream', (name: string, event: unknown, sitzung: string, at: number) => {
+    if (name !== AGENT_NAME || !cacheStream || transport.art !== 'api') return
+    const m = cacheStream.event(event, sitzung, at)
+    if (m && CACHE_WAECHTER_START) void sendeCacheMetadaten(m)
+  })
+
   // Activity-Events: ProcessManager meldet jeden Stream-Event (assistant, user, etc.)
   processManager.on('activity', (agentName: string, _eventType: string, eventCount: number) => {
     if (agentName !== AGENT_NAME) return
@@ -1763,6 +1823,7 @@ async function beendeWegenStartfehler(grund: string): Promise<void> {
 
 async function cleanup() {
   log('Cleaning up...')
+  if (cacheModBruecke) { await cacheModBruecke.stop(); cacheModBruecke = null }
 
   if (markerTimerId) {
     clearInterval(markerTimerId)

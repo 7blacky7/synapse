@@ -37,7 +37,9 @@
 
 import { FastifyInstance } from 'fastify';
 import { registriereAgentTransportKontext } from '../services/agent-transport-kontext.js';
-import { aktuelleAgentIdentityId, aktuellerAgentAufruf } from '@synapse/core';
+import { aktuelleAgentIdentityId, aktuellerAgentAufruf, aktuellerAgentPrincipal, loeseRuntimeDaemonZugang,
+  cacheWaechterSchalter, meldeCacheWaechter, normalisiereCacheMessung, CacheWaechterFehler, leseRuntimeSynapseMods } from '@synapse/core';
+import { validateToken } from '../services/auth.js';
 import {
   getPool,
   getWrapperStatus,
@@ -243,6 +245,68 @@ function konfigAntwort(zeile: { heartbeatEnabled: boolean; heartbeatIntervalMs: 
 export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<void> {
   const BASIS = '/api/projects/:name/specialists/:specName';
   registriereAgentTransportKontext(fastify, BASIS);
+
+  /**
+   * P22-T194 / 0d2c6c07: container wrapper metadata, using the existing API transport.
+   * Identity from Ausweis; host/runtime from bound Runtime-Daemon bearer; daemon from
+   * the registered wrapper's latest spawn claim. Body cannot choose provenance.
+   */
+  async function cacheWrapperKontext(request: import('fastify').FastifyRequest) {
+    const p = aktuellerAgentPrincipal();
+    if (p?.art !== 'identity' || !p.lauf_id) throw new CacheWaechterFehler('cache_ausweis_lauf_fehlt');
+    const params = request.params as {name:string;specName:string};
+    if (p.project !== params.name || p.agent_id !== params.specName) throw new CacheWaechterFehler('cache_ziel_falsch');
+    const raw = request.headers.authorization;
+    const bearer = typeof raw === 'string' ? /^Bearer\s+(.+)$/i.exec(raw)?.[1]?.trim() : null;
+    const token = bearer ? await validateToken(bearer) : null;
+    const bindung = token?.kind === 'service' ? await loeseRuntimeDaemonZugang(token.token_hash, token.scope) : null;
+    if (!bindung || bindung.runtime !== 'claude') throw new CacheWaechterFehler('cache_container_zugang_fehlt');
+    const w = (await getPool().query<{wrapper_pid:number;daemon_id:string;ziel:string}>(
+      `SELECT w.wrapper_pid,j.claimed_by AS daemon_id,j.args->>'target_runtime' AS ziel
+       FROM agent_identitaet_wrapper_status w
+       JOIN LATERAL (SELECT claimed_by,args FROM specialist_jobs
+         WHERE target_identity_id=w.identity_id AND project=w.project AND action='spawn'
+           AND status IN ('running','done') ORDER BY created_at DESC LIMIT 1) j ON true
+       WHERE w.identity_id::text=$1 AND w.project=$2 AND w.status IN ('running','idle') AND w.provider='anthropic'`,
+      [p.identity_id,p.project])).rows[0];
+    if (!w || w.ziel !== bindung.runtime || !Number.isSafeInteger(w.wrapper_pid) || !w.daemon_id?.startsWith('daemon-'+bindung.host+'-')
+      || !/^\d+$/.test(w.daemon_id.slice(('daemon-'+bindung.host+'-').length))) throw new CacheWaechterFehler('cache_wrapper_nicht_gebunden');
+    return {p,w,bindung};
+  }
+  fastify.get(`${BASIS}/cache-waechter`,async(request,reply)=>{
+    try {const {p}=await cacheWrapperKontext(request);return {success:true,...await cacheWaechterSchalter(p.project),runtime_synapse_mods:await leseRuntimeSynapseMods(p.project)};}
+    catch(e){return reply.code(e instanceof CacheWaechterFehler?403:500).send({success:false,error:{code:e instanceof CacheWaechterFehler?e.code:'cache_meldung_fehler'}});}
+  });
+  fastify.post<{Body:{lauf_id?:unknown;sitzung?:unknown;wrapper_pid?:unknown;messung?:unknown}}>(
+    `${BASIS}/cache-waechter`,async(request,reply)=>{
+      try{
+        const {p,w,bindung}=await cacheWrapperKontext(request),b=request.body;
+        if (!b || b.wrapper_pid!==w.wrapper_pid || b.lauf_id!==p.lauf_id || typeof b.sitzung!=='string'
+          || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(b.sitzung)) throw new CacheWaechterFehler('cache_wrapper_lauf_falsch');
+        const messung=normalisiereCacheMessung(b.messung);
+        // This route has only one producer: source labels are not trusted body input.
+        if(messung.ttl_quelle==='transcript')throw new CacheWaechterFehler('cache_quelle_falsch');
+        return await meldeCacheWaechter({identity_id:p.identity_id,lauf_id:b.lauf_id as string,sitzung:b.sitzung,
+          herkunft:{weg:'container_runtime',host:bindung.host,daemon_id:w.daemon_id,runtime:'claude',lauf_art:'cli'},
+          messung:{...messung,erfassung:'wrapper_stream',zeitbasis:'turn_beginn'}});
+      }catch(e){zaehler.fehler+=1;return reply.code(e instanceof CacheWaechterFehler?409:500).send({success:false,error:{code:e instanceof CacheWaechterFehler?e.code:'cache_meldung_fehler'}});}
+    });
+
+  // P22-T194 / f18b99fb: Mod-Eingang getrennt vom passiven Stream-Beobachter.
+  fastify.post<{Body:{lauf_id?:unknown;sitzung?:unknown;wrapper_pid?:unknown;messung?:unknown}}>(
+    `${BASIS}/cache-waechter/mod`,async(request,reply)=>{
+      try{
+        const {p,w,bindung}=await cacheWrapperKontext(request),b=request.body;
+        if(!b||b.wrapper_pid!==w.wrapper_pid||b.lauf_id!==p.lauf_id||typeof b.sitzung!=='string'
+          ||!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(b.sitzung))throw new CacheWaechterFehler('cache_wrapper_lauf_falsch');
+        const mods=await leseRuntimeSynapseMods(p.project);
+        if(!mods.aktiv)return {success:true,angenommen:false,grund:'runtime_mod_schalter_aus',runtime_synapse_mods:mods};
+        const messung=normalisiereCacheMessung(b.messung);
+        return await meldeCacheWaechter({identity_id:p.identity_id,lauf_id:b.lauf_id as string,sitzung:b.sitzung,
+          herkunft:{weg:'container_runtime',host:bindung.host,daemon_id:w.daemon_id,runtime:'claude',lauf_art:'cli'},
+          messung:{...messung,erfassung:'mod',zeitbasis:'request_beginn'}});
+      }catch(e){zaehler.fehler+=1;return reply.code(e instanceof CacheWaechterFehler?409:500).send({success:false,error:{code:e instanceof CacheWaechterFehler?e.code:'cache_meldung_fehler'}});}
+    });
 
   /**
    * GET .../config — ersetzt getWrapperStatus in ladeHeartbeatKonfiguration.

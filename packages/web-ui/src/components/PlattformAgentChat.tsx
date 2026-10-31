@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { abonniereToolKarten, getAgentChatEinheitlich, getAgentVerlauf, sendePlattformAgentChat, type MainAgentVerlaufEintrag } from '../api/agent-runtime';
 import { EinheitlicherAgentChat } from './EinheitlicherAgentChat';
+import {CacheWaechterStatus} from './CacheWaechterStatus';
 
 /**
  * P22-T112: Chat mit einem Plattform-Agenten (Koordinator, spaeter Spezialist) im Fenster der Seitenleiste.
@@ -23,8 +24,9 @@ export function PlattformAgentChat({ identityId, name, pollMs = PLATTFORM_AGENT_
     getAgentChatEinheitlich(identityId).then((a) => { if (gueltig) setEinheitlich({ identityId, aktiv: a }); }).catch(() => { if (gueltig) setEinheitlich({ identityId, aktiv: false }); });
     return () => { gueltig = false; };
   }, [identityId]);
-  if (einheitlich.identityId === identityId && einheitlich.aktiv) return <EinheitlicherAgentChat key={identityId} identityId={identityId} name={name} project={project} pollMs={intervall} sendeGesperrt={sendeGesperrt} />;
-  return <PlattformAgentChatIdentitaet key={identityId} identityId={identityId} name={name} pollMs={intervall} sendeGesperrt={sendeGesperrt} />;
+  return <><CacheWaechterStatus key={'cache:'+identityId} identityId={identityId} pollMs={intervall}/>{einheitlich.identityId === identityId && einheitlich.aktiv
+    ? <EinheitlicherAgentChat key={identityId} identityId={identityId} name={name} project={project} pollMs={intervall} sendeGesperrt={sendeGesperrt}/>
+    : <PlattformAgentChatIdentitaet key={identityId} identityId={identityId} name={name} pollMs={intervall} sendeGesperrt={sendeGesperrt}/>}</>;
 }
 
 function PlattformAgentChatIdentitaet({ identityId, name, pollMs, sendeGesperrt }: { identityId: string; name: string; pollMs: number; sendeGesperrt: boolean }) {

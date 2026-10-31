@@ -13,7 +13,8 @@ import { loeseRuntimePfad } from './runtime-pfad.js'
 import { detectClaudeCli } from './detect.js'
 import type { StreamEvent, SendMessageResult } from './types.js'
 import { resolveModel, cliModelArgFuer, effortFuerCli } from './models.js'
-import { claudeToolAusgabe, pruefeToolAusgabeClaudeVersion } from '@synapse/core'
+import { claudeToolAusgabe, pruefeToolAusgabeClaudeVersion, runtimeModStartStand } from '@synapse/core'
+import { runtimeModPolicyAusUmgebung } from './runtime-mod-policy.js'
 
 interface AgentProcess {
   agentName: string
@@ -61,6 +62,7 @@ class ProcessManager extends EventEmitter {
     }
 
     const sessionId = randomUUID()
+    this.emit('sitzung-start', agentName, sessionId)
 
     // Provider-Strategy: Claude CLI vs node-Runtime (Gemini etc.)
     const modelEntry = resolveModel(model)
@@ -117,7 +119,24 @@ class ProcessManager extends EventEmitter {
       // versionierte Registry-Aliase (opus-4.7[1m]) als volle ID, sonst waeren
       // aeltere Versionen nicht waehlbar. Unbekanntes Modell: wie uebergeben.
       const rechteContainer = process.env.SYNAPSE_CLI_RECHTE === 'container'
-      const toolAusgabe = claudeToolAusgabe(process.env, rechteContainer)
+      const imageVerwaltet = rechteContainer && process.env.SYNAPSE_RUNTIME_MOD_POLICY === '1'
+      const modStand = runtimeModStartStand(process.env)
+      if (rechteContainer && modStand.aktiv && !imageVerwaltet) throw Error('runtime_synapse_mods: verwaltetes Runtime-Image erforderlich')
+      // P22-T194 (t223-Nachbesserung, D0 2445a89d): SYNAPSE_RUNTIME_MOD_POLICY=1 ist nur die Faehigkeit des Images. Verwaltet
+      // gestartet wird ausschliesslich bei runtime_synapse_mods EIN im API-Startstand; nur dann traegt der CLI-Prozess die
+      // Marke SYNAPSE_RUNTIME_MOD_VERWALTET=1 fuer den policyHelper. Bei AUS (Standard) liefert der Helper eine leere managed
+      // Policy, und der Start ist byte-gleich zum Live-Stand (--settings disableAllHooks bzw. T190-Guard ueber --settings).
+      const verwaltet = imageVerwaltet && modStand.aktiv
+      const startEnv: NodeJS.ProcessEnv = { ...process.env }
+      delete startEnv.SYNAPSE_RUNTIME_MOD_VERWALTET
+      if (verwaltet) startEnv.SYNAPSE_RUNTIME_MOD_VERWALTET = '1'
+      // Lokale Vorpruefung des Imagepakets; die CLI erhaelt dieselbe Policy ueber ihren managed policyHelper.
+      if (verwaltet) {
+        const policy = runtimeModPolicyAusUmgebung()
+        console.error('[runtime-mods:start] ' + JSON.stringify({ stand: modStand, policy: policy.managedSettings,
+          messaging: 'daemon', socket_bereit: !!process.env.SYNAPSE_CACHE_MOD_SOCKET }))
+      }
+      const toolAusgabe = claudeToolAusgabe(startEnv, rechteContainer)
       if (toolAusgabe.aktiv) pruefeToolAusgabeClaudeVersion(detectClaudeCli().version)
       if (rechteContainer) console.error('[tool-ausgabe:claude] ' + JSON.stringify(toolAusgabe.debug))
       const args = [
@@ -143,7 +162,7 @@ class ProcessManager extends EventEmitter {
 
       // P22-T6 (User): im Runtime-Container keine Claude-Code-Hooks (Nachrichten stellt der Daemon zu). Gesetzt von der
       // Agentensteuerung des Containers; ohne die Variable bleibt der Befehl unveraendert.
-      if (process.env.SYNAPSE_KEINE_HOOKS === '1' && !toolAusgabe.aktiv) args.push('--settings', JSON.stringify({ disableAllHooks: true }))
+      if (process.env.SYNAPSE_KEINE_HOOKS === '1' && !toolAusgabe.aktiv && !verwaltet) args.push('--settings', JSON.stringify({ disableAllHooks: true }))
 
       if (opts?.allowedTools?.length) {
         for (const tool of opts.allowedTools) {
@@ -168,7 +187,7 @@ class ProcessManager extends EventEmitter {
 
       proc = await starteClaudeMitPromptdatei({
         agentName, sessionId, systemPrompt, args,
-        env: { ...process.env, ...toolAusgabe.env },
+        env: { ...startEnv, ...toolAusgabe.env },
         cwd: opts?.cwd ?? process.cwd(),
         projectPath: opts?.projectPath ?? opts?.cwd ?? process.cwd(),
       })
@@ -337,6 +356,8 @@ class ProcessManager extends EventEmitter {
 
         console.error(`[ProcessManager:${agent.agentName}] Event: ${event.type}${event.type === 'result' ? ` (${event.usage?.input_tokens ?? 0}in/${event.usage?.output_tokens ?? 0}out)` : ''}`)
 
+        // P22-T194: passive metadata observer; no hook, model call or stream mutation.
+        this.emit('cli-stream', agent.agentName, event, agent.sessionId, Date.now())
         // Emit activity event for wrapper to track
         this.emit('activity', agent.agentName, event.type, eventCount)
 
@@ -395,6 +416,7 @@ class ProcessManager extends EventEmitter {
       agent.proc.once('exit', onExit)
       agent.proc.once('error', onError)
 
+      this.emit('turn-beginn', agent.agentName, agent.sessionId, Date.now())
       const inputMsg = JSON.stringify({
         type: 'user',
         message: {

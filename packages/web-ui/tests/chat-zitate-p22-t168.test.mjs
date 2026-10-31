@@ -396,7 +396,9 @@ ok(/body: JSON\.stringify\(\{ message, \.\.\.\(zitate\?\.length \? \{ zitate \} 
 ok(/<PlattformAgentChat\b[^>]*identityId=\{open\.id\}/.test(lies('packages/web-ui/src/components/ProjectCoordinatorDock.tsx')), 'H F2 Koordinator-Dock -> PlattformAgentChat');
 ok(/<PlattformAgentChat\b[^>]*identityId=\{id\}/.test(lies('packages/web-ui/src/components/ChannelAgentFensterWeiche.tsx')), 'H F2 Agenten-/Spezialisten-Fenster (Weiche) -> PlattformAgentChat');
 const pac = lies('packages/web-ui/src/components/PlattformAgentChat.tsx');
-ok(/einheitlich\.aktiv\) return <EinheitlicherAgentChat /.test(pac) && !/zitat/i.test(pac), 'H F2 PlattformAgentChat -> EinheitlicherAgentChat (Altansicht ohne Zitate, Stufe 1)');
+// P22-T194 Plan29284: Cache-Status umschliesst beide Zweige, derselbe Einheitlich-Schalter entscheidet weiterhin F2.
+ok(/einheitlich\.identityId === identityId && einheitlich\.aktiv\s*\? <EinheitlicherAgentChat\b[^>]*identityId=\{identityId\}[^>]*project=\{project\}[^>]*sendeGesperrt=\{sendeGesperrt\}\s*\/>\s*:\s*<PlattformAgentChatIdentitaet\b/.test(pac) && !/zitat/i.test(pac),
+ 'P22-T194 (Plan29284) / P22-T168 H F2: eigener Einheitlich-Schalter waehlt EinheitlicherAgentChat mit Ziel/Projekt/Sendesperre; Altansicht ohne Zitate');
 ok(!/zitat/i.test(lies('packages/web-ui/src/components/ChannelAgentChatWindow.tsx')), 'H F2 Channel-Fenster ohne Zitate (Stufe 1, Channel hat mehrere Leser)');
 console.log('OK H Einbau');
 console.log('P22-T168 Web-UI: ' + n + ' Pruefungen bestanden');

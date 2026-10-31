@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import {leseCacheWaechterStand,CacheWaechterFehler} from '@synapse/core';
 import { validateToken, type TokenKind } from '../services/auth.js';
 import { getAgentRuntimeManager, shutdownAgentRuntimeManager } from '../services/agent-runtime/manager.js';
 import type { MainAgentSession, RuntimeName, RuntimeStreamEvent } from '../services/agent-runtime/types.js';
@@ -578,6 +579,13 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       const b = request.body ?? {};
       return await wechslePlattformAgentModell({ identity_id: b.identity_id, runtime: b.runtime, modell: b.modell, effort: b.effort, grund: b.grund }, await userAkteur(request));
     } catch (error) { return sendFachFehler(reply, error); }
+  });
+  // P22-T194 Stufe2: reiner Cache-Status im vorhandenen authentifizierten Chatfenster.
+  fastify.get<{Querystring:{identity_id?:string}}>('/api/agent-runtimes/cache-waechter',async(request,reply)=>{
+    const id=request.query.identity_id??'';
+    if(!/^[a-f0-9-]{36}$/i.test(id))return reply.code(400).send({success:false,error:'identity_id_fehlt'});
+    try{return await leseCacheWaechterStand(id);}
+    catch(e){return reply.code(e instanceof CacheWaechterFehler?404:503).send({success:false,error:e instanceof CacheWaechterFehler?e.code:'cache_status_nicht_lesbar'});}
   });
   // P22-T188: Heartbeat im Chatfenster eines Plattform-Agenten. Unter /api/agent-runtimes (Guard: nur interaktive User-Session).
   // Schalter koordinator_heartbeat (Koordinator) bzw. runtime_agenten_steuerung (Unteragent); AUS -> GET mit hinweis, PUT funktion_aus.

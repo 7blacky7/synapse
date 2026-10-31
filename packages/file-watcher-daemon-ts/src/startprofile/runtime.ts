@@ -31,6 +31,7 @@ import { setzeDbProzess, sperreDbZugriff } from '@synapse/core';
 import { DaemonKern, type DaemonKernOptionen, type DaemonKernStatus } from '../daemon-kern.js';
 import { runtimeApiZugang } from '../daemon-api-client.js';
 import { starteRuntimeAgentensteuerung } from '../runtime-agentensteuerung.js';
+import { provisioniereRuntimeMods, type RuntimeModPaketStand } from '../runtime-mods.js';
 import {
   CLI_NAMEN, istCliName, inventar, provisioniereBundle, aktualisiere, standardInstaller,
   type CliName, type CliLayout, type CliInstaller, type CliInventar, type UpdateErgebnis,
@@ -138,6 +139,7 @@ export interface RuntimeStatus {
   api_zugang: { art: 'runtime'; vorhanden: boolean; hinweis: string | null };
   clis: CliInventar[];
   autoupdate: AutoupdateStand;
+  mods: RuntimeModPaketStand;
   letzter_fehler: string | null;
 }
 
@@ -216,6 +218,19 @@ export async function starteRuntimeProfil(opt: RuntimeProfilOptionen = {}): Prom
     kern.markiereAus('cli-bundle', `kein Image-Bundle unter ${konfig.bundleDir.wert}`);
   }
 
+  // P22-T194: nach dem HOME-Mount; das Paket bleibt im read-only Image. Keine Mod-Freigabe hier.
+  // t223-Nachbesserung: ein defektes Paket darf den Runtime-Daemon nie stoppen (Schalter AUS = Betrieb wie bisher);
+  // der verwaltete Start prueft das Paket ohnehin erneut (process.ts) und verweigert dann.
+  let mods: RuntimeModPaketStand;
+  try { mods = provisioniereRuntimeMods(env); }
+  catch (err) {
+    mods = { bereit: false, quelle: 'aus', revision: null, version: null, image_pfad: null, home_pfad: null, sha256: null,
+      letzter_fehler: (err instanceof Error ? err.message : String(err)).slice(0, 200) };
+    console.error('[runtime-mods] Paket nicht bereit: ' + mods.letzter_fehler);
+  }
+  if (mods.bereit) kern.markiereGestartet('runtime-mods');
+  else kern.markiereAus('runtime-mods', mods.letzter_fehler ?? 'kein verwaltetes Mod-Image');
+
   // --- api-zugang (nur Anzeige) -----------------------------------------------------------
   const zugangStand = () => {
     const z = runtimeApiZugang();
@@ -252,6 +267,7 @@ export async function starteRuntimeProfil(opt: RuntimeProfilOptionen = {}): Prom
     api_zugang: pruefeZugang(),
     clis: konfig.clis.wert.map((cli) => inventar(layout, cli)),
     autoupdate: { ...auto, ergebnisse: { ...auto.ergebnisse } },
+    mods,
     letzter_fehler: letzterFehler,
   });
   const schreibeStatus = () => {

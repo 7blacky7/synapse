@@ -1,4 +1,5 @@
 import type { Register } from 'claude-code'
+import {runtimeCacheStart,runtimeCacheRequest,cacheWaechterAktiv,merkeCacheTranscript,leseCacheTranscript,cacheModellGewechselt,beobachteCacheKontext,beobachteCacheRequest,aktualisiereCacheFreigabe} from './cache-waechter'
 
 // P22-T134 Mod-Inbox: wartet am lokalen Synapse-Daemon (mod-inbox.ts) auf Nachrichten an den Ausweis dieser Sitzung und
 // startet damit einen Turn. Den Ausweis kennt nur der Daemon (aus dem Transcript); die Mod meldet nur ihre Sitzungs-ID.
@@ -24,12 +25,22 @@ const VERFALL_MS_STANDARD = 30 * 60_000
 
 interface ModNachricht { id: string; text: string }
 interface Vorpruefung { aktiv: boolean; ruhe_ms: number; verfall_ms: number }
-interface WarteAntwort { nachricht?: ModNachricht | null; aktiv?: boolean; grund?: string | null; vorpruefung?: Vorpruefung | null }
+interface WarteAntwort { nachricht?: ModNachricht | null; aktiv?: boolean; grund?: string | null;cache_waechter?:unknown; vorpruefung?: Vorpruefung | null }
 
 /** P22-T212: Hauptschleife dieser Sitzung aus turn.start/turn.complete ohne agentId; ende = Zeitpunkt des letzten Turnendes. */
 const hauptschleife = { laeuft: false, ende: 0 }
 
 export const register: Register = on => {
+  // P22-T194: nur passive Telemetrie nach Freigabe der API, Hauptloop getrennt von nativen Subagenten.
+  on('classic.SessionStart',async($,e,next)=>{merkeCacheTranscript(e.transcript_path);return next(e);});
+  on('classic.Stop',async($,e,next)=>{const r=await next(e);merkeCacheTranscript(e.transcript_path);void leseCacheTranscript($);return r;});
+  on('classic.PostModelSwitch',async($,e,next)=>{const r=await next(e);void cacheModellGewechselt($,e.to_model);return r;});
+  on('session.measure',async($,e,next)=>{void beobachteCacheKontext($,e.context.tokens);return next(e);});
+  on('turn.step',async function*($,e,next){
+    if(e.agentId)return yield* next(e);
+    const at=await $.clock.now(),r=yield* next(e);
+    void runtimeCacheRequest($,e,r.usage,at);return r;
+  });
   // P22-T212: Untaetigkeit selbst verfolgen, nicht auf das Warteverhalten von $.prompt.submit verlassen.
   on('turn.start', async ($, e, next) => {
     if (!e.agentId) hauptschleife.laeuft = true
@@ -41,6 +52,8 @@ export const register: Register = on => {
   })
 
   on('session.start', async ($, e, next) => {
+    // P22-T194: Container-Mod ist ausschliesslich Telemetrie; niemals Inbox-Poll/$.prompt.submit starten.
+    if (await runtimeCacheStart($)) return next(e)
     // P22-T212: frische Sitzung bzw. neu geladene Mod beginnt untaetig (kein Stand eines frueheren Laufs).
     hauptschleife.laeuft = false
     hauptschleife.ende = 0
@@ -170,6 +183,7 @@ export const register: Register = on => {
         const r = await $.http.fetch(`${basis}/warte?sitzung=${sitzung}&wartend=${wartend.size}`)
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         const j = JSON.parse(r.text) as WarteAntwort
+        await aktualisiereCacheFreigabe($,j.cache_waechter)
         if ((j.aktiv === true) !== aktivAngezeigt) {
           aktivAngezeigt = j.aktiv === true
           $.ui.status(aktivAngezeigt ? 'Synapse-Inbox aktiv' : undefined)
@@ -183,6 +197,7 @@ export const register: Register = on => {
         } else vorpruefungAktiv = false
         if (j.nachricht) void nimmAn(basis, j.nachricht)
       } catch {
+        await aktualisiereCacheFreigabe($,{aktiv:false})
         pause = PAUSE_BEI_FEHLER_MS
       }
       $.clock.after(pause, () => { void runde() })

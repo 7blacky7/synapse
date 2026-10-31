@@ -60,19 +60,26 @@ export function pruefeToolAusgabeClaudeVersion(version: string | null | undefine
 /** Basissperre bleibt byte-gleich; EIN schaltet ausschliesslich Read mit zwingendem Pfad-Guard frei. */
 export function claudeToolAusgabe(env: NodeJS.ProcessEnv, container: boolean): {
   aktiv: boolean; flags: string[]; env: Record<string, string>; debug: Record<string, unknown>;
+  einstellungen: { disableAllHooks: false; hooks: Record<string, unknown> } | null;
 } {
   const tokens = positive(env, 'SYNAPSE_CLAUDE_MCP_OUTPUT_TOKENS');
   const timeout = positive(env, 'SYNAPSE_TOOL_AUSGABE_GUARD_SEKUNDEN');
   const aktiv = container && env.SYNAPSE_TOOL_AUSGABE_AKTIV === '1' && tokens !== null && timeout !== null;
   const flags = ['--tools', aktiv ? 'Read' : '', '--permission-mode', 'dontAsk'];
+  let einstellungen: { disableAllHooks: false; hooks: Record<string, unknown> } | null = null;
   if (aktiv) {
     const guard = 'node --input-type=commonjs -e ' + shellZitat(toolResultsGuardQuelle()) + ' || exit 2';
-    flags.push('--allowedTools', TOOL_RESULTS_READ_REGEL, '--setting-sources', '', '--settings', JSON.stringify({
+    einstellungen = {
       disableAllHooks: false,
       hooks: { PreToolUse: [{ matcher: 'Read', hooks: [{ type: 'command', command: guard, timeout, onFailure: 'block' }] }] },
-    }));
+    };
+    flags.push('--allowedTools', TOOL_RESULTS_READ_REGEL, '--setting-sources', '');
+    // P22-T194: nur beim verwalteten Start (runtime_synapse_mods EIN; Marke SYNAPSE_RUNTIME_MOD_VERWALTET aus process.ts bzw.
+    // baueRuntimeModPolicy) steht derselbe Guard im policyHelper-Ergebnis. Sonst, auch im Image bei Schalter AUS, bleibt der
+    // T190-Aufruf bytegleich (t223-Nachbesserung).
+    if (env.SYNAPSE_RUNTIME_MOD_VERWALTET !== '1') flags.push('--settings', JSON.stringify(einstellungen));
   }
-  return { aktiv, flags, env: aktiv ? { MAX_MCP_OUTPUT_TOKENS: String(tokens) } : {},
+  return { aktiv, flags, einstellungen, env: aktiv ? { MAX_MCP_OUTPUT_TOKENS: String(tokens) } : {},
     debug: { aktiv, quelle: env.SYNAPSE_TOOL_AUSGABE_QUELLE ?? 'standard', max_mcp_output_tokens: aktiv ? tokens : null,
       read: aktiv ? TOOL_RESULTS_READ_REGEL : 'gesperrt', guard: aktiv ? 'PreToolUse Read, onFailure=block (Claude >=2.1.295)' : 'aus',
       messaging_hooks: false, hinweis: 'Aenderungen gelten ab dem naechsten Wrapper-Start; grosse Antworten koennen weiterhin als Datei landen.' } };

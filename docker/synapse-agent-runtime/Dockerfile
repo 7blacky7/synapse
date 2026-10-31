@@ -34,6 +34,7 @@ ARG PNPM_VERSION=10.33.0
 # 1) Daemon/Wrapper bauen und eigenstaendig ablegen
 # ---------------------------------------------------------------------------
 FROM ${NODE_IMAGE} AS build
+ARG SYNAPSE_REVISION=dev
 ARG PNPM_VERSION
 ENV COREPACK_HOME=/opt/corepack COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
@@ -50,7 +51,12 @@ COPY packages/mcp-server packages/mcp-server
 COPY packages/file-watcher-daemon-ts packages/file-watcher-daemon-ts
 RUN pnpm --filter @synapse/file-watcher-daemon-ts... run build
 RUN pnpm --filter @synapse/file-watcher-daemon-ts deploy --legacy --prod /out/app \
- && chmod 0755 /out/app/dist/runtime-main.js /out/app/dist/runtime-cli.js
+ && chmod 0755 /out/app/dist/runtime-main.js /out/app/dist/runtime-cli.js /out/app/node_modules/@synapse/agents/dist/runtime-mod-policy-helper.js
+# P22-T194: nur die freigegebene gemeinsame Mod, keine Probe-Plugins/Arbeitskopie.
+COPY mods/synapse-inbox mods/synapse-inbox
+COPY mods/.claude-plugin/marketplace.json mods/.claude-plugin/marketplace.json
+COPY docker/synapse-agent-runtime/paketiere-mods.mjs docker/synapse-agent-runtime/paketiere-mods.mjs
+RUN node docker/synapse-agent-runtime/paketiere-mods.mjs /src/mods /out/app/mods "${SYNAPSE_REVISION}"
 
 # ---------------------------------------------------------------------------
 # 2) CLI-Bundle: exakte Versionen ueber denselben Installweg wie im Betrieb (cli-versionen.ts)
@@ -87,14 +93,21 @@ ENV COREPACK_HOME=/opt/corepack COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
 COPY --from=build /out/app /opt/synapse/${SYNAPSE_REVISION}
 COPY --from=cli-bundle /opt/synapse/cli-bundle /opt/synapse/cli-bundle
+# P22-T194 (t223-Nachbesserung): managed-settings.json ruft nur den policyHelper auf. Ohne verwalteten Start
+# (runtime_synapse_mods AUS, Standard) gibt er eine leere managed Policy aus und die CLI startet wie bisher.
+# SYNAPSE_RUNTIME_MOD_POLICY=1 unten ist nur die Faehigkeit dieses Images, kein Schalter.
+COPY docker/synapse-agent-runtime/managed-settings.json /etc/claude-code/managed-settings.json
 RUN ln -s /opt/synapse/${SYNAPSE_REVISION} /opt/synapse/current \
  && printf '%s\n' "${SYNAPSE_REVISION}" > /opt/synapse/REVISION \
  && ln -s /opt/synapse/current/dist/runtime-cli.js /usr/local/bin/synapse-runtime \
- && ln -s /opt/synapse/current/dist/runtime-main.js /usr/local/bin/synapse-runtime-daemon
+ && ln -s /opt/synapse/current/dist/runtime-main.js /usr/local/bin/synapse-runtime-daemon \
+ && ln -s /opt/synapse/current/node_modules/@synapse/agents/dist/runtime-mod-policy-helper.js /usr/local/bin/synapse-runtime-mod-policy
 ENV HOME=/root \
     PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     DISABLE_AUTOUPDATER=1 \
     SYNAPSE_DAEMON_PROFIL=runtime \
+    SYNAPSE_RUNTIME_MOD_POLICY=1 \
+    SYNAPSE_RUNTIME_MOD_MARKETPLACE=/opt/synapse/current/mods \
     SYNAPSE_IMAGE_REVISION=${SYNAPSE_REVISION} \
     PNPM_HOME=/root/.local/share/pnpm \
     XDG_CACHE_HOME=/root/.cache \

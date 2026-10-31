@@ -151,6 +151,12 @@ export class ApiTransport implements WrapperTransport {
       if (antwort.status === 404 && optionen.leerBei404) return null
 
       if (!antwort.ok) {
+        // P22-T194: bounded error code only, never raw response/credentials/transcript.
+        if (pfad === '/cache-waechter') {
+          const d = await antwort.json().catch(() => null) as { error?: { code?: unknown } } | null
+          const code = d?.error?.code
+          if (typeof code === 'string' && /^[a-z_]{1,80}$/.test(code)) throw new Error(`HTTP ${antwort.status} bei ${pfad}: ${code}`)
+        }
         throw new Error(`HTTP ${antwort.status} bei ${pfad}`)
       }
 
@@ -560,6 +566,30 @@ export class ApiTransport implements WrapperTransport {
       koerper: { runtime, eintraege },
     })
     return { gebucht: typeof daten.gebucht === 'number' ? daten.gebucht : 0, grund: typeof daten.grund === 'string' ? daten.grund : null }
+  }
+
+  /** P22-T194: getrennte Mod-Freigabe, keine Mod-Inbox-Registrierung. */
+  async leseCacheModFreigabe(): Promise<{ aktiv: boolean; quelle?: string; [key: string]: unknown }> {
+    const r = await this.rufPflicht<{ aktiv?: boolean; runtime_synapse_mods?: { aktiv?: boolean; quelle?: string } }>('cache-waechter', '/cache-waechter');
+    return { aktiv: r.aktiv === true && r.runtime_synapse_mods?.aktiv === true, quelle: r.runtime_synapse_mods?.quelle,
+      runtime_synapse_mods: r.runtime_synapse_mods ?? null };
+  }
+  async meldeCacheWaechterMod(meldung: import('../cache-waechter-stream.js').CacheStreamMeldung): Promise<{ angenommen: boolean; grund: string | null }> {
+    if (!(await this.leseCacheModFreigabe()).aktiv) return { angenommen: false, grund: 'schalter_aus' };
+    const r = await this.rufPflicht<{ angenommen?: boolean; grund?: string | null }>('cache-waechter', '/cache-waechter/mod', {
+      methode: 'POST', koerper: { ...meldung, wrapper_pid: process.pid },
+    });
+    return { angenommen: r.angenommen === true, grund: r.grund ?? null };
+  }
+
+  /** P22-T194: same authenticated transport; flag OFF never posts a measurement. */
+  async meldeCacheWaechter(meldung: import('../cache-waechter-stream.js').CacheStreamMeldung): Promise<{ angenommen: boolean; grund: string | null }> {
+    const frei = await this.rufPflicht<{ aktiv?: boolean }>('cache-waechter', '/cache-waechter')
+    if (frei.aktiv !== true) return { angenommen: false, grund: 'schalter_aus' }
+    const r = await this.rufPflicht<{ angenommen?: boolean; grund?: string | null }>('cache-waechter', '/cache-waechter', {
+      methode: 'POST', koerper: { ...meldung, wrapper_pid: process.pid },
+    })
+    return { angenommen: r.angenommen === true, grund: r.grund ?? null }
   }
 
   /** P22-T63: Sitzungs-Eintraege ueber POST .../verlauf; die Identitaet bestimmt der Server aus Ausweis/Agent. */

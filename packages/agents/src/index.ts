@@ -10,6 +10,8 @@ export * from './status.js'
 export * from './channels.js'
 export * from './inbox.js'
 export * from './process.js'
+// P22-T194: oeffentlicher Source-Export auch fuer schattenbasierte Build-Pruefung.
+export { pruefeRuntimeModPaket } from './runtime-mod-policy.js'
 export * from './heartbeat.js'
 export * from './start-fehler.js'
 export * from './modelle-api.js'

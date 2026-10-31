@@ -1,0 +1,7 @@
+{
+  "allowManagedHooksOnly": true,
+  "disableAllHooks": true,
+  "policyHelper": {
+    "path": "/usr/local/bin/synapse-runtime-mod-policy"
+  }
+}

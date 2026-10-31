@@ -1,0 +1,14 @@
+{
+  "name": "synapse-runtime",
+  "owner": {
+    "name": "Synapse"
+  },
+  "plugins": [
+    {
+      "name": "synapse-inbox",
+      "source": "./synapse-inbox",
+      "description": "Versionierte Synapse-Mod: lokal Inbox und Cache, Runtime nur passive Cache-Telemetrie",
+      "version": "0.3.0"
+    }
+  ]
+}

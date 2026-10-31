@@ -29,7 +29,7 @@ export function agentStartFreigegeben(): boolean {
 export async function holeAgentStartApi(name: string, project: string): Promise<Record<string, string>> {
   if (!agentStartFreigegeben()) return {};
   // Server prüft Freigabe erneut sowie Daemon-Host und Projektzuordnung.
-  const a = await spezialistenDatenApi<{ freigegeben?: boolean; token?: string; neuanmeldung?: boolean; legacy_start?: boolean; identity_id?: string; agent_bezug_modus?: string; tool_ausgabe_env?: Record<string, string> }>('agent_start', { project, agent: name });
+  const a = await spezialistenDatenApi<{ freigegeben?: boolean; token?: string; neuanmeldung?: boolean; legacy_start?: boolean; identity_id?: string; agent_bezug_modus?: string; tool_ausgabe_env?: Record<string, string>; runtime_mod_env?: Record<string, string> }>('agent_start', { project, agent: name });
   if (a.freigegeben !== true) return {};
   if (a.token !== undefined && (typeof a.token !== 'string' || !/^sai_[a-z0-9]{1,64}$/.test(a.token))) {
     throw new Error('agent_start: ungültige API-Antwort');
@@ -39,7 +39,10 @@ export async function holeAgentStartApi(name: string, project: string): Promise<
     throw new Error('agent_start: Anmeldung nicht geklärt');
   }
   // P22-T190: nur erlaubte, nicht geheime Startwerte; keine beliebigen Env-Namen aus einer Antwort uebernehmen.
-  const toolEnv: Record<string, string> = { SYNAPSE_TOOL_AUSGABE_AKTIV: '0' };
+  const toolEnv: Record<string, string> = { SYNAPSE_TOOL_AUSGABE_AKTIV: '0', SYNAPSE_RUNTIME_SYNAPSE_MODS_STAND: '' };
+  if (typeof a.runtime_mod_env?.SYNAPSE_RUNTIME_SYNAPSE_MODS_STAND === 'string') toolEnv.SYNAPSE_RUNTIME_SYNAPSE_MODS_STAND = a.runtime_mod_env.SYNAPSE_RUNTIME_SYNAPSE_MODS_STAND;
+  // t223-Nachbesserung: Cache-Telemetrie des Wrappers nur bei cache_waechter EIN beim Start (sonst kein API-Abruf).
+  toolEnv.SYNAPSE_CACHE_WAECHTER_START = a.runtime_mod_env?.SYNAPSE_CACHE_WAECHTER_START === '1' ? '1' : '0';
   for (const k of ['SYNAPSE_TOOL_AUSGABE_AKTIV', 'SYNAPSE_TOOL_AUSGABE_QUELLE', 'SYNAPSE_CLAUDE_MCP_OUTPUT_TOKENS', 'SYNAPSE_CODEX_TOOL_OUTPUT_TOKENS', 'SYNAPSE_TOOL_AUSGABE_KONTEXT_PROZENT', 'SYNAPSE_TOOL_AUSGABE_GUARD_SEKUNDEN']) {
     if (typeof a.tool_ausgabe_env?.[k] === 'string') toolEnv[k] = a.tool_ausgabe_env[k];
   }

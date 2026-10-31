@@ -53,6 +53,10 @@ const SITZUNG_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 export interface ModNachricht { id: string; text: string }
 export interface ModVorpruefung { aktiv: boolean; ruhe_ms: number; verfall_ms: number }
 interface Sitzung {
+  cache_waechter?: {aktiv:boolean;quelle:string;letzter_fehler?:string|null};
+  cache_anmeldung_tool?:string|null;
+  cache_lauf_id?:string|null;
+  cache_letzter_fehler?:string|null;
   id: string;
   zuletzt: number;
   transcript: string | null;
@@ -259,6 +263,30 @@ function findeTranscript(id: string): string | null {
 }
 
 /** Neue vollstaendige Zeilen des Transcripts nach der letzten Anmeldung durchsuchen (Ausweiswechsel inklusive). */
+/** P22-T194: Lauf nur aus dem Ergebnis des zuvor gesehenen chat(anmelden), nie aus beliebigem Text. */
+function merkeCacheLauf(s:Sitzung,zeile:string):void{
+ let row:{type?:string;message?:{content?:unknown}};
+ try{row=JSON.parse(zeile) as typeof row;}catch{return;}
+ const blocks=row.message?.content;if(!Array.isArray(blocks))return;
+ if(row.type==='assistant'){
+  for(const b of blocks){
+   if(b?.type==='tool_use'&&typeof b.name==='string'&&/(^|__)chat$/.test(b.name)&&b.input?.action==='anmelden'){
+    s.cache_anmeldung_tool=typeof b.id==='string'?b.id:null;s.cache_lauf_id=null;
+   }
+  }
+ }
+ if(row.type!=='user'||!s.cache_anmeldung_tool)return;
+ for(const b of blocks){
+  if(b?.type!=='tool_result'||b.tool_use_id!==s.cache_anmeldung_tool)continue;
+  const parts=typeof b.content==='string'?[b.content]:Array.isArray(b.content)?b.content.filter((x:{type?:string})=>x?.type==='text').map((x:{text?:string})=>x.text):[];
+  for(const part of parts){if(typeof part!=='string')continue;
+   try{const d=JSON.parse(part),p=d.principal;
+    if(d.success===true&&p&&typeof p.lauf_id==='string'&&SITZUNG_ID.test(p.lauf_id)&&(!p.ausweis||p.ausweis===s.ausweis))s.cache_lauf_id=p.lauf_id;
+   }catch{ /* Nicht jedes Tool-Ergebnis ist JSON; daraus entsteht keine Laufbindung. */ }
+  }
+ }
+}
+
 function leseAusweis(s: Sitzung): void {
   if (!s.transcript) s.transcript = findeTranscript(s.id);
   if (!s.transcript) return;
@@ -279,6 +307,7 @@ function leseAusweis(s: Sitzung): void {
       for (const z of puffer.subarray(0, letzte).toString('utf8').split('\n')) {
         const a = ausweisAusZeile(z);
         if (a) s.ausweis = a;
+        merkeCacheLauf(s,z);
       }
       s.gelesen_bis += letzte + 1;
     }
@@ -304,7 +333,7 @@ export async function modInboxTakt(): Promise<void> {
   }
   if (liste.length === 0) return;
   try {
-    const r = await anfrage<{ sitzungen?: Array<{ sitzung?: unknown; aktiv?: unknown; identity_id?: unknown; grund?: unknown; offene_quittungen?: unknown }> }>(
+    const r = await anfrage<{ sitzungen?: Array<{ sitzung?: unknown; aktiv?: unknown; identity_id?: unknown; grund?: unknown; offene_quittungen?: unknown;cache_waechter?:{aktiv:boolean;quelle:string;letzter_fehler?:string|null} }> }>(
       '/api/daemon/mod-inbox', { method: 'POST', body: { host: DAEMON_HOST, daemon_id: DAEMON_API_ID, sitzungen: liste } }, 30_000);
     for (const e of r.sitzungen ?? []) {
       const s = typeof e.sitzung === 'string' ? sitzungen.get(e.sitzung) : undefined;
@@ -314,11 +343,13 @@ export async function modInboxTakt(): Promise<void> {
       s.grund = typeof e.grund === 'string' ? e.grund : null;
       s.offene_quittungen = leseOffeneQuittungen(e.offene_quittungen);
       s.vorpruefung = leseVorpruefung((e as { vorpruefung?: unknown }).vorpruefung);
+      s.cache_waechter=e.cache_waechter??{aktiv:false,quelle:'api_ohne_cache_waechter'};
     }
     letzteMeldung = new Date().toISOString();
     letzterFehler = null;
   } catch (err) {
     letzterFehler = (err as Error).message.slice(0, 300);
+    for(const s of sitzungen.values())s.cache_waechter={aktiv:false,quelle:'api_fehler',letzter_fehler:'cache_freigabe_nicht_lesbar'};
     console.error('[mod-inbox] Meldung an die API fehlgeschlagen:', letzterFehler);
   }
 }
@@ -417,7 +448,7 @@ export function registriereModInbox(app: FastifyInstance): void {
     if (neu) void takt();
     const nachricht = await w.ergebnis;
     const s = sitzungen.get(id);
-    return { success: true, nachricht, aktiv: s?.aktiv ?? false, grund: s?.grund ?? null,
+    return { success: true, nachricht, aktiv: s?.aktiv ?? false, grund: s?.grund ?? null, cache_waechter:s?.cache_waechter??{aktiv:false,quelle:'noch_nicht_gemeldet'},
       vorpruefung: s?.vorpruefung ?? null };
   });
 
@@ -431,6 +462,20 @@ export function registriereModInbox(app: FastifyInstance): void {
     catch (err) { return reply.code(503).send({ success: false, error: (err as Error).message.slice(0, 200) }); }
   });
 
+  // P22-T194: nur Loopback, Identität und Lauf ausschließlich aus dem bestätigten Transcript-Anmeldeergebnis.
+  app.post<{Body:{sitzung?:unknown;messung?:unknown}}>('/mod-inbox/cache-waechter',async(req,reply)=>{
+    if(!nurLokal(req,reply))return reply;
+    const b=req.body??{},s=typeof b.sitzung==='string'?sitzungen.get(b.sitzung):undefined;
+    if(!s)return reply.code(404).send({success:false,error:'cache_sitzung_unbekannt'});
+    try{leseAusweis(s);}catch{return reply.code(503).send({success:false,error:'cache_transcript_nicht_lesbar'});}
+    if(!s.cache_waechter?.aktiv)return {success:true,angenommen:false,grund:'schalter_aus'};
+    if(!s.ausweis||!s.cache_lauf_id)return reply.code(409).send({success:false,error:'cache_laufbindung_fehlt'});
+    try{
+      const r=await anfrage('/api/daemon/cache-waechter',{method:'POST',body:{host:DAEMON_HOST,daemon_id:DAEMON_API_ID,
+        ausweis:s.ausweis,lauf_id:s.cache_lauf_id,sitzung:s.id,messung:b.messung}},30000);
+      s.cache_letzter_fehler=null;return r;
+    }catch{s.cache_letzter_fehler='cache_api_nicht_lesbar';return reply.code(503).send({success:false,error:s.cache_letzter_fehler});}
+  });
   app.post<{ Body: { sitzung?: unknown; id?: unknown; gestartet?: unknown; grund?: unknown; verworfen?: unknown } }>('/mod-inbox/quittung', async (req, reply) => {
     if (!nurLokal(req, reply)) return reply;
     const b = req.body ?? {};
@@ -455,7 +500,7 @@ export function registriereModInbox(app: FastifyInstance): void {
       success: true,
       sitzungen: [...sitzungen.values()].map((s) => ({ sitzung: s.id, aktiv: s.aktiv, grund: s.grund, identity_id: s.identity_id,
         ausweis_bekannt: s.ausweis !== null, wartet: s.warter !== null, schlange: s.schlange.length, zuletzt_vor_s: Math.round((jetzt - s.zuletzt) / 1000),
-        offene_quittungen: s.offene_quittungen,
+        offene_quittungen: s.offene_quittungen, cache_waechter:s.cache_waechter??null,cache_lauf_id:s.cache_lauf_id??null,cache_letzter_fehler:s.cache_letzter_fehler??null,
         vorpruefung: s.vorpruefung ?? null, wartend_in_mod: s.wartend_in_mod ?? null, pruefung_letzte: s.pruefung_letzte ?? null })),
       uebergaben: [...uebergaben].map(([id, u]) => ({ id, sitzung: u.sitzung, stand: u.stand, grund: u.grund, vor_s: Math.round((jetzt - u.am) / 1000) })),
       abweisungen,

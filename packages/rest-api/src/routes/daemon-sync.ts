@@ -54,6 +54,7 @@ import {
   resetProjectParse,
   reparseProject,
 } from '@synapse/core';
+import {cacheWaechterSchalter,meldeCacheWaechter,CacheWaechterFehler} from '@synapse/core';
 import type { WatcherEreignisEintrag, ExtractedDocument } from '@synapse/core';
 
 /** Gleiche Signatur wie der Pruefer in routes/daemon-jobs.ts. */
@@ -319,10 +320,11 @@ export async function daemonSyncRoutes(fastify: FastifyInstance, pruefeDaemon: D
       const ausweis = roh?.ausweis;
       if (!istText(sitzung, 64) || !istText(ausweis, 200)) continue;
       let identityId: string;
-      try { identityId = (await pruefeAgentToken(ausweis)).identitaet.id; }
+      let cacheProject: string;
+      try { const anmeldung=await pruefeAgentToken(ausweis);identityId=anmeldung.identitaet.id;cacheProject=anmeldung.identitaet.project; }
       catch { sitzungen.push({ sitzung, aktiv: false, identity_id: null, grund: 'ausweis_ungueltig' }); continue; }
       // P22-T144: daemon_id erkennt einen Daemon-Neustart (verwaiste Zustell-Jobs freigeben, Erinnerung an offene Quittungen).
-      sitzungen.push({ sitzung, ...(await meldeModSitzung({ host: d.host, sitzung, identity_id: identityId, daemon_id: d.daemonId })) });
+      sitzungen.push({ sitzung, ...(await meldeModSitzung({ host: d.host, sitzung, identity_id: identityId, daemon_id: d.daemonId })), cache_waechter:await cacheWaechterSchalter(cacheProject) });
     }
     return { success: true, sitzungen };
   });
@@ -345,6 +347,17 @@ export async function daemonSyncRoutes(fastify: FastifyInstance, pruefeDaemon: D
     const v = await leseModInboxVorpruefung(project);
     if (!v.aktiv) return { success: true, aktiv: false, erledigt: [], offen: schluessel };
     return { success: true, aktiv: true, ...(await pruefeModInboxErledigt(identityId, schluessel)) };
+  });
+
+  // P22-T194: Herkunft ausschließlich aus dem vorhandenen autorisierten Daemon-Zugang.
+  fastify.post<{Body:Body}>('/api/daemon/cache-waechter',async(request,reply)=>{
+    const b=request.body??{},d=await pruefeDaemon(request,reply,b.host,b.daemon_id);if(!d)return reply;
+    if(!istText(b.ausweis,200)||!istText(b.lauf_id,64)||!istText(b.sitzung,64))return reply.code(400).send({success:false,error:'cache_herkunft_fehlt'});
+    let identity:string;
+    try{identity=(await pruefeAgentToken(b.ausweis)).identitaet.id;}catch{return reply.code(403).send({success:false,error:'ausweis_ungueltig'});}
+    try{return await meldeCacheWaechter({identity_id:identity,lauf_id:b.lauf_id,sitzung:b.sitzung,
+      herkunft:{weg:'tray_daemon',host:d.host,daemon_id:d.daemonId,runtime:'claude',lauf_art:'cli'},messung:b.messung});}
+    catch(e){return reply.code(e instanceof CacheWaechterFehler?409:500).send({success:false,error:e instanceof CacheWaechterFehler?e.code:'cache_meldung_fehler'});}
   });
 
   // ── Tray (lokale Daemon-API, api.ts) ───────────────────────────────────────────────────────
