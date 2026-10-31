@@ -35,7 +35,13 @@ test('P18-T26: Vorschau-Formate geben alle Formate mit echtem A14-Decoder frei (
   assert.ok(Array.isArray(ANSICHT_RENDERER_FORMATE) && ANSICHT_RENDERER_FORMATE.includes('bmp'));
   for (const f of ANSICHT_RENDERER_FORMATE) assert.ok(c.vorschau.formate.includes(f), 'Vorschau-Standard ohne ' + f);
   // P22-T238: transferFormate bleibt der Katalog BEKANNTER Formate; freigegeben ist ohne Betreiberliste trotzdem alles (transferAlle).
-  assert.ok(!c.speicher.transferFormate.includes('bmp'), 'Transfer-Katalog (bekannte Formate) wird nicht still erweitert');
+  // P4-T75 + Entscheidung Koordinator 31.10.2026 (a, thought 09bfa8e4): neue Inspektoren erweitern den bekannten Transfer-Katalog
+  // gewollt (User-Grundsatz 'jede Nicht-Code-Datei auf den Share'); bmp ist jetzt Inspector-Format. Reine Renderer-Formate
+  // ohne Inspector kommen weiterhin nicht still hinein.
+  assert.ok(c.speicher.transferFormate.includes('bmp'), 'P4-T75: bmp ist Inspector-Format und damit bekanntes Transferformat');
+  for (const f of ANSICHT_RENDERER_FORMATE.filter((f) => !standardRegistry.formats().includes(f))) {
+    assert.ok(!c.speicher.transferFormate.includes(f), 'Transfer-Katalog nicht still um Renderer-Format erweitert: ' + f);
+  }
   assert.equal(c.speicher.transferAlle, true, 'P22-T238: ohne Betreiberliste sind alle Formate freigegeben');
   // Explizite Betreiberliste mit bmp ist gueltig, unbekannte Formate bleiben Fehler.
   assert.deepEqual(ladeAssetKonfiguration({ SYNAPSE_ASSET_PREVIEW_FORMATS: 'png,BMP' }).vorschau.formate, ['bmp', 'png']);

@@ -11,6 +11,9 @@
  *   D file-watcher-daemon-ts asset-erkennung.ts pruefeLokalesAsset: generisch aus/ein, erlaubteTypen, SVG bleibt Code.
  *   E core services/asset-transfer-generisch.ts leseAssetTransferGenerisch + agent-profil-schalter.ts Katalog (nur ausdruecklich)
  *     + intern-schalter.ts; Produkt-Schalter projekt EIN/AUS gegen synapse_test (nur wenn DATABASE_URL gesetzt; eigene Projektzeile, aufgeraeumt).
+ * P4-T75 + Entscheidung Koordinator 31.10.2026 (a, thought 09bfa8e4): AVIF/HEIF, BMP, ICO/CUR und Schriften haben jetzt Inspektoren
+ *   und sind damit bekannte Transferformate, auch bei Schalter AUS (User-Grundsatz 'jede Nicht-Code-Datei auf den Share').
+ *   Der generische Weg wird deshalb mit weiterhin unbekannten Binaerformaten (PSD, TGA) geprueft.
  * AUFRUF: mise run build:core && pnpm --filter @synapse/file-watcher-daemon-ts run build &&
  *   node packages/core/tests/asset-transfer-generisch-p22-t238.test.mjs   (DATABASE_URL nur synapse_test)
  */
@@ -38,12 +41,20 @@ const AVIF = Buffer.concat([Buffer.from([0, 0, 0, 0x1c]), Buffer.from('ftypavif'
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52]);
 const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"></svg>\n');
 const WOFF2 = Buffer.concat([Buffer.from('wOF2'), Buffer.from([0, 1, 0, 0]), Buffer.alloc(40)]);
+// P4-T75 (a): weiterhin ohne Inspector -> Beispiele fuer den generischen Weg (Binaerinhalt).
+const PSD = Buffer.concat([Buffer.from('8BPS'), Buffer.from([0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]), Buffer.alloc(24)]);
+const TGA = Buffer.concat([Buffer.from([0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 24, 0]), Buffer.from([0, 0, 255])]);
+const { standardRegistry } = await import(resolve(here, '../dist/asset-intel/index.js'));
+const NEUE_INSPEKTOR_FORMATE = ['avif', 'heic', 'heif', 'bmp', 'ico', 'cur', 'ttf', 'otf', 'ttc', 'woff', 'woff2', 'eot'];
 
 // ------------------------------------------------------------------ A Konfiguration (asset-konfig.ts)
 {
   const c = K.ladeAssetKonfiguration({});
   check('P22-T238 A asset-konfig.ts ladeAssetKonfiguration: ohne SYNAPSE_ASSET_TRANSFER_FORMATS transferAlle=true', c.speicher.transferAlle === true, c.speicher.transferAlle);
-  check('P22-T238 A asset-konfig.ts: transferFormate bleibt der Inspector-Katalog (bekannte Formate)', !c.speicher.transferFormate.includes('avif'), c.speicher.transferFormate);
+  check('P22-T238 A asset-konfig.ts: transferFormate bleibt der Inspector-Katalog (bekannte Formate)',
+    JSON.stringify(c.speicher.transferFormate) === JSON.stringify(standardRegistry.formats()) && !c.speicher.transferFormate.includes('psd'), c.speicher.transferFormate);
+  check('P4-T75 (a) asset-konfig.ts: die 12 neuen Inspector-Formate sind bekannte Transferformate',
+    NEUE_INSPEKTOR_FORMATE.every((f) => c.speicher.transferFormate.includes(f)), NEUE_INSPEKTOR_FORMATE.filter((f) => !c.speicher.transferFormate.includes(f)));
   const w = K.loeseAssetProjektoptionen(c, {});
   check('P22-T238 A loeseAssetProjektoptionen: ohne Projektliste alleTypen=true', w.alleTypen === true, w);
   const p = K.loeseAssetProjektoptionen(c, { erlaubteTypen: ['AVIF', 'png'] });
@@ -67,11 +78,18 @@ const WOFF2 = Buffer.concat([Buffer.from('wOF2'), Buffer.from([0, 1, 0, 0]), Buf
 
 // ------------------------------------------------------------------ B ermittleTransferFormat (asset-konfig.ts)
 {
-  check('P22-T238 B ermittleTransferFormat: AVIF ohne Schalter -> null (Altverhalten)', K.ermittleTransferFormat('x/bild.avif', AVIF, false) === null);
-  const a = K.ermittleTransferFormat('x/bild.avif', AVIF, true);
-  check('P22-T238 B ermittleTransferFormat: AVIF mit Schalter -> avif via generisch', a?.format === 'avif' && a?.via === 'generisch', a);
-  const w = K.ermittleTransferFormat('fonts/a.woff2', WOFF2, true);
-  check('P22-T238 B ermittleTransferFormat: woff2 mit Schalter -> woff2 via generisch', w?.format === 'woff2' && w?.via === 'generisch', w);
+  check('P22-T238 B ermittleTransferFormat: PSD ohne Schalter -> null (Altverhalten)', K.ermittleTransferFormat('x/bild.psd', PSD, false) === null);
+  const a = K.ermittleTransferFormat('x/bild.psd', PSD, true);
+  check('P22-T238 B ermittleTransferFormat: PSD mit Schalter -> psd via generisch', a?.format === 'psd' && a?.via === 'generisch', a);
+  const t = K.ermittleTransferFormat('texturen/a.tga', TGA, true);
+  check('P22-T238 B ermittleTransferFormat: TGA mit Schalter -> tga via generisch', t?.format === 'tga' && t?.via === 'generisch', t);
+  // P4-T75 (a): AVIF und woff2 haben jetzt Inspektoren -> bekannt, mit und ohne Schalter via inspektor.
+  for (const schalter of [false, true]) {
+    const av = K.ermittleTransferFormat('x/bild.avif', AVIF, schalter);
+    check('P4-T75 (a) ermittleTransferFormat: AVIF Schalter ' + (schalter ? 'EIN' : 'AUS') + ' -> avif via inspektor', av?.format === 'avif' && av?.via === 'inspektor', av);
+    const w = K.ermittleTransferFormat('fonts/a.woff2', WOFF2, schalter);
+    check('P4-T75 (a) ermittleTransferFormat: woff2 Schalter ' + (schalter ? 'EIN' : 'AUS') + ' -> woff2 via inspektor', w?.format === 'woff2' && w?.via === 'inspektor', w);
+  }
   const p = K.ermittleTransferFormat('x/bild.png', PNG, true);
   check('P22-T238 B ermittleTransferFormat: PNG bleibt Inspector-Format (via inspektor)', p?.format === 'png' && p?.via === 'inspektor', p);
   // thought 5eae0647: SVG ist Code -> nie ein generisches Asset, auch mit Schalter.
@@ -92,14 +110,17 @@ const WOFF2 = Buffer.concat([Buffer.from('wOF2'), Buffer.from([0, 1, 0, 0]), Buf
   const ctx = { bereich: 'projekt', ziel_ref: 'p22t238', host_id: 'h1' };
   const eingang = (pfad, format) => ({ logischer_pfad: pfad, storage_kind: 'assets', groesse: 10, sha256: 'a'.repeat(64), basis_revision: '0',
     idempotency_key: 'k-' + pfad, ...(format ? { format } : {}) });
-  let e = await wirft(() => kern(false).erstellen(ctx, eingang('bilder/bildtest.avif', 'avif')));
-  check('P22-T238 C asset-upload.ts erstellen: Schalter AUS -> avif format_verboten mit Schalter-Hinweis',
+  let e = await wirft(() => kern(false).erstellen(ctx, eingang('bilder/bild.psd', 'psd')));
+  check('P22-T238 C asset-upload.ts erstellen: Schalter AUS -> psd format_verboten mit Schalter-Hinweis',
     e?.code === 'format_verboten' && /asset_transfer_generisch/.test(e.message), { code: e?.code, msg: e?.message });
-  e = await wirft(() => kern(true).erstellen(ctx, eingang('bilder/bildtest.avif', 'avif')));
-  check('P22-T238 C asset-upload.ts erstellen: Schalter EIN -> avif passiert das Formatgate', e?.message === 'TX_ERREICHT', { code: e?.code, msg: e?.message });
-  e = await wirft(() => kern(true).erstellen(ctx, eingang('bilder/bildtest.avif')));
+  e = await wirft(() => kern(true).erstellen(ctx, eingang('bilder/bild.psd', 'psd')));
+  check('P22-T238 C asset-upload.ts erstellen: Schalter EIN -> psd passiert das Formatgate', e?.message === 'TX_ERREICHT', { code: e?.code, msg: e?.message });
+  e = await wirft(() => kern(true).erstellen(ctx, eingang('bilder/bild.psd')));
   check('P22-T238 C asset-upload.ts erstellen: Schalter EIN ohne Clientformat -> generisch aus Endung', e?.message === 'TX_ERREICHT', { code: e?.code, msg: e?.message });
-  e = await wirft(() => kern(true, { erlaubte_typen: ['png'] }).erstellen(ctx, eingang('bilder/bildtest.avif', 'avif')));
+  // P4-T75 (a): avif ist Inspector-Format -> auch bei Schalter AUS bekannt und erlaubt.
+  e = await wirft(() => kern(false).erstellen(ctx, eingang('bilder/bildtest.avif', 'avif')));
+  check('P4-T75 (a) asset-upload.ts erstellen: Schalter AUS -> avif (Inspector-Format) passiert das Formatgate', e?.message === 'TX_ERREICHT', { code: e?.code, msg: e?.message });
+  e = await wirft(() => kern(true, { erlaubte_typen: ['png'] }).erstellen(ctx, eingang('bilder/bild.psd', 'psd')));
   check('P22-T238 C asset-upload.ts erstellen: Projektliste [png] schraenkt auch generisch ein', e?.code === 'format_verboten', { code: e?.code, msg: e?.message });
   e = await wirft(() => kern(false).erstellen(ctx, eingang('bilder/a.png', 'png')));
   check('P22-T238 C asset-upload.ts erstellen: Inspector-Format png auch bei Schalter AUS (Altverhalten)', e?.message === 'TX_ERREICHT', { code: e?.code, msg: e?.message });
@@ -112,15 +133,19 @@ const WOFF2 = Buffer.concat([Buffer.from('wOF2'), Buffer.from([0, 1, 0, 0]), Buf
   const root = await mkdtemp(join(tmpdir(), 'p22-t238-'));
   try {
     await writeFile(join(root, 'bildtest.avif'), AVIF);
+    await writeFile(join(root, 'bild.psd'), PSD);
     await writeFile(join(root, 'icon.svg'), SVG);
     await writeFile(join(root, 'a.png'), PNG);
     const o = { maxDateiBytes: 1_000_000 };
-    check('P22-T238 D asset-erkennung.ts: avif ohne generisch -> null (Altverhalten)', await pruefeLokalesAsset(root, 'p22t238', 'bildtest.avif', o) === null);
-    const a = await pruefeLokalesAsset(root, 'p22t238', 'bildtest.avif', { ...o, generisch: true });
-    check('P22-T238 D asset-erkennung.ts: avif mit generisch -> format avif, via generisch', a?.format === 'avif' && a?.via === 'generisch' && a?.groesse === AVIF.length, a);
+    check('P22-T238 D asset-erkennung.ts: psd ohne generisch -> null (Altverhalten)', await pruefeLokalesAsset(root, 'p22t238', 'bild.psd', o) === null);
+    const a = await pruefeLokalesAsset(root, 'p22t238', 'bild.psd', { ...o, generisch: true });
+    check('P22-T238 D asset-erkennung.ts: psd mit generisch -> format psd, via generisch', a?.format === 'psd' && a?.via === 'generisch' && a?.groesse === PSD.length, a);
+    // P4-T75 (a): avif ist Inspector-Format -> auch ohne generisch erkannt.
+    const av = await pruefeLokalesAsset(root, 'p22t238', 'bildtest.avif', o);
+    check('P4-T75 (a) asset-erkennung.ts: avif ohne generisch -> format avif, via inspektor', av?.format === 'avif' && av?.via === 'inspektor', av);
     check('P22-T238 D asset-erkennung.ts: svg mit generisch -> null (SVG ist Code, thought 5eae0647)', await pruefeLokalesAsset(root, 'p22t238', 'icon.svg', { ...o, generisch: true }) === null);
-    check('P22-T238 D asset-erkennung.ts: erlaubteTypen [png] blockt generisches avif',
-      await pruefeLokalesAsset(root, 'p22t238', 'bildtest.avif', { ...o, generisch: true, erlaubteTypen: ['png'] }) === null);
+    check('P22-T238 D asset-erkennung.ts: erlaubteTypen [png] blockt generisches psd',
+      await pruefeLokalesAsset(root, 'p22t238', 'bild.psd', { ...o, generisch: true, erlaubteTypen: ['png'] }) === null);
     const p = await pruefeLokalesAsset(root, 'p22t238', 'a.png', o);
     check('P22-T238 D asset-erkennung.ts: png via inspektor wie bisher', p?.format === 'png' && p?.via === 'inspektor', p);
   } finally { await rm(root, { recursive: true, force: true }); }
