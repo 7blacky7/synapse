@@ -72,7 +72,9 @@ const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id'
   // P22-T173: additiver Parameter (identitaet_umbenennen).
   'neuer_name',
   // P22-T191 (Nachtrag t215/P22-T199): additiver Parameter der Aktion artefakt_einstellungen.
-  'artefakt_werte'];
+  'artefakt_werte',
+  // P22-T227/T233: neuer Parameter der Log-Strom-Altersschwelle; Altvertrag bleibt unveraendert.
+  'log_strom_veraltet_tage'];
 // P23-T1: additive Werte in bestehenden Enums (Jev-Funktion skill_rerank in jev_schalten.funktion).
 // P23-T6: additiver Enumwert skill_rerank_probe (Jev-Funktion der Diagnose intern skill_probe).
 const neueEnumWerte = { funktion: new Set(['skill_rerank', 'skill_rerank_probe']) };

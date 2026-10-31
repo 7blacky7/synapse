@@ -120,6 +120,8 @@ const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','z
  'netzwerk_modus','netzwerk_werte',
  // P21-T3/T13: Hex-Einstellungen (im Schema vor den Hauptagent-Parametern)
  'hex_werte','hex_namen',
+ // P22-T227/T233: Altersschwelle benannter Log-Stroeme im vorhandenen Admin-Katalog.
+ 'log_strom_veraltet_tage',
  // P22-T191: nach den Hex-Parametern in W1B_ADMIN_PARAMETER.
  'artefakt_werte',
  // P18-T86: Reverse-Einstellungs-Parameter nach Hex (P22-T139: nachgetragen)
