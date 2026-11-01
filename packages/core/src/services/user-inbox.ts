@@ -10,6 +10,7 @@ import { internToolAktiv } from './intern-tool-aktiv.js';
 import { leseRuntimeUeberwachungEinstellungen } from './runtime-ueberwachung.js';
 import { postToInbox } from './inbox.js';
 import { leseAgentBezugModus, mitAgentAufrufKontext } from './agent-bezug.js';
+import { inboxNichtAusgeblendet } from './warteschlangen-altbestand.js';
 
 export const USER_INBOX_FUNKTION = 'user_inbox' as const;
 export class UserInboxFehler extends Error {
@@ -36,7 +37,9 @@ export async function leseUserInboxEinstellungen() {
   const e = await leseRuntimeUeberwachungEinstellungen();
   return { seite: e.user_inbox_seite, abgleich_sekunden: e.user_inbox_abgleich_sekunden, text_max: e.user_inbox_text_max };
 }
-const USER_ZIEL = "to_agent='user' AND to_identity_id IS NULL";
+const USER_ZIEL_BASIS = "to_agent='user' AND to_identity_id IS NULL";
+/** P27-T11: ausgeblendeter Altbestand (admin warteschlangen_aufraeumen) erscheint nicht in Meine Inbox, solange der Schalter EIN ist. */
+const userZiel = async (): Promise<string> => USER_ZIEL_BASIS + ' AND ' + await inboxNichtAusgeblendet('specialist_inbox.id');
 function idWert(id: unknown): string {
   if (typeof id !== 'string' || !/^[1-9]\d{0,17}$/.test(id)) throw new UserInboxFehler('inbox_id_ungueltig');
   return id;
@@ -52,21 +55,22 @@ export async function leseUserInbox(q: { project?: string; agent?: string; ungel
   if (!schalter.aktiv) return { ...leer, debug: { quelle: schalter.quelle, modus: 'aus' } };
   const pool = getPool();
   const zaehler = (await pool.query<{ ungelesen: number; gesamt: number }>(
-    'SELECT count(*) FILTER (WHERE NOT processed)::int ungelesen,count(*)::int gesamt FROM specialist_inbox WHERE ' + USER_ZIEL)).rows[0];
-  const filter = (await pool.query<{ project: string; from_agent: string }>('SELECT DISTINCT project,from_agent FROM specialist_inbox WHERE ' + USER_ZIEL)).rows;
+    'SELECT count(*) FILTER (WHERE NOT processed)::int ungelesen,count(*)::int gesamt FROM specialist_inbox WHERE ' + await userZiel())).rows[0];
+  const filter = (await pool.query<{ project: string; from_agent: string }>('SELECT DISTINCT project,from_agent FROM specialist_inbox WHERE ' + await userZiel())).rows;
   const basis = { ...leer, ...zaehler, projekte: [...new Set(filter.map(z => z.project))].sort(), agenten: [...new Set(filter.map(z => z.from_agent))].sort() };
   if (q.nur_status === '1') return { ...basis, debug: { quelle: schalter.quelle, modus: 'zaehler' } };
   const limit = q.limit === undefined ? einstellungen.seite.wert : Number(q.limit);
   if (!Number.isInteger(limit) || limit < 1 || limit > einstellungen.seite.wert) throw new UserInboxFehler('limit_ungueltig');
   const vor = q.vor_id === undefined ? null : idWert(q.vor_id);
   if (q.ungelesen !== undefined && !['0', '1'].includes(q.ungelesen)) throw new UserInboxFehler('filter_ungueltig');
+  const ohneAusgeblendete = await inboxNichtAusgeblendet('m.id');
   const r = await pool.query<{
     id: string; project: string; from_agent: string; from_identity_id: string | null; content: string; processed: boolean;
     created_at: Date; absender_name: string | null; absender_status: string | null;
   }>(`SELECT m.id::text,m.project,m.from_agent,m.from_identity_id,m.content,m.processed,m.created_at,
       i.name absender_name,i.status absender_status
     FROM specialist_inbox m LEFT JOIN agent_identitaeten i ON i.id=m.from_identity_id
-    WHERE m.to_agent='user' AND m.to_identity_id IS NULL
+    WHERE m.to_agent='user' AND m.to_identity_id IS NULL AND ${ohneAusgeblendete}
       AND ($1::text IS NULL OR m.project=$1) AND ($2::text IS NULL OR m.from_agent=$2)
       AND (NOT $3::boolean OR NOT m.processed) AND ($4::bigint IS NULL OR m.id<$4::bigint)
     ORDER BY m.id DESC LIMIT $5`, [q.project || null, q.agent || null, q.ungelesen === '1', vor, limit + 1]);
@@ -85,7 +89,7 @@ export interface UserInboxNachricht {
 export async function setzeUserInboxGelesen(id: unknown, gelesen: unknown) {
   await freigabe();
   if (typeof gelesen !== 'boolean') throw new UserInboxFehler('gelesen_ungueltig');
-  const r = await getPool().query('UPDATE specialist_inbox SET processed=$2 WHERE id=$1 AND ' + USER_ZIEL + ' RETURNING id::text,processed', [idWert(id), gelesen]);
+  const r = await getPool().query('UPDATE specialist_inbox SET processed=$2 WHERE id=$1 AND ' + await userZiel() + ' RETURNING id::text,processed', [idWert(id), gelesen]);
   if (!r.rows[0]) throw new UserInboxFehler('nachricht_unbekannt', 404);
   return { success: true, id: r.rows[0].id, gelesen: r.rows[0].processed };
 }
@@ -96,7 +100,7 @@ export async function antworteUserInbox(id: unknown, eingabe: unknown) {
   if (!text || text.length > e.text_max.wert) throw new UserInboxFehler('text_ungueltig');
   const pool = getPool();
   const z = (await pool.query<{ project: string; from_agent: string; from_identity_id: string | null }>(
-    'SELECT project,from_agent,from_identity_id FROM specialist_inbox WHERE id=$1 AND ' + USER_ZIEL, [idWert(id)])).rows[0];
+    'SELECT project,from_agent,from_identity_id FROM specialist_inbox WHERE id=$1 AND ' + await userZiel(), [idWert(id)])).rows[0];
   if (!z) throw new UserInboxFehler('nachricht_unbekannt', 404);
   if (['user','system'].includes(z.from_agent)) throw new UserInboxFehler('absender_nicht_antwortbar', 409);
   // Identitaet gewinnt immer; kein stiller Fallback auf einen inzwischen neu vergebenen Namen.

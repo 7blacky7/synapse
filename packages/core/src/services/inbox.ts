@@ -4,6 +4,7 @@ import type { AgentZiel } from './agent-bezug.js'
 import type { InboxMessage } from '../types/index.js'
 import { wakeAntwortIdentitaetAktiv, rueckadresseFuer, projektfreiesLesenErlaubt } from './wake-rueckadresse.js'
 import { aktuellerAgentPrincipal } from './agent-bezug.js'
+import { inboxNichtAusgeblendet } from './warteschlangen-altbestand.js'
 
 function mapRow(row: Record<string, unknown>): InboxMessage {
   return {
@@ -101,16 +102,18 @@ export async function getNewInboxMessages(agentName: string | AgentZiel, sinceId
 }
 
 export async function getInboxHistory(agentName: string | AgentZiel, project: string, limit = 50): Promise<InboxMessage[]> {
+  // P27-T11: ausgeblendeter Altbestand (admin warteschlangen_aufraeumen) erscheint nicht im Verlauf, solange der Schalter EIN ist.
+  const ohneAusgeblendete = await inboxNichtAusgeblendet('specialist_inbox.id')
 
   const z = await aufgeloestesKommunikationsZiel(project, agentName, true)
   if (agentBezugAktiv()) {
     const frei = await identitaetProjektfrei(z, project)
-    const result = await getPool().query(`SELECT * FROM specialist_inbox WHERE ($4::boolean OR project=$2) AND ${z.art === 'identity' ? 'to_identity_id=$1' : 'to_agent=$1 AND to_identity_id IS NULL'} ORDER BY id DESC LIMIT $3`, [bezugsWert(z), project, limit, frei])
+    const result = await getPool().query(`SELECT * FROM specialist_inbox WHERE ($4::boolean OR project=$2) AND ${z.art === 'identity' ? 'to_identity_id=$1' : 'to_agent=$1 AND to_identity_id IS NULL'} AND ${ohneAusgeblendete} ORDER BY id DESC LIMIT $3`, [bezugsWert(z), project, limit, frei])
     return result.rows.map(mapRow)
   }
   agentName = z.agent_id
   const result = await getPool().query(
-    `SELECT id, from_agent, to_agent, content, processed, created_at FROM specialist_inbox WHERE to_agent = $1 AND to_identity_id IS NULL AND project = $2 ORDER BY id DESC LIMIT $3`,
+    `SELECT id, from_agent, to_agent, content, processed, created_at FROM specialist_inbox WHERE to_agent = $1 AND to_identity_id IS NULL AND project = $2 AND ${ohneAusgeblendete} ORDER BY id DESC LIMIT $3`,
     [agentName, project, limit],
   )
   return result.rows.map(mapRow)

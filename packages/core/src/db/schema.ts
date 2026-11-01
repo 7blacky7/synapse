@@ -67,6 +67,7 @@ import { VERLAUF_STUECKE_SCHEMA_SQL } from './verlauf-stuecke-schema.js';
 import { CHAT_ZITATE_SCHEMA_SQL } from './chat-zitate-schema.js';
 import { AGENT_AKTUELLE_TASK_SCHEMA_SQL } from './agent-aktuelle-task-schema.js';
 import { AGENT_NAMENS_ALIAS_SCHEMA_SQL } from './agent-namens-alias-schema.js';
+import { WARTESCHLANGEN_ALTBESTAND_SCHEMA_SQL } from './warteschlangen-altbestand-schema.js';
 import { API_AGENT_SCHLUESSEL_SCHEMA_SQL } from './api-agent-schluessel-schema.js';
 // P22-T179: Freigabe kostenpflichtiger API-Agenten je Identitaet (Schema 161).
 import { API_AGENT_FREIGABEN_SCHEMA_SQL } from './api-agent-freigaben-schema.js';
@@ -3284,29 +3285,14 @@ CREATE TABLE IF NOT EXISTS editor_abbild_dateien (
   maskiert BOOLEAN NOT NULL DEFAULT FALSE,
   PRIMARY KEY (abbild_id, file_path)
 );
--- P22-T256: isolierte User-Prüfpläne; keine Datei-Reservation und kein Co-Edit-Gate.
-CREATE TABLE IF NOT EXISTS editor_pruefplaene (
- id UUID PRIMARY KEY,
- project TEXT NOT NULL,
- abbild_id UUID NOT NULL,
- file_path TEXT NOT NULL,
- entwurf TEXT NOT NULL,
- status TEXT NOT NULL DEFAULT 'wartet' CHECK(status IN ('wartet','zugeteilt','konflikt','freigegeben','abgelehnt')),
- pruefer_identity_id TEXT REFERENCES agent_identitaeten(id),
- pruefer_name TEXT,
- pruefung TEXT,
- files_plan_id BIGINT REFERENCES file_batch_plans(id),
- erstellt_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
- aktualisiert_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
- FOREIGN KEY(abbild_id,file_path) REFERENCES editor_abbild_dateien(abbild_id,file_path)
-);
-ALTER TABLE editor_pruefplaene ADD COLUMN IF NOT EXISTS files_plan_id BIGINT REFERENCES file_batch_plans(id);
-CREATE INDEX IF NOT EXISTS idx_editor_pruefplaene_project ON editor_pruefplaene(project,erstellt_am DESC);
--- P22-T264: editor_pruefplaene ist stillgelegt (Daten bleiben, kein Trigger mehr). Der Web-Editor speichert in EINEN normalen
+-- P22-T272 (User 01.11.2026 ~13:40 MEZ "Ja, natuerlich wird es geloescht"): editor_pruefplaene (P22-T256, Rest des nie bestellten
+-- Tools editor_pruefplan) ist entfernt; seit P22-T264 liest/schreibt sie niemand. Indizes gehen mit der Tabelle, Trigger/Funktion
+-- gab es nicht mehr, keine eingehenden Fremdschluessel. Idempotent.
+DROP TABLE IF EXISTS editor_pruefplaene;
+-- P22-T264: Der Web-Editor speichert in EINEN normalen
 -- offenen files-Plan des Users; editor_userplan setzt nur file-batch.ts schreibeEditorUserPlan (belegte Web-Editor-Herkunft).
 ALTER TABLE file_batch_plans ADD COLUMN IF NOT EXISTS editor_userplan BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_editor_userplan_offen ON file_batch_plans(project) WHERE editor_userplan AND status = 'open';
-DROP TRIGGER IF EXISTS trg_editor_pruefplan_benachrichtigen ON editor_pruefplaene;
 
 
 
@@ -3353,6 +3339,7 @@ ${VERLAUF_STUECKE_SCHEMA_SQL}
 ${CHAT_ZITATE_SCHEMA_SQL}
 ${AGENT_AKTUELLE_TASK_SCHEMA_SQL}
 ${AGENT_NAMENS_ALIAS_SCHEMA_SQL}
+${WARTESCHLANGEN_ALTBESTAND_SCHEMA_SQL}
 ${API_AGENT_SCHLUESSEL_SCHEMA_SQL}
 ${API_AGENT_FREIGABEN_SCHEMA_SQL}
 ${SPEICHER_AEHNLICHKEIT_SCHEMA_SQL}

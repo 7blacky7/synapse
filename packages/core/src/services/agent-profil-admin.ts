@@ -32,6 +32,7 @@ import { HAUPTAGENT_ADMIN_ACTIONS, HAUPTAGENT_ADMIN_PARAMETER, istHauptagentAdmi
 import { API_AGENT_ADMIN_ACTIONS, API_AGENT_ADMIN_PARAMETER, istApiAgentAdminAction, fuehreApiAgentAdminAus } from './api-agent-dienst.js';
 import { markiereEntfernteProfile } from './agent-entfernung.js';
 import { AGENT_ENTFERNUNG_ADMIN_ACTIONS, AGENT_ENTFERNUNG_ADMIN_PARAMETER, istAgentEntfernungAdminAction, fuehreAgentEntfernungAdminAus } from './agent-entfernung.js';
+import { WS_ALTBESTAND_ADMIN_ACTIONS, WS_ALTBESTAND_ADMIN_PARAMETER, istWsAltbestandAdminAction, fuehreWsAltbestandAdminAus } from './warteschlangen-altbestand.js';
 import { CONTAINER_ADMIN_ACTIONS, CONTAINER_ADMIN_PARAMETER, istContainerAdminAction, fuehreContainerAdminAus } from './agent-container.js';
 import { KOORDINATOR_HEARTBEAT_ADMIN_ACTIONS, istKoordinatorHeartbeatAdminAction, fuehreKoordinatorHeartbeatAdminAus } from './koordinator-heartbeat.js';
 import { AGENT_ANMELDUNGEN_ADMIN_ACTIONS, AGENT_ANMELDUNGEN_ADMIN_PARAMETER, istAgentAnmeldungenAdminAction, fuehreAgentAnmeldungenAdminAus } from './agent-anmeldungen.js';
@@ -63,7 +64,7 @@ const W1B_KERN_AKTIONEN = [
   'identitaet_umbenennen',
 ] as const;
 /** P22-T36: hauptagent_* additiv im selben admin-Weg; eigene Rechtepruefung (User + Main selbst) in hauptagent-dienst.ts. */
-export const W1B_ADMIN_ACTIONS = ['artefakt_einstellungen', 'agentennetzwerk', ...HEX_ADMIN_ACTIONS, ...SHELL_AUSGABE_ADMIN_ACTIONS, ...REVERSE_ADMIN_ACTIONS, ...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS, ...AGENT_ANMELDUNGEN_ADMIN_ACTIONS, ...KOORDINATOR_HEARTBEAT_ADMIN_ACTIONS] as const;
+export const W1B_ADMIN_ACTIONS = ['artefakt_einstellungen', 'agentennetzwerk', ...HEX_ADMIN_ACTIONS, ...SHELL_AUSGABE_ADMIN_ACTIONS, ...REVERSE_ADMIN_ACTIONS, ...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...WS_ALTBESTAND_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS, ...AGENT_ANMELDUNGEN_ADMIN_ACTIONS, ...KOORDINATOR_HEARTBEAT_ADMIN_ACTIONS] as const;
 export type W1bAdminAction = typeof W1B_KERN_AKTIONEN[number];
 
 /** Nur NEUE Parameternamen; bestehende (project, aktiv, grund, ebene, agent_id) bleiben byte-stabil unveraendert. */
@@ -114,6 +115,7 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   ...API_AGENT_ADMIN_PARAMETER,
   ...RUNTIME_UEBERWACHUNG_ADMIN_PARAMETER,
   ...AGENT_ENTFERNUNG_ADMIN_PARAMETER,
+  ...WS_ALTBESTAND_ADMIN_PARAMETER,
   ...CONTAINER_ADMIN_PARAMETER,
   ...AGENT_ANMELDUNGEN_ADMIN_PARAMETER,
 };
@@ -596,6 +598,8 @@ export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteu
   if (istRuntimeUeberwachungAdminAction(action)) return fuehreRuntimeUeberwachungAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
   // P22-T80: alte Agenten weich entfernen (User und Koordinator inkl. Legacy-Koordinator) – eigener Rechtepfad in agent-entfernung.ts.
   if (istAgentEntfernungAdminAction(action)) return fuehreAgentEntfernungAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
+  // P27-T11: Altbestand in Warteschlangen ausblenden (nie loeschen) - eigener Rechtepfad wie agenten_aufraeumen.
+  if (istWsAltbestandAdminAction(action)) return fuehreWsAltbestandAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
   // P22-T82: Kontingent fuer Spezialisten im Runtime-Container (status: User + Koordinator inkl. Legacy; setzen: nur User).
   if (istContainerAdminAction(action)) return fuehreContainerAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
   // P22-T107: Heartbeat der Koordinatoren (User; Koordinator/Main nur mit user_auftrag) – eigener Rechtepfad in koordinator-heartbeat.ts.
