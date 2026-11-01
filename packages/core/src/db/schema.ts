@@ -3302,13 +3302,11 @@ CREATE TABLE IF NOT EXISTS editor_pruefplaene (
 );
 ALTER TABLE editor_pruefplaene ADD COLUMN IF NOT EXISTS files_plan_id BIGINT REFERENCES file_batch_plans(id);
 CREATE INDEX IF NOT EXISTS idx_editor_pruefplaene_project ON editor_pruefplaene(project,erstellt_am DESC);
-DO $block$
-BEGIN
- IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='trg_editor_pruefplan_benachrichtigen' AND tgrelid='editor_pruefplaene'::regclass) THEN
-  CREATE TRIGGER trg_editor_pruefplan_benachrichtigen AFTER INSERT OR UPDATE OR DELETE ON editor_pruefplaene FOR EACH ROW EXECUTE FUNCTION editor_plan_benachrichtigen();
- END IF;
-END;
-$block$;
+-- P22-T264: editor_pruefplaene ist stillgelegt (Daten bleiben, kein Trigger mehr). Der Web-Editor speichert in EINEN normalen
+-- offenen files-Plan des Users; editor_userplan setzt nur file-batch.ts schreibeEditorUserPlan (belegte Web-Editor-Herkunft).
+ALTER TABLE file_batch_plans ADD COLUMN IF NOT EXISTS editor_userplan BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_editor_userplan_offen ON file_batch_plans(project) WHERE editor_userplan AND status = 'open';
+DROP TRIGGER IF EXISTS trg_editor_pruefplan_benachrichtigen ON editor_pruefplaene;
 
 
 
@@ -3325,6 +3323,28 @@ CREATE TABLE IF NOT EXISTS user_live_artefakt_layout (
   aktualisiert TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (user_key, artefakt_id, project)
 );
+-- P22-T259 L3/L4 (User 01.11.2026, thought c737a806): Was auf der Leinwand liegt, haelt dieselbe Zeile (auf_leinwand). Neue
+-- Live-Artefakte erscheinen nicht mehr automatisch, der User legt sie mit "+" darauf und nimmt sie wieder herunter (Zeile bleibt mit
+-- Lage und Groesse). Einmal-Umstieg NUR beim Anlegen der Spalte: jedes heutige Katalogpaar ohne Zeile bekommt seine bisherige
+-- Standardlage (Reihenfolge und Formel wie LiveArtefakte.tsx), damit nach dem Deploy alle heutigen Kacheln an ihrem Platz bleiben.
+DO $block$
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='user_live_artefakt_layout' AND column_name='auf_leinwand') THEN
+  ALTER TABLE user_live_artefakt_layout ADD COLUMN auf_leinwand BOOLEAN NOT NULL DEFAULT TRUE;
+  IF to_regclass('artefakt_renderungen') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='agent_artifacts' AND column_name='vorlage') THEN
+   INSERT INTO user_live_artefakt_layout(user_key,artefakt_id,project,x,y,breite,hoehe)
+   SELECT 'user', k.artefakt_id, k.project, ((k.nr-1)%2)*50, ((k.nr-1)/2)*340, 48, 320
+   FROM (SELECT p.artefakt_id, p.project, row_number() OVER (ORDER BY p.artefakt_id::text, p.project) AS nr FROM (
+     SELECT id AS artefakt_id, standard_project AS project FROM agent_artifacts
+     WHERE modus='live' AND vorlage IS NOT NULL AND standard_project IS NOT NULL AND standard_project <> ''
+     UNION
+     SELECT a.id, r.project FROM agent_artifacts a JOIN artefakt_renderungen r ON r.artefakt_id=a.id
+     WHERE a.modus='live' AND a.vorlage IS NOT NULL AND r.project <> '') p) k
+   ON CONFLICT (user_key,artefakt_id,project) DO NOTHING;
+  END IF;
+ END IF;
+END;
+$block$;
 
 ${ARTEFAKT_DATEIEN_SCHEMA_SQL}
 ${CACHE_WAECHTER_SCHEMA_SQL}

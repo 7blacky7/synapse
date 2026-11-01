@@ -15,7 +15,7 @@ import {
   leseHauptagentHeartbeat, setzeHauptagentHeartbeat, hauptagentIdentitaetsId, leseVerbrauchSchalter, setzeVerbrauchSchalter, leseAgentVerbrauch,
   bucheAgentVerbrauch, HAUPTAGENT_PROJEKT, HAUPTAGENT_AGENT_ID,
   leseRuntimeUeberwachung, setzeRuntimeUeberwachungSchalter, setzeRuntimeUeberwachungEinstellungen, markiereRuntimeAngehalten,
-  mitUserHerkunft, leseNetzwerkKonfiguration, leseUiProduktSchalter, erstelleEditorAbbild, leseEditorAbbild, leseEditorAbbildDatei, erstelleEditorPruefplan, listeEditorPruefplaene, leseEditorPruefplan, mitCodeIntelSchatten, getFileContent, listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls, postToInbox, mitAgentAufrufKontext, leseAgentBezugModus,
+  mitUserHerkunft, leseNetzwerkKonfiguration, leseUiProduktSchalter, erstelleEditorAbbild, leseEditorAbbild, leseEditorAbbildDatei, speichereEditorUserPlan, leseEditorUserPlan, leseEditorUserPlanDatei, sendeEditorPruefauftrag, mitCodeIntelSchatten, getFileContent, listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls, postToInbox, mitAgentAufrufKontext, leseAgentBezugModus,
   leseCliModelleSchalter, pruefeModellFuerRuntime, leseUserModellWahl, synapseModellId, CLI_MODELL_RUNTIMES, type CliModellRuntime,
   pruefeEffortFuerModell, leseEffortWahl, listModels, setzeCliKontextQuelle,
   leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent, rendereToolBild,
@@ -49,6 +49,8 @@ import { listeZitatEmpfaenger, sendeZitatAnEmpfaenger } from '@synapse/core';
 // P22-T188: Heartbeat im Chatfenster (Stand + setzen, nur User).
 import { leseAgentHeartbeatFenster, setzeAgentHeartbeatFenster } from '@synapse/core';
 import { leseVerweis } from '../services/verweise.js';
+// P22-T263: Editor-Plan-Strom aus PG (Strom, Verlauf, Commit-Ergebnis).
+import { leseEditorPlanStrom, leseEditorPlanVerlauf, leseEditorPlanErgebnis } from '@synapse/core';
 import { abonniereArtefaktLive, artefaktLiveStatus } from '../services/artefakt-live.js';
 import { letzterMainWegFehler } from '../services/agent-runtime/dauerhafter-main.js';
 import { gleicheCliListeMitRegistry } from '../services/agent-runtime/registry-abgleich.js';
@@ -773,24 +775,35 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     const datei=await leseEditorAbbildDatei(project,request.params.id,path);
     return datei ? {success:true,datei} : reply.code(404).send({success:false,error:'datei_unbekannt'});
   });
-  fastify.post<{Body:{project?:unknown;abbild_id?:unknown;file_path?:unknown;entwurf?:unknown}}>('/api/main-agent/editor/pruefplaene', async (request,reply) => {
+  // P22-T264 (User 2a26e5e1/2d18aa69): Speichern = EIN normaler offener files-Plan des Users (U1 gezielte Ops, U2 dieselbe plan_id
+  // fuer alle Dateien). Kein Auftrag beim Speichern; nur /pruefauftrag benachrichtigt die Koordinatoren (U3). Kein MCP-Tool.
+  fastify.post<{Body:{project?:unknown;abbild_id?:unknown;file_path?:unknown;entwurf?:unknown}}>('/api/main-agent/editor/user-plan', async (request,reply) => {
     const b=request.body ?? {}, project=typeof b.project==='string'?b.project.trim():'';
     const s=await editorSchalter(project); if(!s.aktiv || s.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
     if(!project || typeof b.abbild_id!=='string' || typeof b.file_path!=='string' || typeof b.entwurf!=='string')
       return reply.code(400).send({success:false,error:'parameter_ungueltig'});
-    try { return {success:true,plan:await mitUserHerkunft('web-ui-editor',()=>erstelleEditorPruefplan(project,b.abbild_id as string,b.file_path as string,b.entwurf as string))}; }
+    try { return {success:true,plan:await mitUserHerkunft('web-ui-editor',()=>speichereEditorUserPlan(project,b.abbild_id as string,b.file_path as string,b.entwurf as string))}; }
     catch(e) { return reply.code(400).send({success:false,error:errorMessage(e)}); }
   });
-  fastify.get<{Querystring:{project?:string}}>('/api/main-agent/editor/pruefplaene', async (request,reply) => {
+  fastify.get<{Querystring:{project?:string}}>('/api/main-agent/editor/user-plan', async (request,reply) => {
     const project=request.query.project ?? ''; const s=await editorSchalter(project);
     if(!s.aktiv || s.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
-    return {success:true,plaene:await listeEditorPruefplaene(project)};
+    return {success:true,plan:await leseEditorUserPlan(project)};
   });
-  fastify.get<{Params:{id:string};Querystring:{project?:string}}>('/api/main-agent/editor/pruefplaene/:id', async (request,reply) => {
-    const project=request.query.project ?? ''; const s=await editorSchalter(project);
+  fastify.get<{Querystring:{project?:string;path?:string}}>('/api/main-agent/editor/user-plan/datei', async (request,reply) => {
+    const project=request.query.project ?? '', path=request.query.path ?? ''; const s=await editorSchalter(project);
     if(!s.aktiv || s.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
-    const plan=await leseEditorPruefplan(project,request.params.id);
-    return plan ? {success:true,plan} : reply.code(404).send({success:false,error:'pruefplan_unbekannt'});
+    if(!path)return reply.code(400).send({success:false,error:'pfad_fehlt'});
+    try { const datei=await leseEditorUserPlanDatei(project,path); return datei ? {success:true,datei} : reply.code(404).send({success:false,error:'datei_nicht_im_user_plan'}); }
+    catch(e) { return reply.code(400).send({success:false,error:errorMessage(e)}); }
+  });
+  fastify.post<{Body:{project?:unknown;plan_id?:unknown;text?:unknown}}>('/api/main-agent/editor/pruefauftrag', async (request,reply) => {
+    const b=request.body ?? {}, project=typeof b.project==='string'?b.project.trim():'';
+    const s=await editorSchalter(project); if(!s.aktiv || s.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
+    if(!project || typeof b.plan_id!=='string' || !/^[0-9]+$/.test(b.plan_id) || (b.text!==undefined && typeof b.text!=='string'))
+      return reply.code(400).send({success:false,error:'parameter_ungueltig'});
+    try { return {success:true,...await mitUserHerkunft('web-ui-editor',()=>sendeEditorPruefauftrag(project,b.plan_id as string,b.text as string|undefined))}; }
+    catch(e) { return reply.code(400).send({success:false,error:errorMessage(e)}); }
   });
   fastify.get<{Querystring:{project?:string}}>('/api/main-agent/editor/dateien', async (request,reply) => {
     const project=request.query.project ?? ''; const s=await editorSchalter(project);
@@ -813,6 +826,42 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     if(!path || !/^[0-9]+$/.test(plan))return reply.code(400).send({success:false,error:'parameter_ungueltig'});
     return await mitCodeIntelSchatten('file',{project,file_path:path,schatten:plan,typen:false},async()=>({success:true,file:await getFileContent(project,path)}));
   });
+  // P22-T263 (User-Vorgabe 9a3005ff): Plan-Strom aus PG, nur lesend. Wirkt nur mit editor_modul UND editor_plan_strom (Standard AUS);
+  // Strom AUS = 200 mit aktiv:false, die Web-UI zeigt dann die Live-Plaene je Datei wie P22-T262. Nur User-Session (Guard oben).
+  // Offen-Fenster: editor_plan_offen_sekunden (agentennetzwerk_einstellungen, Standard 20). DEBUG: debug.schalter, debug.offen (Wert, Quelle).
+  const planStromSchalter = async (project:string) => {
+    const editor=await editorSchalter(project), strom=await leseUiProduktSchalter('editor_plan_strom', project);
+    return {editor,strom,aktiv:editor.aktiv && !editor.letzter_fehler && strom.aktiv && !strom.letzter_fehler};
+  };
+  fastify.get<{Querystring:{project?:string}}>('/api/main-agent/editor/plan-strom', async (request,reply) => {
+    const project=request.query.project ?? ''; if(!project)return reply.code(400).send({success:false,error:'projekt_fehlt'});
+    const s=await planStromSchalter(project);
+    if(!s.editor.aktiv || s.editor.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:{schalter:s}});
+    if(!s.aktiv)return {success:true,aktiv:false,debug:{schalter:s}};
+    try {
+      const r=await leseEditorPlanStrom(project);
+      return {success:true,aktiv:true,plaene:r.plaene,stand:r.stand,voll:r.voll,offen_sekunden:r.offen.sekunden,
+        debug:{schalter:s,offen:r.offen,fenster_sekunden:r.fenster_sekunden}};
+    } catch(e) { return reply.code(500).send({success:false,error:'plan_strom_fehler',message:errorMessage(e)}); }
+  });
+  fastify.get<{Querystring:{project?:string;vor_id?:string;limit?:string}}>('/api/main-agent/editor/plan-verlauf', async (request,reply) => {
+    const project=request.query.project ?? ''; const s=await planStromSchalter(project);
+    if(!s.aktiv)return reply.code(403).send({success:false,error:'funktion_aus',debug:{schalter:s}});
+    const vor=request.query.vor_id ?? '', limit=request.query.limit ? Number(request.query.limit) : undefined;
+    if(vor && !/^[0-9]+$/.test(vor))return reply.code(400).send({success:false,error:'cursor_ungueltig'});
+    if(limit!==undefined && (!Number.isInteger(limit) || limit<1))return reply.code(400).send({success:false,error:'limit_ungueltig'});
+    try { return {success:true,...await leseEditorPlanVerlauf(project,{vorId:vor||null,limit})}; }
+    catch(e) { return reply.code(500).send({success:false,error:'plan_verlauf_fehler',message:errorMessage(e)}); }
+  });
+  fastify.get<{Querystring:{project?:string;plan?:string}}>('/api/main-agent/editor/plan-ergebnis', async (request,reply) => {
+    const project=request.query.project ?? '', plan=request.query.plan ?? ''; const s=await planStromSchalter(project);
+    if(!s.aktiv)return reply.code(403).send({success:false,error:'funktion_aus',debug:{schalter:s}});
+    if(!/^[0-9]+$/.test(plan))return reply.code(400).send({success:false,error:'parameter_ungueltig'});
+    try {
+      const r=await leseEditorPlanErgebnis(project,plan);
+      return r ? {success:true,...r} : reply.code(404).send({success:false,error:'plan_unbekannt'});
+    } catch(e) { return reply.code(500).send({success:false,error:'plan_ergebnis_fehler',message:errorMessage(e)}); }
+  });
 
   // P22-T164: Das bestehende Auth-Modell hat genau einen interaktiven User (TOTP Single-Row).
   // Deshalb ist 'user' stabil über Geräte/Sitzungen; niemals Session-Token als Benutzer-ID benutzen.
@@ -831,7 +880,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
         WHERE a.modus='live' AND a.vorlage IS NOT NULL AND r.project <> ''
       )
       SELECT p.artefakt_id::text AS id, p.project, a.title, a.updated_at,
-        l.x,l.y,l.breite,l.hoehe,l.revision AS layout_revision
+        l.x,l.y,l.breite,l.hoehe,l.revision AS layout_revision,l.auf_leinwand
       FROM paare p JOIN agent_artifacts a ON a.id=p.artefakt_id
       LEFT JOIN user_live_artefakt_layout l ON l.user_key='user' AND l.artefakt_id=p.artefakt_id AND l.project=p.project
       WHERE (p.artefakt_id::text,p.project)>($1,$2)
@@ -840,27 +889,28 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     const skripte = await artefaktSkripteSchalter();
     return {success:true,aktiv:true,schalter,skripte_aktiv:skripte.aktiv && !skripte.letzter_fehler,eintraege,naechste:mehr&&z?{id:z.id,project:z.project}:null};
   });
-  fastify.put<{ Params: { id: string }; Body: { project?: unknown; x?: unknown; y?: unknown; breite?: unknown; hoehe?: unknown; revision?: unknown } }>('/api/main-agent/live-artefakte/:id/layout', async (request, reply) => {
+  fastify.put<{ Params: { id: string }; Body: { project?: unknown; x?: unknown; y?: unknown; breite?: unknown; hoehe?: unknown; revision?: unknown; auf_leinwand?: unknown } }>('/api/main-agent/live-artefakte/:id/layout', async (request, reply) => {
     const schalter=await liveBoardSchalter();
     if (!schalter.aktiv || schalter.letzter_fehler) return reply.code(403).send({success:false,error:'funktion_aus',schalter});
     const {id}=request.params, b=request.body ?? {}, vals=[b.x,b.y,b.breite,b.hoehe,b.revision];
     if (!/^[0-9a-f-]{36}$/i.test(id) || typeof b.project!=='string' || !b.project.trim()
       || vals.some(v=>typeof v!=='number'||!Number.isFinite(v)) || !Number.isSafeInteger(b.revision) || Number(b.revision)<0
-      || Number(b.x)<0 || Number(b.x)>99 || Number(b.y)<0 || Number(b.breite)<10 || Number(b.breite)>100 || Number(b.hoehe)<100)
+      || Number(b.x)<0 || Number(b.x)>99 || Number(b.y)<0 || Number(b.breite)<10 || Number(b.breite)>100 || Number(b.hoehe)<100
+      || (b.auf_leinwand!==undefined && typeof b.auf_leinwand!=='boolean'))
       return reply.code(400).send({success:false,error:'layout_ungueltig'});
     const p=getPool();
     const r=await p.query(`
-      INSERT INTO user_live_artefakt_layout(user_key,artefakt_id,project,x,y,breite,hoehe)
-      SELECT 'user',a.id,$2,$3,$4,$5,$6 FROM agent_artifacts a
+      INSERT INTO user_live_artefakt_layout(user_key,artefakt_id,project,x,y,breite,hoehe,auf_leinwand)
+      SELECT 'user',a.id,$2,$3,$4,$5,$6,$8::boolean FROM agent_artifacts a
       WHERE a.id=$1::uuid AND a.modus='live' AND a.vorlage IS NOT NULL
         AND (a.standard_project=$2 OR EXISTS(SELECT 1 FROM artefakt_renderungen ar WHERE ar.artefakt_id=a.id AND ar.project=$2))
         AND ($7::bigint=0 OR EXISTS(SELECT 1 FROM user_live_artefakt_layout l WHERE l.user_key='user' AND l.artefakt_id=a.id AND l.project=$2))
-      ON CONFLICT(user_key,artefakt_id,project) DO UPDATE SET x=EXCLUDED.x,y=EXCLUDED.y,breite=EXCLUDED.breite,hoehe=EXCLUDED.hoehe,
+      ON CONFLICT(user_key,artefakt_id,project) DO UPDATE SET x=EXCLUDED.x,y=EXCLUDED.y,breite=EXCLUDED.breite,hoehe=EXCLUDED.hoehe,auf_leinwand=EXCLUDED.auf_leinwand,
         revision=user_live_artefakt_layout.revision+1,aktualisiert=NOW()
       WHERE user_live_artefakt_layout.revision=$7::bigint
-      RETURNING revision`,[id,b.project,b.x,b.y,b.breite,b.hoehe,b.revision]);
+      RETURNING revision,auf_leinwand`,[id,b.project,b.x,b.y,b.breite,b.hoehe,b.revision,b.auf_leinwand!==false]);
     if (!r.rows.length) return reply.code(409).send({success:false,error:'layout_konflikt_oder_artefakt_fehlt'});
-    return {success:true,revision:Number(r.rows[0].revision)};
+    return {success:true,revision:Number(r.rows[0].revision),auf_leinwand:r.rows[0].auf_leinwand===true};
   });
 
   // P8-T25: HTML-Artefakte des Hauptagenten (agent_artifacts) fuer "Persoenliche Artefakte" – nur lesend.

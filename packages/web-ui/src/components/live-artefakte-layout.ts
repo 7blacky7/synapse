@@ -13,3 +13,12 @@ export function anzeigeTitel(t:string|null|undefined):string {
 }
 /** P22-T259: kurze ID im Kachelkopf (die volle ID steht im Tooltip). */
 export const kurzeId=(id:string)=>id.length>8 ? id.slice(0,8) : id;
+
+/** P22-T259 L3/L4: Auf der Leinwand liegt nur, was der User hinzugefuegt hat (Feld auf_leinwand der Layout-Zeile; null = nie). */
+export const aufLeinwand=(e:{auf_leinwand?:boolean|null})=>e.auf_leinwand===true;
+/** P22-T259 L3: Lage fuer ein neu hinzugefuegtes Artefakt - links unter der untersten Kachel (Unterkanten inkl. Abstand), die
+ *  gespeicherte Groesse bleibt, sonst 48 % x 320 px wie bisher. */
+export function freieLage(unterkanten:number[],groesse:{breite?:number|null;hoehe?:number|null}={}):Omit<Lage,'revision'> {
+  const breite=Math.max(10,Math.min(100,groesse.breite ?? 48)), hoehe=Math.max(100,groesse.hoehe ?? 320);
+  return {x:0,y:Math.max(0,...unterkanten.filter(Number.isFinite)),breite,hoehe};
+}
