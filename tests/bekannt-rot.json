@@ -18,20 +18,6 @@
       "quelle": "testlauf tl-20261026-012537-e170 (P25-T8), gleich wie tl-20261025-232030-a99b"
     },
     {
-      "datei": "packages/core/tests/asset-intel-standard.test.mjs",
-      "erwartet": {
-        "fail": 1,
-        "fail_zeilen": [
-          "✖ REGISTRY: Standard-Registry enthaelt generic-binary und alle 31 Inspektoren der sieben Gruppen"
-        ],
-        "muster": null
-      },
-      "grund": "Testanker veraltet: erwartet 31 Inspektoren, Test seit 02.10. unveraendert (Inventur 2f2f6776 Z1)",
-      "seit": "2026-10-26",
-      "task": null,
-      "quelle": "testlauf tl-20261026-012537-e170 (P25-T8), gleich wie tl-20261025-232030-a99b"
-    },
-    {
       "datei": "packages/core/tests/asset-intel-textur.test.mjs",
       "erwartet": {
         "fail": 1,
@@ -86,20 +72,6 @@
       "seit": "t205",
       "task": "P22-T143",
       "quelle": "D2 t207 core-fall-skills-p23-t5.log (FAIL-Liste identisch zu t206)"
-    },
-    {
-      "datei": "packages/core/tests/file-batch-diff.test.mjs",
-      "erwartet": {
-        "fail": 1,
-        "fail_zeilen": [
-          "FEHLER  D7: files(plan) +<= 10 ms p95 durch den Diff (~130 KB, 2 Ops)*"
-        ],
-        "muster": null
-      },
-      "grund": "Messbudget unter Mehragenten-Last: D7 p95-Delta schwankt mit der Maschinenlast (seriell 18,8 ms rot / 3,4 ms gruen bei load 11, Inventur 19,7 ms); Koordinator-Entscheidung 26.10. (Channel 28852)",
-      "seit": "2026-10-26",
-      "task": "P25-T15",
-      "quelle": "zwei serielle Messungen Job 14a05ae1 (P25-T15)"
     },
     {
       "datei": "packages/core/tests/intern-einblick.test.mjs",
@@ -197,18 +169,17 @@
     {
       "datei": "packages/rest-api/tests/web-ui-welle0-p8-t24.test.mjs",
       "erwartet": {
-        "fail": 3,
+        "fail": 2,
         "fail_zeilen": [
           "✖ Kompakte Runtime: Login bleibt opt-in, Zuweisung und Stop verwenden echten Vertrag",
-          "✖ Main-Agent-Einstellungen zeigen beide echten Karten vor unveraenderten Entwurfsfeldern",
-          "✖ Produktiver Chat ohne Demo-Nachricht bietet Tooldetails und ehrlichen Projektscope"
+          "✖ Main-Agent-Einstellungen zeigen beide echten Karten vor unveraenderten Entwurfsfeldern"
         ],
         "muster": null
       },
-      "grund": "3 von 5 rot erwartet (pass 2 / fail 3)",
+      "grund": "2 von 5 rot erwartet (pass 3 / fail 2); seit t232 ist 'Produktiver Chat ohne Demo-Nachricht' gruen",
       "seit": "t205",
       "task": "P8-T24",
-      "quelle": "D2 t207 rest-web-ui-welle0-p8-t24.log"
+      "quelle": "Gesamttest t232 tl-20261101-131252-2fda (vorher D2 t207 rest-web-ui-welle0-p8-t24.log)"
     }
   ],
   "einstellungen": [
