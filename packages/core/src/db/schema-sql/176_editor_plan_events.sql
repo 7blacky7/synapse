@@ -16,10 +16,4 @@ BEGIN
  END IF;
 END;
 $block$;
-DO $block$
-BEGIN
- IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='trg_editor_pruefplan_benachrichtigen' AND tgrelid='editor_pruefplaene'::regclass) THEN
-  CREATE TRIGGER trg_editor_pruefplan_benachrichtigen AFTER INSERT OR UPDATE OR DELETE ON editor_pruefplaene FOR EACH ROW EXECUTE FUNCTION editor_plan_benachrichtigen();
- END IF;
-END;
-$block$;
+-- P22-T264: trg_editor_pruefplan_benachrichtigen (editor_pruefplaene) entfaellt; schema.ts legt ihn nicht mehr an und entfernt ihn (siehe 178).

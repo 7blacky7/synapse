@@ -29,6 +29,7 @@ import { resolveAgentId as resolveActorName } from './agent-id-resolver.js';
 function resolveAgentId(name?:string|null):string|null { return dateiAgentName() ?? resolveActorName(name); }
 import { resolveProjectTaskId } from './task-id-resolver.js';
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
+import { aktuelleUserHerkunft } from './user-herkunft.js';
 import { merkeFileTaskVersion } from './file-task-zuordnung.js';
 import { pruefeUpdateAnker } from './update-anker.js';
 import { emitEventOnce } from './events.js';
@@ -2242,6 +2243,14 @@ async function commitCoeditBatch(args: {
       }
     }
     if (hashConflicts.length > 0) {
+      // P22-T264 (34569 b): Web-Editor-User-Plan bleibt bei Drift offen (kein stale); commitBatch meldet den Grund an den User.
+      if (await istEditorUserPlan(args.plan_id)) {
+        await client.query('ROLLBACK');
+        return {
+          success: false, plan_id: args.plan_id, status: 'open', error: 'editor_userplan_drift', conflicts: hashConflicts,
+          message: `${hashConflicts.length} Datei(en) wurden seit dem Abbild des Users geaendert. Der User-Plan bleibt offen, der Grund geht an den User (Inbox). Kein Rebase.`,
+        };
+      }
       await client.query(
         `UPDATE file_batch_plans SET status = 'stale' WHERE id = $1::bigint`,
         [args.plan_id],
@@ -2832,6 +2841,8 @@ async function bewerteOffenePlanOpsKern(planId: string, neuIdx: number[], opt: {
  */
 async function ohneGatePlan(plan: { id: string; project: string; owner_agent_id: string | null; owner_identity_id?: string | null; ops: FileBatchOp[] }): Promise<boolean> {
   if (!(await coeditOhneGate(plan.project))) return false;
+  // P22-T264 (34569 b): ein Web-Editor-User-Plan laeuft nie ohne Gate - kein Umrechnen fremder Drift (kein stiller Rebase).
+  if (await istEditorUserPlan(plan.id)) return false;
   const ops = Array.isArray(plan.ops) ? plan.ops : [];
   if (new Set(ops.map((op) => opAgentKey(op, plan))).size > 1) return true;
   try {
@@ -3188,7 +3199,7 @@ async function findJoinableSharedPlans(
             f.file_path, p.id::text AS plan_id, p.owner_agent_id, p.owner_identity_id, p.created_at
        FROM unnest($3::text[]) AS f(file_path)
        JOIN file_batch_plans p
-         ON p.project = $1 AND p.status = 'open' AND p.owner_agent_id IS NOT NULL
+         ON p.project = $1 AND p.status = 'open' AND p.owner_agent_id IS NOT NULL AND NOT p.editor_userplan
         AND (${aktuellerAgentAufruf()?.bezug.modus !== 'alt' && !!aktuellerAgentAufruf() ? 'true' : "p.owner_identity_id IS NULL AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(p.ops) ao WHERE ao->>'author_identity_id' IS NOT NULL)"})
         AND ((p.open_for_coedit = true AND NOT (${fileCallerSql('p.owner_agent_id','p.owner_identity_id','$2')}))
           OR ($5::boolean AND ${fileCallerSql('p.owner_agent_id','p.owner_identity_id','$2')}))
@@ -3234,7 +3245,7 @@ async function reservierungenMitOffenemPlan(
     const offen = await client.query(
       `SELECT 1 FROM file_batch_plans
         WHERE project = $1 AND ${fileAgentSql('owner_agent_id', 'owner_identity_id', '$2', row.reserved_identity_id)}
-          AND status = 'open' AND open_for_coedit = true AND jsonb_array_length(ops) > 0
+          AND status = 'open' AND open_for_coedit = true AND NOT editor_userplan AND jsonb_array_length(ops) > 0
           -- P22-T199 (Luecke 3): bei Schalter coedit_ohne_gate EIN zaehlt ein Plan mit gescheiterter Op weiter als Co-Edit-Ziel.
           AND ($4::boolean OR NOT (previews @> '[{"ok": false}]'::jsonb))
           AND created_at >= $3::timestamptz
@@ -4785,6 +4796,16 @@ async function addCoeditContributionKern(args: {
       return await followUpForLateContribution(args, caller, plan.owner_agent_id, plan.owner_identity_id);
     }
     if (plan.status !== "open") throw new Error(`Plan ${args.plan_id} ist nicht offen (Status: ${plan.status})`);
+    // P22-T264 (34569 a): ausdruecklicher Beitritt zu einem belegten Web-Editor-User-Plan ohne vorherigen Wait - derselbe Weg wie
+    // plan_update-Anhaengen (updatePlanInPlace: Trockenlauf, Ueberlappung, Drift). Der Wait-Weg fuer Agentenplaene bleibt unveraendert.
+    if (await istEditorUserPlan(args.plan_id)) {
+      await client.query("ROLLBACK");
+      const angehaengt = await updatePlanInPlace({ project: args.project, plan_id: args.plan_id, ops: args.ops }, caller);
+      return {
+        success: true, plan_id: angehaengt.plan_id, appended_ops: args.ops.length, already_consumed_ops: 0, total_plan_ops: angehaengt.total_ops,
+        message: `${args.ops.length} Op(s) an den Web-Editor-User-Plan ${angehaengt.plan_id} angehaengt (Beitritt ohne Wait). Korrigieren: files(plan_update, op_index); committen: files(commit).`,
+      };
+    }
     // P22-T199 (E2): bei Schalter coedit_ohne_gate EIN sperren gescheiterte Ops niemanden; ein Beitrag wird angenommen und
     // danach bewertet (gueltig | fehlerhaft | konflikt), statt mit contribution_failed abgelehnt zu werden.
     const ohneGate = await coeditOhneGate(args.project);
@@ -5768,6 +5789,9 @@ export async function commitBatch(args: {
   const caller = resolveAgentId(args.agent_id);
   for (;;) {
     const result = await commitBatchOnce(args);
+    // P22-T264 (34558 (3)): passt ein Web-Editor-User-Plan nicht (Drift, gescheiterte Op, Pruefsperre, FS-Drift), bleibt er offen und
+    // der Grund geht an den User (User-Inbox). Andere Plaene: keine Wirkung.
+    if (!result.success && result.status !== 'waiting_for_contributors') await meldeEditorUserPlanFehler(args.plan_id, result, caller);
     // P22-T199 (Luecke 4): ohne Gate gibt es nichts zu warten - wait_seconds wird ignoriert, die Antwort sagt es.
     if (result.coedit_methode === 'ohne_gate' && seconds > 0) {
       result.message = `${result.message ?? ''} Hinweis: wait_seconds wird bei Schalter coedit_ohne_gate EIN ignoriert (kein Warten; commit schreibt sofort alle gueltigen Ops).`.trim();
@@ -5983,6 +6007,10 @@ async function commitBatchOnce(args: {
   let beteiligt = caller !== null && fileCallerKey(plan.project,caller) === ownerAgentKey(plan);
   if (caller && (!aktuelleAgentIdentityId(plan.project,caller) || aktuellerAgentPrincipal()?.art === 'identity') && darfKoordinatorOderUser(caller)) beteiligt = true;
   if (caller && opAutoren.includes(fileCallerKey(plan.project,caller))) beteiligt = true;
+  // P22-T264 (34558 (1)): belegten Web-Editor-User-Plan darf jeder aktive Projektagent mit Ausweis committen (Ansage nur im Channel,
+  // keine gespeicherte Zuweisung). Kein allgemeines Fremdplanrecht: gilt nur fuer editor_userplan.
+  const editorUserPlan = await istEditorUserPlan(args.plan_id);
+  if (caller && !beteiligt && editorUserPlan && await aktiverProjektAgent(plan.project)) beteiligt = true;
   if (caller && !beteiligt) {
     const wait = await pool.query<{ beteiligt: boolean }>(
       `SELECT EXISTS (
@@ -6084,6 +6112,11 @@ async function commitBatchOnce(args: {
       commitArgs = { ...args, agent_note: [args.agent_note, pruef.vermerk].filter(Boolean).join(' ') };
     }
   }
+  // P22-T264 (34558 (2)): die Historie zeigt den User als Autor und den committenden Agenten (file_versions.agent_note).
+  if (editorUserPlan) {
+    const vermerk = `Autor: user (Web-Editor-User-Plan ${args.plan_id}); Committer: ${caller ?? 'unbekannt'}.`;
+    commitArgs = { ...commitArgs, agent_note: [commitArgs.agent_note, vermerk].filter(Boolean).join(' ') };
+  }
   const distinctOpAgents = new Set(plan.ops.map((op) => opAgentKey(op,plan)));
   // Mehrere Tasks an derselben Datei brauchen je Task einen atomaren Snapshot.
   const tasksJeDatei = new Map<string, Set<string | undefined>>();
@@ -6172,6 +6205,13 @@ async function commitLegacyBody(
   }
 
   if (conflicts.length > 0) {
+    // P22-T264 (34569 b): ein Web-Editor-User-Plan bleibt bei Drift offen (kein stale, kein Rebase); commitBatch meldet den Grund an den User.
+    if (await istEditorUserPlan(args.plan_id)) {
+      return {
+        success: false, plan_id: args.plan_id, status: 'open', error: 'editor_userplan_drift', conflicts,
+        message: `${conflicts.length} Datei(en) wurden seit dem Abbild des Users geaendert. Der User-Plan bleibt offen, der Grund geht an den User (Inbox). Kein Rebase.`,
+      };
+    }
     await lockClient.query(
       `UPDATE file_batch_plans SET status = 'stale' WHERE id = $1`,
       [args.plan_id],
@@ -6828,7 +6868,10 @@ async function updatePlanInPlace(
         throw new Error(`op_index ${args.op_index} ausserhalb 0..${plan.ops.length - 1}`);
       }
       const author = authorOf(plan.ops[args.op_index]);
-      if (author !== null && (plan.ops[args.op_index].author_identity_id || aktuelleAgentIdentityId(plan.project,caller)
+      // P22-T264 (34569 c, U4): Ops des Web-Editor-User-Plans (Autor user, ohne Ausweis) darf ein beigetretener Agent ersetzen.
+      const userOp = plan.ops[args.op_index].agent_id === EDITOR_USER_AGENT && !plan.ops[args.op_index].author_identity_id
+        && await istEditorUserPlan(plan.id);
+      if (!userOp && author !== null && (plan.ops[args.op_index].author_identity_id || aktuelleAgentIdentityId(plan.project,caller)
         ? opAgentKey(plan.ops[args.op_index],plan) !== fileCallerKey(plan.project,caller)
         : author !== caller && author !== plan.owner_agent_id)) {
         throw new Error(`Op ${args.op_index} ist ein Co-Edit-Beitrag von ${author} — nur der Autor darf ihn ersetzen`);
@@ -6977,7 +7020,9 @@ async function replanBatchKern(args: {
   const ownDraft = failedOpsOf(plan.previews).length > 0
     && (!plan.owner_agent_id || fileCallerKey(plan.project,caller) === ownerAgentKey(plan))
     && !plan.ops.some((op) => op.agent_id && opAgentKey(op,plan) !== ownerAgentKey(plan))
-    && !(await ohneGatePlan(plan));
+    && !(await ohneGatePlan(plan))
+    // P22-T264 (34569 d): ein Web-Editor-User-Plan wird immer im Plan korrigiert - dieselbe plan_id, nie ein Folgeentwurf.
+    && !(await istEditorUserPlan(plan.id));
   if (!ownDraft) {
     const imPlan = await updatePlanInPlace(args, caller);
     // P15-T17 E3: neu pruefen, Quittierungen bleiben (Schluessel ohne Zeilen).
@@ -7785,7 +7830,7 @@ async function ladeSchattenStand(plan: {
     `SELECT content FROM file_versions WHERE project = $1 AND file_path = $2 AND content_hash = $3
       ORDER BY (batch_id = $4::bigint) DESC NULLS LAST, id DESC LIMIT 1`,
     [plan.project, filePath, hash, plan.id],
-  )).rows[0]?.content ?? null);
+  )).rows[0]?.content ?? await abbildInhaltNachHash(plan.project, filePath, hash));
   const basen = new Map<string, string>();
   const drift = new Map<string, string>();
   for (const filePath of pfade) {
@@ -8033,6 +8078,148 @@ async function pruefeGespeichertenPlanSicher(
     console.error(`[file-batch] P15-T17: Pruefung von Plan ${planId} fehlgeschlagen (non-blocking): ${(error as Error).message}`);
     return null;
   }
+}
+
+// ─── P22-T264: Web-Editor-User-Plan ─────────────────────────────────────────────────────────────────────
+
+/** P22-T264: Agentenname der Ops, die der User im Web-Editor speichert (Owner des User-Plans, ohne Ausweis). */
+export const EDITOR_USER_AGENT = 'user';
+const EDITOR_USER_GRUND = 'P22-T264 Web-Editor: Aenderung des Users (Autor user)';
+
+/**
+ * P22-T264: belegter Web-Editor-User-Plan (Spalte editor_userplan, Schema 178; nur schreibeEditorUserPlan setzt sie). Eigene Abfrage
+ * ueber den Pool, nie im Transaktions-Client (ein Fehler dort braeche die laufende Transaktion ab). Wirft nie.
+ */
+async function istEditorUserPlan(planId: string): Promise<boolean> {
+  try {
+    return (await getPool().query<{ u: boolean }>('SELECT editor_userplan AS u FROM file_batch_plans WHERE id = $1::bigint', [planId])).rows[0]?.u === true;
+  } catch { return false; }
+}
+
+/** P22-T264 (34558 (1)): Commit-Recht fuer belegte User-Plaene - aktiver Agent DIESES Projekts mit Ausweis. Wirft nie. */
+async function aktiverProjektAgent(project: string): Promise<boolean> {
+  const p = aktuellerAgentPrincipal();
+  if (!p || p.art !== 'identity' || p.project !== project) return false;
+  try {
+    return ((await getPool().query("SELECT 1 FROM agent_identitaeten WHERE id = $1 AND project = $2 AND status = 'aktiv'", [p.identity_id, project])).rowCount ?? 0) > 0;
+  } catch { return false; }
+}
+
+/** P22-T264: die Basis eines User-Plans liegt im Editor-Abbild (editor_abbild_dateien), nicht zwingend in file_versions. Wirft nie. */
+async function abbildInhaltNachHash(project: string, filePath: string, hash: string): Promise<string | null> {
+  try {
+    return (await getPool().query<{ inhalt: string }>(
+      `SELECT d.inhalt FROM editor_abbild_dateien d JOIN editor_abbilder a ON a.id = d.abbild_id
+        WHERE a.project = $1 AND d.file_path = $2 AND d.basis_hash = $3 AND NOT d.maskiert
+        ORDER BY a.erstellt_am DESC LIMIT 1`, [project, filePath, hash])).rows[0]?.inhalt ?? null;
+  } catch { return null; }
+}
+
+/** P22-T264: Basisinhalt einer Plan-Datei - aktueller PG-Stand, wenn der Hash passt, sonst das Abbild, sonst der aktuelle Stand (Drift). */
+async function editorBasisInhalt(project: string, filePath: string, hash: string): Promise<string> {
+  const aktuell = (await getFileContentFromPg(project, filePath)) ?? '';
+  if (contentHash(aktuell) === hash) return aktuell;
+  return (await abbildInhaltNachHash(project, filePath, hash)) ?? aktuell;
+}
+
+const EDITOR_USERPLAN_OHNE_MELDUNG = new Set(['fremder_plan', 'already_committed', 'cancelled', 'plan_not_found', 'nothing_written', 'fs_plan_changed']);
+
+/**
+ * P22-T264 (34558 (3)): passt ein User-Plan beim commit nicht (Drift, gescheiterte Op, Pruefsperre, FS-Drift), bleibt er offen und der
+ * Grund geht an den User (bestehende User-Inbox). Fremd-/Statusfehler ohne Bezug zum Inhalt melden nichts. Wirft nie.
+ */
+async function meldeEditorUserPlanFehler(planId: string, result: CommitBatchResult, caller: string | null): Promise<void> {
+  if (result.success || EDITOR_USERPLAN_OHNE_MELDUNG.has(result.error)) return;
+  try {
+    const plan = (await getPool().query<{ project: string; u: boolean; status: string }>(
+      'SELECT project, editor_userplan AS u, status::text AS status FROM file_batch_plans WHERE id = $1::bigint', [planId])).rows[0];
+    if (!plan?.u) return;
+    const { postToInbox } = await import('./inbox.js');
+    await postToInbox(caller ?? 'system', 'user',
+      `Dein Web-Editor-User-Plan ${planId} wurde nicht committet (${result.error}): ${String(result.message ?? '').slice(0, 800)} `
+      + `Der Plan bleibt offen (Status ${plan.status}). ${caller ?? 'Der Agent'} kann korrigieren oder nachfragen; du kannst im Editor neu speichern.`,
+      plan.project);
+  } catch (error) {
+    console.error(`[file-batch] P22-T264: User-Inbox fuer Plan ${planId} nicht geschrieben: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * P22-T264 (User 01.11.2026, thoughts 2a26e5e1 + 2d18aa69; Entwurf aa478ab3; Freigabe #t128-team 34580): Speichern im Web-Editor
+ * schreibt die gezielten Ops EINER Datei in den EINEN offenen User-Plan des Projekts (U2: neu oder dieselbe plan_id). Normaler
+ * files-Plan (file_batch_plans, Co-Edit an, editor_userplan), aber ohne planBatch: kein Neuplanen, kein Wait, keine Reservierung.
+ * expected_hashes der Datei = basis_hash des Abbilds (Freeze-Hash; Drift erkennt der normale commit). Vorschau = gemeinsamer
+ * Trockenlauf (buildCombinedCoeditPreview) gegen die Abbildbasis bzw. den Basisstand der uebrigen Plan-Dateien, danach dieselbe
+ * gespeicherte Pruefung wie plan/plan_update (pruefeGespeichertenPlanSicher: Syntax, Fehlermuster, Befunde je Op).
+ * User-Ops dieser Datei werden ersetzt; Korrekturen von Agenten und andere Dateien bleiben. Leere Ops nehmen die Datei zurueck;
+ * ein leerer Plan wird verworfen. Nur mit belegter Web-Editor-Herkunft (user-herkunft.ts, gesetzt nur in der REST-Route).
+ */
+export async function schreibeEditorUserPlan(args: {
+  project: string; file_path: string; basis: string; basis_hash: string; ops: FileBatchOp[];
+}): Promise<{ plan_id: string | null; status: FileBatchStatus | 'leer'; ops: FileBatchOp[]; expected_hashes: Record<string, string>; previews: OpPreview[];
+  pruefung?: ReturnType<typeof befundUebersicht> }> {
+  if (aktuelleUserHerkunft()?.kanal !== 'web-ui-editor') throw new Error('editor_userplan_nur_web_editor');
+  const userOps: FileBatchOp[] = (args.ops.length > 0 ? await normalisiereOps(args.project, args.ops.map(withoutCoeditMetadata)) : [])
+    .map((op) => ({ ...op, agent_id: EDITOR_USER_AGENT, reason: op.reason ?? EDITOR_USER_GRUND }));
+  if (userOps.some((op) => touchedPaths(op).some((filePath) => filePath !== args.file_path))) throw new Error('editor_userplan_pfad_abweichend');
+  const istUserOp = (op: FileBatchOp) => op.agent_id === EDITOR_USER_AGENT && !op.author_identity_id;
+  const betrifft = (op: FileBatchOp) => touchedPaths(op).includes(args.file_path);
+  let planId = '';
+  let ops: FileBatchOp[] = [];
+  let expected: Record<string, string> = {};
+  let previews: OpPreview[] = [];
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`editor-userplan:${args.project}`]);
+    const alt = (await client.query<{ id: string; ops: FileBatchOp[]; expected_hashes: Record<string, string> }>(
+      `SELECT id::text AS id, ops, expected_hashes FROM file_batch_plans
+        WHERE project = $1 AND editor_userplan AND status = 'open' ORDER BY id LIMIT 1 FOR UPDATE`, [args.project])).rows[0];
+    const bisher: FileBatchOp[] = alt && Array.isArray(alt.ops) ? alt.ops : [];
+    const korrekturen = bisher.filter((op) => betrifft(op) && !istUserOp(op));
+    const altHash = alt?.expected_hashes?.[args.file_path];
+    if (alt && korrekturen.length > 0 && altHash && altHash !== args.basis_hash) {
+      throw new Error(`editor_userplan_basis_abweichend: ${args.file_path} hat im User-Plan ${alt.id} Korrekturen von Agenten auf einem anderen Abbild. `
+        + 'Im selben Abbild speichern oder mit dem Agenten klaeren.');
+    }
+    ops = [...bisher.filter((op) => !betrifft(op)), ...userOps, ...korrekturen];
+    const verbleibend = new Set(ops.flatMap(touchedPaths));
+    expected = Object.fromEntries(Object.entries(alt?.expected_hashes ?? {})
+      .filter(([filePath]) => verbleibend.has(filePath) && filePath !== args.file_path));
+    if (verbleibend.has(args.file_path)) expected[args.file_path] = args.basis_hash;
+    if (ops.length === 0) {
+      if (alt) await client.query(`UPDATE file_batch_plans SET status = 'cancelled', reason = CONCAT_WS(' ', reason, $2::text) WHERE id = $1::bigint`,
+        [alt.id, '[User hat alle Aenderungen im Web-Editor zurueckgenommen]']);
+      await client.query('COMMIT');
+      notifyPlanChange();
+      return { plan_id: alt?.id ?? null, status: alt ? 'cancelled' : 'leer', ops: [], expected_hashes: {}, previews: [] };
+    }
+    const baselines = new Map<string, string>();
+    for (const [filePath, hash] of Object.entries(expected)) {
+      baselines.set(filePath, filePath === args.file_path ? args.basis : await editorBasisInhalt(args.project, filePath, hash));
+    }
+    previews = buildCombinedCoeditPreview({ ops, expected_hashes: expected } as unknown as FileBatchPlanRow, baselines).previews;
+    if (alt) {
+      await client.query(`UPDATE file_batch_plans SET ops = $2::jsonb, expected_hashes = $3::jsonb, previews = $4::jsonb WHERE id = $1::bigint`,
+        [alt.id, JSON.stringify(ops), JSON.stringify(expected), JSON.stringify(previews)]);
+      planId = alt.id;
+    } else {
+      planId = (await client.query<{ id: string }>(
+        `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit, reason, editor_userplan)
+         VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, true, $6, true) RETURNING id::text AS id`,
+        [args.project, EDITOR_USER_AGENT, JSON.stringify(ops), JSON.stringify(expected), JSON.stringify(previews),
+          'P22-T264 Web-Editor: User-Plan (Autor user; Agenten korrigieren im Co-Edit und committen)'])).rows[0].id;
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+  notifyPlanChange();
+  const geprueft = await pruefeGespeichertenPlanSicher(planId);
+  return { plan_id: planId, status: 'open', ops, expected_hashes: expected, previews, ...(geprueft ? { pruefung: befundUebersicht(geprueft.pruefung) } : {}) };
 }
 
 // P16-T16 E1: die Build-Warteschlange fuehrt eingereihte commits ueber denselben Weg aus (kein Import-Zyklus).

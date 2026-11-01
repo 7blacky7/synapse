@@ -52,25 +52,30 @@ ok(/\.projekt-editor \.ed-code textarea\{/.test(c), 'P22-T262 editor-p22-t256.cs
 const t = lies('packages/web-ui/src/components/ProjektEditor.tsx');
 const routen = [
   "'/api/main-agent/editor/dateien?project='",
-  "'/api/main-agent/editor/pruefplaene?project='",
-  "'/api/main-agent/editor/pruefplaene/'",
+  // P22-T264 (Vertrag claude-birke 34579): User-Plan statt Pruefplaene.
+  "'/api/main-agent/editor/user-plan?project='",
+  "'/api/main-agent/editor/user-plan/datei?project='",
   "'/api/main-agent/editor/plaene?project='",
   "'/api/main-agent/editor/abbild/'+q(freeze)+'/datei?project='",
   "'/api/projects/'+q(project)+'/code-intel/file?path='",
   "'/api/main-agent/editor/ereignisse?project='",
   "'/api/main-agent/editor/schatten?project='",
   "json('/api/main-agent/editor/abbild',{method:'POST'",
-  "json('/api/main-agent/editor/pruefplaene',{method:'POST'",
+  "json('/api/main-agent/editor/user-plan',{method:'POST'",
+  "json('/api/main-agent/editor/pruefauftrag',{method:'POST'",
 ];
-ok(routen.every((r) => t.includes(r)), 'P22-T262 ProjektEditor.tsx: alle Editor-Routen von P22-T256 unveraendert', routen.filter((r) => !t.includes(r)));
-ok(t.includes("body:JSON.stringify({project,abbild_id:freeze,file_path:pfad,entwurf:entwuerfe[(freeze??'')+'::'+pfad]??datei.inhalt})"), 'P22-T262 ProjektEditor.tsx: Pruefplan-Body unveraendert');
+ok(routen.every((r) => t.includes(r)), 'P22-T262/T264 ProjektEditor.tsx: alle Editor-Routen (P22-T256, Speichern seit P22-T264 als User-Plan)', routen.filter((r) => !t.includes(r)));
+ok(!t.includes('/api/main-agent/editor/pruefplaene'), 'P22-T264 ProjektEditor.tsx: keine Pruefplan-Routen mehr');
+ok(t.includes("body:JSON.stringify({project,abbild_id:freeze,file_path:pfad,entwurf:entwuerfe[(freeze??'')+'::'+pfad]??datei.inhalt})"), 'P22-T262/T264 ProjektEditor.tsx: Speicher-Body unveraendert (jetzt User-Plan)');
 ok(t.includes('Number(d.nachleuchten_sekunden)*1000') && t.includes('new EventSource('), 'P22-T262 ProjektEditor.tsx: Nachleuchten ueber Server-Einstellwert und Live-Ereignisstrom unveraendert');
 ok(t.includes('const lesend=!freeze||pauseAbbild||!!aktiv?.maskiert') && t.includes('readOnly={lesend}'), 'P22-T262 ProjektEditor.tsx: Bearbeiten nur im Freeze, nie bei maskierten Dateien');
-ok(t.includes("{pauseAbbild?'Abbild fortsetzen':'Freeze lösen'}") && t.includes('Codebild einfrieren') && t.includes('Neues Abbild') && t.includes('Als Prüfplan speichern'), 'P22-T262 ProjektEditor.tsx: Freeze-Bedienung und Speichern vorhanden');
+ok(t.includes("{pauseAbbild?'Abbild fortsetzen':'Freeze lösen'}") && t.includes('Codebild einfrieren') && t.includes('Neues Abbild') && t.includes('Im Plan speichern'), 'P22-T262/T264 ProjektEditor.tsx: Freeze-Bedienung und Speichern vorhanden');
+ok(!t.includes('<h2>Editor') && t.includes('<header className="ed-kopf" aria-label="Editor-Werkzeuge">') && t.includes('className="ed-projekt-chip"'), 'P22-T264 ProjektEditor.tsx: keine Ueberschrift mehr (User 34584), Werkzeugzeile mit Projekt-Chip');
 ok(t.includes('className="ed-explorer"') && t.includes('className="ed-filter"') && /function baueBaum\(/.test(t) && t.includes('aria-expanded={auf}'), 'P22-T262 ProjektEditor.tsx: Explorer mit Dateibaum und Filter (VS Code)');
 ok(t.includes('role="tablist" aria-label="Geöffnete Dateien"') && t.includes('className="ed-reiter-zu"'), 'P22-T262 ProjektEditor.tsx: Reiter mit Schliessen');
 ok(t.includes('className="ed-zeilen"') && t.includes('wrap="off"') && t.includes('onScroll='), 'P22-T262 ProjektEditor.tsx: Zeilennummern synchron zum Code');
-ok(t.includes('Live-Pläne') && t.includes('Meine Prüfpläne') && t.includes('ed-plan nachklang') && t.includes('Schatten anpinnen') && t.includes('Pin lösen'), 'P22-T262 ProjektEditor.tsx: Inspektor mit Live-Plaenen, Nachleuchten, Pins und Pruefplaenen');
+ok(t.includes('Live-Pläne') && t.includes('Mein Plan') && t.includes('ed-plan nachklang') && t.includes('Schatten anpinnen') && t.includes('Pin lösen'), 'P22-T262/T264 ProjektEditor.tsx: Inspektor mit Live-Plaenen, Nachleuchten, Pins und Mein Plan');
+ok(t.includes('Prüfen lassen') && t.includes('text:pruefText.trim()||undefined') && t.includes('className="ed-userplan-ops"') && t.includes("'korrigiert · '+o.agent_id"), 'P22-T264 ProjektEditor.tsx: Mein Plan mit Ops je Datei (User/Agent-Korrektur), ausdruecklicher Pruefauftrag mit optionalem Text');
 ok(t.includes('aria-label="Drei-Wege-Vergleich"') && (t.match(/<DreiWegeSpalte /g) ?? []).length === 3, 'P22-T262 ProjektEditor.tsx: Drei-Wege-Vergleich mit drei Spalten');
 ok(t.includes('className="ed-status"') && /e\.key\.toLowerCase\(\)==='s'/.test(t) && t.includes('if(speicherbar)void speichern()'), 'P22-T262 ProjektEditor.tsx: Statusleiste und Strg+S nur wenn speicherbar');
 ok(t.includes('data-modus={modus}') && t.includes("data-live={live?'an':'aus'}"), 'P22-T262 ProjektEditor.tsx: Debug-Attribute am Wurzelelement');

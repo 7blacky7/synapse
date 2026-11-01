@@ -4,19 +4,19 @@
  * design-decision-tactical-hud-dashboard (1px-Hairlines, 0-3px Ecken, Mono-Labels, blinkender Cursor, wenig Glow); Tokensprache wie
  * P22-T259 (live-artefakte.css): Syne-Titel, IBM Plex Mono 9px uppercase fuer Labels, Akzentkante, gefuellter aktiver Umschalter.
  * Bedienung wie VS Code: Explorer links, Reiter + Pfadzeile + Code mit Zeilennummern in der Mitte, Inspektor rechts (Live-Plaene mit
- * Nachleuchten und Pins | Pruefplaene), Drei-Wege-Vergleich als unteres Panel, Statusleiste unten (Freeze = oranges Segment).
+ * Nachleuchten und Pins | Mein Plan, P22-T264), Drei-Wege-Vergleich als unteres Panel, Statusleiste unten (Freeze = oranges Segment).
+ * P22-T264 / User 34584: keine Seitenueberschrift, nur eine schmale Werkzeugzeile.
  * Farben NUR aus den Theme-Variablen (--accent, --accent-soft, --accent-contrast, --panel, --strong, --soft, --bg, --text, --muted,
  * --faint, --border, --border2, --success, --danger) - damit gelten hell und dunkel automatisch. Keine festen Farbwerte.
  */
 .projekt-editor{display:flex;flex-direction:column;gap:14px;min-width:0;padding:18px 26px 24px;color:var(--text)}
 
-/* Kopf wie Live-Artefakte: Auge, Syne-Titel mit Projekt-Chip, Werkzeuge rechts. */
-.ed-kopf{display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:16px 24px;padding-bottom:14px;border-bottom:1px solid var(--border)}
-.ed-titel{min-width:0}
+/* P22-T264 / User 01.11. (34584): keine Ueberschrift mehr - eine schmale Werkzeugzeile (Projekt-Chip links, Schalter rechts), damit
+ * Baum und Code den Platz bekommen. Schalter und Status bleiben vollstaendig erreichbar. */
+.ed-kopf{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px 24px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+.ed-projekt-chip{display:inline-flex;align-items:center;gap:7px;min-width:0;padding:5px 9px;border:1px solid color-mix(in srgb,var(--accent) 55%,transparent);color:var(--accent);font:700 10px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
+.ed-projekt-chip span{font-size:12px;letter-spacing:0}
 .ed-auge{display:block;color:var(--accent);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.16em;text-transform:uppercase}
-.ed-titel h2{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;margin:6px 0 4px;color:var(--text);font:700 26px/1.05 "Syne",sans-serif;letter-spacing:-.015em}
-.ed-titel h2 small{padding:2px 7px;border:1px solid color-mix(in srgb,var(--accent) 55%,transparent);color:var(--accent);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase}
-.ed-titel p{margin:0;max-width:72ch;color:var(--muted);font-size:11px;line-height:1.5}
 .ed-werkzeuge{display:flex;align-items:center;flex-wrap:wrap;gap:10px}
 .ed-gruppe{display:inline-flex;align-items:center;flex-wrap:wrap;gap:8px;padding:0 10px;border-left:1px solid var(--border);border-right:1px solid var(--border)}
 
@@ -36,7 +36,7 @@
 .ed-abbild select{border:1px solid var(--border);border-radius:0;background:var(--panel);color:var(--text);padding:6px 8px;font:500 10px "IBM Plex Mono",monospace;letter-spacing:.02em;text-transform:none;cursor:pointer}
 .ed-abbild select:hover{border-color:var(--accent)}
 .projekt-editor :is(button,select,input):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.projekt-editor :is(.ed-baum button,.ed-reiter button,.ed-seiten button,.ed-plan,.ed-pruefung):focus-visible{outline-offset:-2px}
+.projekt-editor :is(.ed-baum button,.ed-reiter button,.ed-seiten button,.ed-plan,.ed-userplan-pfad):focus-visible{outline-offset:-2px}
 
 /* Hinweise wie .live-board-hinweis, schliessbar. */
 .ed-hinweis{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0;padding:9px 12px;border:1px solid var(--border);border-left:2px solid var(--accent);background:var(--soft);color:var(--muted);font:500 11px/1.5 "IBM Plex Mono",monospace;overflow-wrap:anywhere}
@@ -45,7 +45,7 @@
 .ed-hinweis button:hover{color:var(--text)}
 
 /* Werkbank: ein Fenster mit Hairline-Rahmen, drei Spalten und Statusleiste - wie die VS-Code-Arbeitsflaeche. */
-.ed-werkbank{display:grid;grid-template-columns:minmax(210px,260px) minmax(0,1fr) minmax(250px,320px);grid-template-rows:minmax(0,1fr) auto;grid-template-areas:"explorer mitte inspektor" "status status status";height:clamp(520px,calc(100vh - 240px),1600px);border:1px solid var(--border);border-radius:2px;background:var(--panel);overflow:hidden}
+.ed-werkbank{display:grid;grid-template-columns:minmax(210px,260px) minmax(0,1fr) minmax(250px,320px);grid-template-rows:minmax(0,1fr) auto;grid-template-areas:"explorer mitte inspektor" "status status status";height:clamp(520px,calc(100vh - 150px),1600px);border:1px solid var(--border);border-radius:2px;background:var(--panel);overflow:hidden}
 .ed-explorer{grid-area:explorer;display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid var(--border);background:var(--soft)}
 .ed-mitte{grid-area:mitte;display:flex;flex-direction:column;min-width:0;min-height:0}
 .ed-inspektor{grid-area:inspektor;display:flex;flex-direction:column;min-width:0;min-height:0;border-left:1px solid var(--border);background:var(--soft)}
@@ -156,12 +156,28 @@ button.ed-plan:hover,.ed-pruefung:hover{border-color:var(--accent)}
 .ed-plan.offen .ed-chip{border-color:color-mix(in srgb,var(--accent) 55%,transparent);color:var(--accent)}
 /* Nachleuchten: abgeschlossene Plaene gluehen kurz orange nach und beruhigen sich (Dauer der Anzeige bestimmt der Server-Einstellwert). */
 .ed-plan.nachklang{border-left-color:var(--border2);opacity:.78;animation:ed-nachleuchten 9s ease-out}
-.ed-pruefung{border-left-color:var(--accent)}
-.ed-pruefung small{grid-column:1 / -1;color:var(--faint);font:500 10px/1.5 "IBM Plex Mono",monospace;overflow-wrap:anywhere}
-.ed-pruefung[data-status*="konflikt"],.ed-pruefung[data-status*="abgelehnt"]{border-left-color:var(--danger)}
-.ed-pruefung[data-status*="konflikt"] .ed-chip,.ed-pruefung[data-status*="abgelehnt"] .ed-chip{border-color:var(--danger);color:var(--danger)}
-.ed-pruefung:is([data-status*="frei"],[data-status*="bestaetigt"],[data-status*="committ"]){border-left-color:var(--success)}
-.ed-pruefung:is([data-status*="frei"],[data-status*="bestaetigt"],[data-status*="committ"]) .ed-chip{border-color:var(--success);color:var(--success)}
+/* P22-T264 „Mein Plan“: EIN offener files-Plan des Users; je Datei eine Karte (Klick = Drei-Wege-Vergleich) mit ihren Ops.
+ * Ops des Users neutral, von einem Agenten korrigierte Ops mit Orange-Kante, fehlerhafte rot; Konflikt faerbt die Dateikarte rot. */
+.ed-abschnitt h3 .ed-chip{margin-left:auto}
+.ed-userplan-info{margin:0;color:var(--faint);font:500 10px/1.5 "IBM Plex Mono",monospace}
+.ed-userplan-datei{border:1px solid var(--border);border-left:2px solid var(--accent);background:var(--panel)}
+.ed-userplan-datei[data-konflikt]{border-left-color:var(--danger)}
+.ed-userplan-datei[data-konflikt] .ed-chip{border-color:var(--danger);color:var(--danger)}
+.ed-userplan-pfad{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:2px 8px;width:100%;padding:8px 10px 6px;border:0;border-radius:0;background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer;transition:background-color .15s ease}
+.ed-userplan-pfad:hover{background:var(--accent-soft)}
+.ed-userplan-pfad small{grid-column:1 / -1;min-width:0;overflow:hidden;color:var(--faint);font:500 10px "IBM Plex Mono",monospace;text-overflow:ellipsis;white-space:nowrap}
+.ed-userplan-ops{margin:0;padding:0 10px 8px;list-style:none}
+.ed-userplan-ops li{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 8px;padding:3px 0 3px 6px;border-top:1px dashed var(--border2);color:var(--muted);font:500 10.5px/1.5 "IBM Plex Mono",monospace}
+.ed-userplan-nr{color:var(--faint)}
+.ed-userplan-wer{margin-left:auto;color:var(--faint)}
+.ed-userplan-ops li[data-agent]{box-shadow:inset 2px 0 var(--accent)}
+.ed-userplan-ops li[data-agent] .ed-userplan-wer{color:var(--accent)}
+.ed-userplan-ops li[data-fehler]{box-shadow:inset 2px 0 var(--danger)}
+.ed-userplan-ops li b{flex-basis:100%;color:var(--danger);font-weight:600;overflow-wrap:anywhere}
+.ed-pruefauftrag{padding-top:10px;border-top:1px solid var(--border2)}
+.projekt-editor .ed-pruef-text{width:100%;min-height:64px;margin:0;padding:7px 9px;border:1px solid var(--border);border-radius:0;background:var(--panel);color:var(--text);font:500 11px/1.5 "IBM Plex Mono",monospace;resize:vertical}
+.ed-pruef-text::placeholder{color:var(--faint)}
+.projekt-editor .ed-pruef-text:focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
 
 /* Schatten (Inhalt des offenen Plans) mit blinkendem Schreibcursor; Pins bleiben stehen. */
 .ed-schatten{max-height:300px;margin:0;padding:8px 10px;overflow:auto;border:1px solid var(--border2);background:var(--panel);color:var(--text);font:400 11px/1.55 "IBM Plex Mono",monospace;white-space:pre;tab-size:2}
@@ -186,12 +202,11 @@ button.ed-plan:hover,.ed-pruefung:hover{border-color:var(--accent)}
 @keyframes ed-nachleuchten{from{border-left-color:var(--accent);background:var(--accent-soft);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 40%,transparent);opacity:1}to{border-left-color:var(--border2);background:var(--panel);box-shadow:none;opacity:.78}}
 
 @media (max-width:1180px){
- .ed-werkbank{grid-template-columns:minmax(190px,230px) minmax(0,1fr);grid-template-rows:clamp(480px,calc(100vh - 260px),1200px) auto auto;grid-template-areas:"explorer mitte" "inspektor inspektor" "status status";height:auto}
+ .ed-werkbank{grid-template-columns:minmax(190px,230px) minmax(0,1fr);grid-template-rows:clamp(480px,calc(100vh - 170px),1200px) auto auto;grid-template-areas:"explorer mitte" "inspektor inspektor" "status status";height:auto}
  .ed-inspektor{max-height:380px;border-top:1px solid var(--border);border-left:0}
 }
 @media (max-width:760px){
  .projekt-editor{padding:14px 14px 20px}
- .ed-titel h2{font-size:22px}
  .ed-werkzeuge{width:100%}
  .ed-gruppe{padding:0;border:0}
  .ed-werkbank{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(420px,70vh) auto auto;grid-template-areas:"explorer" "mitte" "inspektor" "status"}

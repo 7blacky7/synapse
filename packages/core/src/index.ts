@@ -1,9 +1,10 @@
-export { EDITOR_PRUEFPLAN_DEFINITION } from './services/editor-definition.js';
-export { fuehreEditorPruefplanAus } from './services/editor-pruefplan.js';
-
-export { erstelleEditorPruefplan, listeEditorPruefplaene, leseEditorPruefplan } from './services/editor-pruefplan.js';
+// P22-T264: Web-Editor speichert in EINEN normalen offenen files-Plan des Users (ersetzt Prüfplan-Verwaltung und MCP-Tool editor_pruefplan).
+export { speichereEditorUserPlan, leseEditorUserPlan, leseEditorUserPlanDatei, sendeEditorPruefauftrag } from './services/editor-user-plan.js';
+export { editorDiffOps } from './services/editor-plan-diff.js';
 
 export { erstelleEditorAbbild, leseEditorAbbild, leseEditorAbbildDatei } from './services/editor-abbild.js';
+// P22-T263: Editor-Plan-Strom aus PG (Schalter editor_plan_strom, Einstellung editor_plan_offen_sekunden).
+export { EDITOR_PLAN_STROM_FUNKTION, EDITOR_PLAN_STROM_GRENZEN, editorPlanZustand, editorStromPlan, leseEditorPlanOffen, leseEditorPlanStrom, leseEditorPlanVerlauf, leseEditorPlanErgebnis } from './services/editor-plan-strom.js';
 
 export * from './services/api-agent-auswahl.js';
 export { userChannelUngelesen, userChannelGelesen } from './services/channel-unread.js';
