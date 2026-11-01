@@ -156,6 +156,13 @@ export const REVERSE_EINSTELLKATALOG = {
  pipeline_last_max_milli:i('Load1 je CPU x1000',0,1000000,1000,G,'nicht pruefen'),
  pipeline_latenz_max_ms:i('ms Event-Loop-Verzoegerung p99',0,600000,250,G,'nicht pruefen'),
  pipeline_db_verbindungen:i('Verbindungen eigener DB-Pool',1,8,2,G),
+ // P22-T245 Abnahme f91640e2 B-2: bei einmalig entfaellt der Datei-Scan in entdecke(), solange sich der Datenstand nicht aendert;
+ // spaetestens nach dieser Frist wird trotzdem neu gescannt (0 = Abkuerzung aus, jeder Durchlauf scannt).
+ pipeline_entdecke_vollscan_ms:i('ms bis zum Pflicht-Scan ohne Aenderung',0,86400000,1800000,G,'Abkuerzung aus'),
+ // P22-T245 Abnahme B-3 (2), Koordinator-Entscheidung: IO-Limit der Reverse-Container (Docker BlkioDeviceReadBps/WriteBps je
+ // Blockgeraet der Mounts), wirksam bei pipeline_einmalig an ab dem naechsten Containerstart (rest-api reverse-container-io.ts).
+ container_io_lese_mb_s:i('MB/s Lesen je Blockgeraet im Reverse-Container',0,100000,20,G,'kein Leselimit'),
+ container_io_schreib_mb_s:i('MB/s Schreiben je Blockgeraet im Reverse-Container',0,100000,20,G,'kein Schreiblimit'),
  inspektion_datei_bytes:b('Bytes',1,B64,268435456,GE),
  inspektion_read_schritt_bytes:b('Bytes',1,B64,67108864,GE),
  inspektion_hash_schritt_bytes:b('Bytes',1,B64,268435456,GE),

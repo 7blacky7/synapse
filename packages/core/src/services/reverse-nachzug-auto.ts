@@ -19,11 +19,12 @@ import {loggeReverseFehler,reverseFehlerKomponente} from './reverse-fehlerlog.js
 import {reverseFehlerDeterministisch} from './reverse-ausfuehrer.js';
 import {projekteMitBacklog} from './code.js';
 import type {ReverseAnalyseAnfrage} from './reverse-tool.js';
+import {reverseFormatNeuAbgedeckt,reverseInspektorStand} from './reverse-einmalig.js';
 
 type Row=Record<string,unknown>;
 type Db={query:Function};
 export type ReverseNachzugArt='s1'|'s3';
-export interface ReverseNachzugKandidat {id:string;eintrag_id:string;medium_id:string|null;pfad:string|null}
+export interface ReverseNachzugKandidat {id:string;eintrag_id:string;medium_id:string|null;pfad:string|null;format?:string|null;magic?:string|null}
 export interface ReverseNachzugAutoKontext {
  pool:Db;ein:ReverseEinstellSnapshot;
  /** Aktuelles S1-Parserprofil der Pipeline; null = reverse_parser_adapter aus, dann kein Neu-Parsen. */
@@ -34,6 +35,8 @@ export interface ReverseNachzugAutoKontext {
  einreihen:(a:ReverseAnalyseAnfrage)=>Promise<Row>;
  /** Aussetzgrund oder null; Standard reverseNachzugVorrang (Tests ersetzen ihn). */
  vorrang?:(db:Db)=>Promise<string|null>;
+ /** P22-T245 Abnahme B-1: Inspektor-Werkzeugstand der Pipeline (this.version); Standard reverseInspektorStand() (gleiche Formel). */
+ inspektorStand?:string;
 }
 export const REVERSE_NACHZUG_AGENT='reverse-nachzug-auto';
 const OFFEN="('offen','wartet','laeuft')";
@@ -53,6 +56,19 @@ export const REVERSE_S1_NEU_PARSEN_SQL=`SELECT d.id::text AS id,d.eintrag_id,d.m
  WHERE ${AUTOMATISCH}
   AND EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.datei_id=d.id AND s.schicht='S1' AND s.aktuell AND s.status IN ('fertig','teilweise') AND s.profil_version<>$2)
   AND COALESCE(d.metadaten->'nachzug_auto'->>'s1_kennung','')<>$2
+  AND NOT EXISTS(SELECT 1 FROM reverse_auftraege r WHERE r.datei_id=d.id AND r.status IN ${OFFEN})
+  AND ${NICHT_ABGEBROCHEN}
+ ORDER BY COALESCE(d.metadaten->'nachzug_auto'->>'s1_versuch_at',''),d.id LIMIT $1`;
+
+/** P22-T245 Abnahme f91640e2 B-1 (Entwurf ac8a8b97 B1): S1-Nachzug bei pipeline_einmalig an. Nur Dateien mit S1 eines anderen Profils, die
+ * bisher UNERKANNT sind (format NULL/unbekannt); der Feinfilter reverseFormatNeuAbgedeckt laeuft in JS. $1 Limit, $2 Parser-Profil,
+ * $3 Pruefmarke (Inspektor-Werkzeugstand:Parser-Profil): schon gepruefte, nicht neu abgedeckte Dateien zieht der Takt nicht erneut. */
+export const REVERSE_S1_FORMAT_NACHZUG_SQL=`SELECT d.id::text AS id,d.eintrag_id,d.medium_id::text AS medium_id,d.pfad,d.format,d.metadaten->>'magic_hex' AS magic
+ FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id
+ WHERE ${AUTOMATISCH} AND (d.format IS NULL OR d.format='unbekannt')
+  AND EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.datei_id=d.id AND s.schicht='S1' AND s.aktuell AND s.status IN ('fertig','teilweise') AND s.profil_version<>$2)
+  AND COALESCE(d.metadaten->'nachzug_auto'->>'s1_kennung','')<>$2
+  AND COALESCE(d.metadaten->'nachzug_auto'->>'s1_format_geprueft','')<>$3
   AND NOT EXISTS(SELECT 1 FROM reverse_auftraege r WHERE r.datei_id=d.id AND r.status IN ${OFFEN})
   AND ${NICHT_ABGEBROCHEN}
  ORDER BY COALESCE(d.metadaten->'nachzug_auto'->>'s1_versuch_at',''),d.id LIMIT $1`;
@@ -121,6 +137,10 @@ export async function reiheReverseNachzugEin(k:Pick<ReverseNachzugAutoKontext,'p
 export async function reverseS1NeuParsenTakt(k:ReverseNachzugAutoKontext):Promise<Row>{
  if(!schalterAn(k.ein,'s1_neu_parsen_auto'))return {aktiv:false,grund:'s1_neu_parsen_auto_aus'};
  if(!k.parserProfil)return {aktiv:false,grund:'reverse_parser_adapter_aus'};
+ // P22-T245 Nacharbeit B1 (ii) (Entscheidung 34651): bei pipeline_einmalig an loest ein Parser-/Profilwechsel kein Neu-Parsen aus.
+ // Abnahme f91640e2 B-1: entdecke() laesst diese Dateien aus ($4), darum laeuft ihr Format-Nachzug HIER (Entwurf ac8a8b97 B1), nur fuer
+ // bisher unerkannte, jetzt abgedeckte Formate. Was sonst unterdrueckt bleibt, zeigt reverse(diagnose) einmalig.unterdrueckt_durch_einmalig.
+ if(reverseWert(k.ein,'pipeline_einmalig')==='an')return reverseS1FormatNachzugTakt(k,k.parserProfil);
  const vorrang=await (k.vorrang??(db=>reverseNachzugVorrang(db,k.ein)))(k.pool);if(vorrang)return {aktiv:true,ausgesetzt:vorrang};
  const frei=reverseZahl(k.ein,'s1_neu_parsen_schritt')-await offeneNachzuege(k.pool,'S1');
  if(frei<=0)return {aktiv:true,ausgesetzt:'deckel_erreicht'};
@@ -135,13 +155,44 @@ export async function reverseS1NeuParsenTakt(k:ReverseNachzugAutoKontext):Promis
  return {aktiv:true,kandidaten:kandidaten.length,ergebnisse};
 }
 
+/**
+ * P22-T245 Abnahme f91640e2 B-1 (Entwurf ac8a8b97 B1): S1-Nachzug bei pipeline_einmalig an. Eingereiht (Prioritaet nachzug, bisSchicht S1;
+ * naechste() laeuft dann S0 und S1 nach Altlogik) wird nur, wenn reverseFormatNeuAbgedeckt gilt. Die uebrigen Kandidaten bekommen KEINE
+ * s1_kennung (sonst fehlten sie einem spaeteren AUS), sondern nur die Pruefmarke s1_format_geprueft je Inspektor-Stand und Parser-Profil
+ * (ein Stapel-UPDATE je Takt), damit der Takt nicht immer dieselben Kandidaten zieht. Gelesen werden bis pipeline_discovery_block
+ * Kandidaten, eingereiht hoechstens s1_neu_parsen_schritt minus offene Nachzuege. Ergebnis nur fuer Debug/Tests.
+ */
+export async function reverseS1FormatNachzugTakt(k:ReverseNachzugAutoKontext,parserProfil:string):Promise<Row>{
+ const vorrang=await (k.vorrang??(db=>reverseNachzugVorrang(db,k.ein)))(k.pool);if(vorrang)return {aktiv:true,modus:'einmalig_format_nachzug',ausgesetzt:vorrang};
+ const frei=reverseZahl(k.ein,'s1_neu_parsen_schritt')-await offeneNachzuege(k.pool,'S1');
+ if(frei<=0)return {aktiv:true,modus:'einmalig_format_nachzug',ausgesetzt:'deckel_erreicht'};
+ const marke=(k.inspektorStand??reverseInspektorStand())+':'+parserProfil;
+ const kandidaten=(await k.pool.query(REVERSE_S1_FORMAT_NACHZUG_SQL,[Math.max(frei,reverseZahl(k.ein,'pipeline_discovery_block')),parserProfil,marke])).rows as ReverseNachzugKandidat[];
+ const ergebnisse:Record<string,number>={},ohneNeuesFormat:string[]=[];let eingereiht=0,voll=false;
+ for(const d of kandidaten){
+  if(!reverseFormatNeuAbgedeckt(d)){ohneNeuesFormat.push(d.id);continue;}
+  if(voll||eingereiht>=frei)continue;
+  const e=await reiheReverseNachzugEin(k,d,'s1',parserProfil,{reverseId:d.eintrag_id,project:'reverse-bibliothek',agentId:REVERSE_NACHZUG_AGENT,
+   dateiId:d.id,mediumId:d.medium_id,bisSchicht:'S1',prioritaet:'nachzug',ohneLegacyAbgeschlossen:true});
+  eingereiht++;ergebnisse[e]=(ergebnisse[e]??0)+1;
+  if(e==='fehler:warteschlange_voll')voll=true;
+ }
+ if(ohneNeuesFormat.length){
+  try{await k.pool.query("UPDATE reverse_dateien SET metadaten=COALESCE(metadaten,'{}'::jsonb)||jsonb_build_object('nachzug_auto',COALESCE(metadaten->'nachzug_auto','{}'::jsonb)||jsonb_build_object('s1_format_geprueft',$2::text)) WHERE id=ANY($1::bigint[])",[ohneNeuesFormat,marke]);}
+  catch{/* Marke ist nur Drossel; der naechste Takt prueft die Dateien erneut. */}
+ }
+ return {aktiv:true,modus:'einmalig_format_nachzug',kandidaten:kandidaten.length,eingereiht,ohne_neues_format:ohneNeuesFormat.length,ergebnisse};
+}
+
 /** T111: ein Takt S3 automatisch. Ergebnis nur für Debug/Tests. */
 export async function reverseS3AutoTakt(k:ReverseNachzugAutoKontext):Promise<Row>{
  if(!schalterAn(k.ein,'s3_auto'))return {aktiv:false,grund:'s3_auto_aus'};
  const vorrang=await (k.vorrang??(db=>reverseNachzugVorrang(db,k.ein)))(k.pool);if(vorrang)return {aktiv:true,ausgesetzt:vorrang};
  const frei=Math.min(reverseZahl(k.ein,'s3_auto_schritt'),reverseZahl(k.ein,'s3_auto_offen_max')-await offeneNachzuege(k.pool,'S3'));
  if(frei<=0)return {aktiv:true,ausgesetzt:'deckel_erreicht'};
- const kandidaten=(await k.pool.query(REVERSE_S3_AUTO_SQL,[frei,k.s3Kennung,k.parserProfil])).rows as ReverseNachzugKandidat[];
+ // P22-T245 Nacharbeit: bei pipeline_einmalig an nur Dateien ganz ohne fertige S3 - ein neuer Containerstand loest kein Neu-S3 aus.
+ const sql=reverseWert(k.ein,'pipeline_einmalig')==='an'?REVERSE_S3_AUTO_SQL.replace("AND s.werkzeug_version=$2)","AND true)"):REVERSE_S3_AUTO_SQL;
+ const kandidaten=(await k.pool.query(sql,[frei,k.s3Kennung,k.parserProfil])).rows as ReverseNachzugKandidat[];
  const ergebnisse:Record<string,number>={};
  for(const d of kandidaten){
   const e=await reiheReverseNachzugEin(k,d,'s3',k.s3Kennung,{reverseId:d.eintrag_id,project:'reverse-bibliothek',agentId:REVERSE_NACHZUG_AGENT,

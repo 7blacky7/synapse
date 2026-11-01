@@ -7,6 +7,8 @@ import {resolve} from 'node:path';
 import type {ToolDescriptor} from '@synapse/core';
 import type {ToolContainerExecutor,ToolInstanceContext,ToolObservation} from './tool-lifecycle.js';
 import {DockerToolContainerExecutor,buildToolContainerOptions,type ResolvedToolMount} from './tool-container-docker.js';
+/** P22-T245 Abnahme f91640e2 B-3 (2): IO-Limit je Start (reverse-container-io.ts reverseIoGrenzen); null = kein Limit. */
+export type ReverseIoFn=(mounts:ResolvedToolMount[])=>Promise<{BlkioDeviceReadBps?:Array<{Path:string;Rate:number}>;BlkioDeviceWriteBps?:Array<{Path:string;Rate:number}>}|null>;
 
 export interface ReverseContainerBinding {
  instance_id:string;generation:string;container_id:string|null;tool_id:string;project:string;job_id?:string;attempt?:number;image?:string;descriptor_hash?:string;
@@ -35,7 +37,7 @@ const TERMINAL=new Set(['ok','fertig','completed','failed','fehler','teilweise',
 class ReverseDockerSessionExecutor implements ToolContainerExecutor {
  private readonly docker:Docker;private readonly sessions=new Map<string,Session>();
  /** lokaleImages (P18-T59): lokal gebaute Images ohne RepoDigests per Image-ID starten, vorher Id und Name/Tag prüfen. */
- constructor(private readonly cfg:{docker?:Docker;socketPath?:string;resolveMounts?:(d:ToolDescriptor,c:ToolInstanceContext)=>Promise<ResolvedToolMount[]>;gpuProbe?:(id:string)=>Promise<number|null>;lokaleImages?:boolean;binding:(id:string,jobId?:string)=>Promise<ReverseContainerBinding|null>;stopSeconds:()=>Promise<number>}){
+ constructor(private readonly cfg:{docker?:Docker;socketPath?:string;resolveMounts?:(d:ToolDescriptor,c:ToolInstanceContext)=>Promise<ResolvedToolMount[]>;gpuProbe?:(id:string)=>Promise<number|null>;lokaleImages?:boolean;binding:(id:string,jobId?:string)=>Promise<ReverseContainerBinding|null>;stopSeconds:()=>Promise<number>;ioGrenzen?:ReverseIoFn;ioStartFehler?:(e:unknown)=>void}){
   this.docker=cfg.docker??new Docker({socketPath:cfg.socketPath??'/var/run/docker.sock'});
  }
  async start(d:ToolDescriptor,ctx:ToolInstanceContext){
@@ -46,10 +48,13 @@ class ReverseDockerSessionExecutor implements ToolContainerExecutor {
   const options=buildToolContainerOptions(d,ctx,mounts),start=performance.now();
   // 'name@sha256:' löst Docker für lokal gebaute Images nicht auf; Referenz dann = geprüfte Image-ID.
   if(this.cfg.lokaleImages){await this.pruefeLokalesImage(d);options.Image=d.digest;}
+  // P22-T245 Abnahme B-3 (2): IO-Limit (Lesen/Schreiben) der Reverse-Container; eine Stoerung ergibt kein Limit, nie einen Startabbruch.
+  const io=this.cfg.ioGrenzen?await this.cfg.ioGrenzen(mounts).catch(()=>null):null;
+  if(io)options.HostConfig={...options.HostConfig,...io};
   if(!await ctx.isCurrent())throw Error('tool_start_fenced');
   let container:Docker.Container;
   try{container=await this.docker.createContainer(options);}
-  catch(e){if((e as {statusCode?:number}).statusCode!==409)throw e;container=this.docker.getContainer(ctx.name);
+  catch(e){if((e as {statusCode?:number}).statusCode!==409){if(io)this.cfg.ioStartFehler?.(e);throw e;}container=this.docker.getContainer(ctx.name);
    const old=await container.inspect();if(old.Config.Labels?.['synapse.generation']!==ctx.generation||old.Config.Labels?.['synapse.instance']!==ctx.instance_id||old.Config.Labels?.['synapse.tool']!==d.tool_id||old.Config.Image!==options.Image)throw Error('tool_container_foreign');}
   try{
    if(!await ctx.isCurrent())throw Error('tool_start_fenced');
@@ -61,6 +66,7 @@ class ReverseDockerSessionExecutor implements ToolContainerExecutor {
    return {id:container.id,coldstart_ms:elapsed};
   }catch(e){
    // Der Lifecycle beobachtet/stoppt exakt diesen generationsgebundenen Namen; nie force-remove fremder Container.
+   if(io)this.cfg.ioStartFehler?.(e);
    throw e;
   }
  }
@@ -161,6 +167,7 @@ export class ReverseContainerTransport implements ToolContainerExecutor {
  constructor(private readonly cfg:{
   docker?:Docker;socketPath?:string;resolveMounts?:(d:ToolDescriptor,c:ToolInstanceContext)=>Promise<ResolvedToolMount[]>;
   lokaleImages?:boolean;binding:(id:string,jobId?:string)=>Promise<ReverseContainerBinding|null>;stopSeconds:()=>Promise<number>;
+  ioGrenzen?:ReverseIoFn;ioStartFehler?:(e:unknown)=>void;
  }){
   this.docker=cfg.docker??new Docker({socketPath:cfg.socketPath??'/var/run/docker.sock'});
   this.own=new ReverseDockerSessionExecutor({...cfg,docker:this.docker});this.other=new DockerToolContainerExecutor({...cfg,docker:this.docker});

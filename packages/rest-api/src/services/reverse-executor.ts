@@ -26,6 +26,7 @@ import {leseReversePeRessourcenSchalter,getPool,getAssetKonfiguration,registerVi
  reverseEGruppe,ReverseEUebernahmeFehler,ergaenzeReverseRuntime,REVERSE_FEHLERCODES,REVERSE_EXECUTOR_UNTERSTUETZT,meldeReverseAusfuehrer,
  reverseFehlerDeterministisch,uebernehmeS3Ergebnis,reverseS3AusgabeKey,ReverseS3UebernahmeFehler,reverseResourceNeedRoh,
  leseReverseFortschrittSchalter,normalisiereReverseFortschritt,speichereReverseFortschritt,reverseStornoAngefordert,
+ reverseDrosselTor,reverseDrosselBuche,
  leseReverseAufsicht,leseReverseEinstellwerte,leseReverseBlockSchalter,leseReverseProduktSchalter,reverseZahl,reverseBudget,reverseBigInt,
  uebernehmeEInBloecken,reverseManifestVerweis,pruefeReverseManifest,leseReverseManifest,REVERSE_EINSTELLKATALOG,type ReverseEinstellSnapshot,
  type ToolDescriptor,type WorkJob,type WorkJobHooks,type WorkJobClient,type WorkNodeAuthority,type WorkIdentity,
@@ -37,6 +38,7 @@ import {ReverseContainerRecovery} from './reverse-container-recovery.js';
 import {configureToolLifecycleAdapters,getToolLifecycle} from './tool-lifecycle-runtime.js';
 import {ServerExecutor} from './server-executor.js';
 import {ReverseLeserExecutor,LESER_TOOL} from './reverse-leser-executor.js';
+import {reverseAuftragBytes,reverseDrosselAktiv,reverseIoGrenzen,reverseIoStartFehler} from './reverse-container-io.js';
 
 export const REVERSE_PROJEKT='reverse-bibliothek';
 export const REVERSE_CAPABILITY='reverse_bibliothek';
@@ -453,6 +455,9 @@ export class ReverseExecutor {
   if(frei<=0)return {geprueft:true,geweckt:0,gestartet:0};
   // Der Claim-Guard verlangt einen warmen Job-Container; offene Aufträge deshalb zuerst wecken.
   const admissionWerte=await leseReverseEinstellwerte({},this.pool);if(admissionWerte.letzter_fehler)return leer('reverse_fachbindung_nicht_lesbar');
+  // P22-T245 Nacharbeit B2a (Entscheidung 34651): Container-Arbeit (E/S3) unter dieselbe Drossel und denselben Betriebsvorrang wie die
+  // Pipeline (wirksam bei pipeline_einmalig an; nicht lesbare Einstellungen ruhen schon oben). Ruht -> nichts wecken, nichts claimen.
+  const tor=reverseDrosselTor('e',admissionWerte);if(!tor.frei)return leer('reverse_drossel:'+tor.grund);
    const offen=(await this.pool.query(`SELECT id FROM work_jobs WHERE capability=$1 AND project=$2 AND kind=ANY($3::text[])
    AND state='pending' AND (deadline IS NULL OR deadline>clock_timestamp()) ORDER BY created_at,id LIMIT $4`,
    [REVERSE_CAPABILITY,REVERSE_PROJEKT,this.k.kinds,reverseZahl(admissionWerte,'status_auftraege_max')])).rows;
@@ -466,8 +471,14 @@ export class ReverseExecutor {
   const claims=await this.jobs.claim(this.wer,{limit:frei,leaseSeconds:this.k.leaseSeconds});
   const wer=this.wer;
   for(const job of claims){
+   // P22-T245 Nacharbeit B2a + Abnahme f91640e2 B-3 (1): nach jedem Container-Auftrag mit der bekannten Menge buchen (reverseAuftragBytes:
+   // E = Quellgroesse des Mediums + entpackte Dateien, sonst Dateigroesse), damit pipeline_lese_mb_s im Mittel greift. Die Spitzenrate im
+   // Container begrenzt das IO-Limit (reverse-container-io.ts). Der Platz wird erst nach der Buchung frei.
+   const start=Date.now();
    const lauf=this.fuehreAus(lc,wer,job).catch(e=>console.error('[reverse-executor] Auftrag fehlgeschlagen:',job.id,(e as Error).message))
-    .finally(()=>{this.laufend.delete(job.id);});
+    .finally(async()=>{const dauer=Date.now()-start;
+     try{reverseDrosselBuche('e',admissionWerte,reverseDrosselAktiv(admissionWerte)?await reverseAuftragBytes(this.pool,'e',job):0,dauer);}
+     finally{this.laufend.delete(job.id);}});
    this.laufend.set(job.id,lauf);
   }
   return {geprueft:true,geweckt,gestartet:claims.length,...((recoveryBindung??recoveryHinweis)?{hinweis:recoveryBindung??recoveryHinweis}:{})};
@@ -1214,7 +1225,9 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  let transport:ReverseContainerTransport;
  const recovery=new ReverseContainerRecovery({identity:identitaet,claimIdentity:identitaet.snapshot,ready:b=>transport?.ready(b)??false});
  transport=new ReverseContainerTransport({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET,resolveMounts:(d,c)=>d.tool_id===LESER_TOOL?leser.mounts(d,c):alteMounts(d,c),
-  lokaleImages:process.env.SYNAPSE_REVERSE_IMAGE_LOKAL==='1',binding:(id,job)=>recovery.binding(id,job),stopSeconds:()=>recovery.stopSeconds()});
+  lokaleImages:process.env.SYNAPSE_REVERSE_IMAGE_LOKAL==='1',binding:(id,job)=>recovery.binding(id,job),stopSeconds:()=>recovery.stopSeconds(),
+  // P22-T245 Abnahme B-3 (2): IO-Limit fuer reverse-e und reverse-leser (Einstellungen container_io_*, wirksam bei pipeline_einmalig an).
+  ioGrenzen:mounts=>reverseIoGrenzen(mounts),ioStartFehler:reverseIoStartFehler});
  leser.recoveryAnbinden(recovery);
  try{configureToolLifecycleAdapters({executor:transport,resources:{acquire:(d,c)=>d.tool_id===LESER_TOOL?leser.ressourcen.acquire(d,c):reverseRessourcen.acquire(d,c),
    release:t=>t.startsWith('reverse-leser:')?leser.ressourcen.release(t):reverseRessourcen.release(t)}});}

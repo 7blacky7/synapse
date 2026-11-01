@@ -21,6 +21,8 @@ import {reverseKindAusfuehrbar,reverseFehlerDeterministisch,zerlegeReverseFehler
 import {leseReverseEinstellungen} from './reverse-einstellungen.js';
 import {reverseEinstellSnapshot,leseReverseEinstellwerte,leseReverseBlockSchalter,reverseZahl,reverseBudget,reverseWert,type ReverseEinstellSnapshot} from './reverse-einstellwerte.js';
 import {cpus,loadavg} from 'node:os';
+import {reverseEinmaligSchicht,reverseBelastungsGrund,reverseDrosselStand,reverseDrosselWarteMs,reverseNeuerInspektor,reverseFormatNeuAbgedeckt,type ReverseSchichtZeile,type ReverseEinmaligGrund} from './reverse-einmalig.js';
+export {reverseDrosselStand,reverseDrosselWarteMs,reverseNeuerInspektor,reverseFormatNeuAbgedeckt} from './reverse-einmalig.js';
 import {monitorEventLoopDelay,type IntervalHistogram} from 'node:perf_hooks';
 import {Pool as PgPool} from 'pg';
 import {getConfig} from '../config.js';
@@ -100,6 +102,8 @@ export class ReversePipelineDienst{
  private drossel={pauseMs:0,mbS:20,lastMilli:0,latenzMs:0};
  /** P22-T245 (34623 (3)): Einstellungen nicht lesbar = fail-closed, kein Durchlauf. */
  private einstellFehler:string|null=null;
+ /** P22-T245 Abnahme B-2: Datenstand beim letzten LEEREN Datei-Scan von entdecke() (nur bei einmalig); gleich = Scan entfaellt. */
+ private leerStand:{stand:string;am:number}|null=null;
  private readonly latenz:IntervalHistogram=monitorEventLoopDelay({resolution:20});
  constructor(o:ReversePipelineOptionen={}){
   this.basisPool=o.pool??getPool();this.pool=this.basisPool;this.poolInjiziert=!!o.pool;this.cfg=o.konfiguration??getAssetKonfiguration();this.kinds=o.ausfuehrbareKinds;
@@ -164,19 +168,14 @@ export class ReversePipelineDienst{
   const layers=(await db.query('SELECT schicht,status,werkzeug_version,profil_version FROM reverse_schichten WHERE datei_id=$1 AND aktuell',[file])).rows;
   const aktuell=(stage:string,row:Row|undefined)=>!!row&&OK.includes(String(row.status))&&row.profil_version===this.profilFuer(stage)
    &&row.werkzeug_version===(stage==='S0'||stage==='S1'?this.version:reverseContainerWerkzeugVersion());
-  for(const stage of STAGES.slice(1)){
-   if(STAGES.indexOf(stage)>STAGES.indexOf(target as typeof STAGES[number]))return null;
-   const row=layers.find(x=>x.schicht===stage);
-   if(aktuell(stage,row))continue;
-   if(einmalig&&row&&OK.includes(String(row.status))){
-    // P22-T245 C: S0 nur fuer ein bisher unerkanntes, jetzt abgedecktes Format; S1 nur hinter einem schon aktuellen S0. Sonst bleibt sie.
-    if(stage==='S0'&&await this.formatNeuAbgedeckt(db,file)){reverseDrosselStand.nachzug_erkannt++;return stage;}
-    if(stage==='S1'&&aktuell('S0',layers.find(x=>x.schicht==='S0')))return stage;
-    continue;
-   }
-   return stage;
-  }
-  return null;
+  // P22-T245 Nacharbeit: dieselbe reine Entscheidung wie die Vorschau (reverse-einmalig.ts). Bei einmalig: S0 nur fuer ein bisher
+  // unerkanntes, jetzt abgedecktes Format; S1 nur nach neu inspiziertem S0 (anderer Inspektor-Werkzeugstand), nie wegen eines reinen
+  // Profil-/Parser-Versionswechsels (Entscheidung 34651 B1 (ii)).
+  const grund:{wert?:ReverseEinmaligGrund}={};
+  const stufe=await reverseEinmaligSchicht({schichten:layers as ReverseSchichtZeile[],ziel:target,einmalig,werkzeug:this.version,
+   aktuell:(stage,row)=>aktuell(stage,row as unknown as Row|undefined),formatNeu:()=>this.formatNeuAbgedeckt(db,file),grund});
+  if(grund.wert==='format_nachzug')reverseDrosselStand.nachzug_erkannt++;
+  return stufe;
  }
  /** P22-T245 C: gespeicherte Erkennung (format) und Magic der S0-Schicht gegen die aktuelle Registry. */
  private async formatNeuAbgedeckt(db:PoolClient,file:string):Promise<boolean>{
@@ -487,15 +486,36 @@ export class ReversePipelineDienst{
   const verwaist=(await this.pool.query("SELECT r.id,r.eintrag_id,r.medium_id::text,r.projekt,r.ziel_schicht,r.prioritaet FROM reverse_auftraege r JOIN work_jobs w ON w.id=r.p20_auftrag_id JOIN reverse_eintraege e ON e.id=r.eintrag_id WHERE r.schicht='E' AND r.datei_id IS NULL AND r.status IN ('offen','wartet') AND w.state='completed' AND e.status='bestaetigt' ORDER BY r.created_at,r.id LIMIT $1",[this.w.discovery])).rows;
   for(const j of verwaist)await this.tx(db=>this.queue(db,{reverseId:j.eintrag_id,dateiId:null,mediumId:j.medium_id,project:j.projekt??'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:j.ziel_schicht??reverseBisSchichtGrenze(this.ein),prioritaet:j.prioritaet,policyElternId:j.id}));
   const eProfil=await this.eProfil();
-  const files=(await this.pool.query("SELECT d.id::text,d.eintrag_id,d.medium_id::text,e.analyse_policy FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id WHERE e.status='bestaetigt' AND d.storage_key IS NOT NULL AND d.sha256 IS NOT NULL AND COALESCE((e.analyse_policy->>'automatisch')::boolean,true) AND (NOT EXISTS(SELECT 1 FROM reverse_schichten done WHERE done.datei_id=d.id AND done.schicht='S3' AND done.aktuell AND done.status IN ('fertig','teilweise') AND done.profil_version=$2) OR $3::text IS NOT NULL AND EXISTS(SELECT 1 FROM reverse_schichten s1 WHERE s1.datei_id=d.id AND s1.schicht='S1' AND s1.aktuell AND s1.status IN ('fertig','teilweise') AND s1.profil_version<>$3)) AND NOT ($4::text IS NOT NULL AND EXISTS(SELECT 1 FROM reverse_schichten p1 WHERE p1.datei_id=d.id AND p1.schicht='S1' AND p1.aktuell AND p1.status IN ('fertig','teilweise') AND p1.profil_version<>$4)) AND NOT EXISTS(SELECT 1 FROM reverse_auftraege ab WHERE ab.datei_id=d.id AND ab.status='abgebrochen' AND NOT EXISTS(SELECT 1 FROM reverse_auftraege nz WHERE nz.datei_id=d.id AND nz.created_at>ab.created_at)) ORDER BY d.pipeline_gesehen_at NULLS FIRST,d.updated_at,d.id LIMIT $1",[this.w.discovery,this.profile,!this.parserAdapter&&this.s1Bloecke?this.s1BlockProfil():null,this.parserAdapter?this.s1ParserProfil():null])).rows;
+  // P22-T245 Nacharbeit: Marke fuer "bei einmalig geprueft, nichts zu tun" (siehe unten); null bei aus = Altverhalten.
+  const einmaligMarke=this.einmalig?this.version+':'+reverseBisSchichtGrenze(this.ein):null;
+  // P22-T245 Abnahme f91640e2 B-2: kein Leerlauf-Vollscan. Fand der letzte Scan bei einmalig nichts und ist der Datenstand (Aenderungs-
+  // zaehler der beteiligten Tabellen, Werkzeug/Profil/Grenze) gleich, entfaellt der Scan (Prod 4,4 s je Minute). Spaetestens nach
+  // pipeline_entdecke_vollscan_ms wird trotzdem gescannt; bei aus oder nicht bestimmbarem Stand gilt das Altverhalten.
+  const parameter=[this.w.discovery,this.profile,!this.parserAdapter&&this.s1Bloecke?this.s1BlockProfil():null,this.parserAdapter?this.s1ParserProfil():null,einmaligMarke];
+  const stand=einmaligMarke?await this.entdeckeStand(parameter):null,vollscanMs=reverseZahl(this.ein,'pipeline_entdecke_vollscan_ms');
+  if(!stand)this.leerStand=null;
+  const ueberspringen=!!stand&&vollscanMs>0&&this.leerStand?.stand===stand&&Date.now()-this.leerStand.am<vollscanMs;
+  if(ueberspringen)reverseDrosselStand.entdecke.uebersprungen++;
+  const files=ueberspringen?[]:(await this.pool.query("SELECT d.id::text,d.eintrag_id,d.medium_id::text,e.analyse_policy FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id WHERE e.status='bestaetigt' AND d.storage_key IS NOT NULL AND d.sha256 IS NOT NULL AND COALESCE((e.analyse_policy->>'automatisch')::boolean,true) AND (NOT EXISTS(SELECT 1 FROM reverse_schichten done WHERE done.datei_id=d.id AND done.schicht='S3' AND done.aktuell AND done.status IN ('fertig','teilweise') AND done.profil_version=$2) OR $3::text IS NOT NULL AND EXISTS(SELECT 1 FROM reverse_schichten s1 WHERE s1.datei_id=d.id AND s1.schicht='S1' AND s1.aktuell AND s1.status IN ('fertig','teilweise') AND s1.profil_version<>$3)) AND NOT ($4::text IS NOT NULL AND EXISTS(SELECT 1 FROM reverse_schichten p1 WHERE p1.datei_id=d.id AND p1.schicht='S1' AND p1.aktuell AND p1.status IN ('fertig','teilweise') AND p1.profil_version<>$4)) AND NOT EXISTS(SELECT 1 FROM reverse_auftraege ab WHERE ab.datei_id=d.id AND ab.status='abgebrochen' AND NOT EXISTS(SELECT 1 FROM reverse_auftraege nz WHERE nz.datei_id=d.id AND nz.created_at>ab.created_at)) AND ($5::text IS NULL OR d.metadaten->>'einmalig_geprueft' IS DISTINCT FROM $5||':'||md5(COALESCE(e.analyse_policy::text,''))) ORDER BY d.pipeline_gesehen_at NULLS FIRST,d.updated_at,d.id LIMIT $1",parameter)).rows;
+  if(stand&&!ueberspringen){
+   reverseDrosselStand.entdecke.vollscans++;
+   if(files.length)this.leerStand=null;
+   else if(this.leerStand?.stand!==stand||Date.now()-this.leerStand.am>=vollscanMs){
+    this.leerStand={stand,am:Date.now()};reverseDrosselStand.entdecke.leer_seit=new Date().toISOString();reverseDrosselStand.entdecke.letzter_stand=stand;
+   }
+  }
   // P18-T98: bei Parser-Adapter EIN laeuft das Neu-Parsen fertiger S1-Schichten nur noch ueber die Drossel (reverse-nachzug-auto,
   // s1_neu_parsen_auto/-schritt, Prioritaet nachzug); entdecke() laesst diese Dateien ($4) aus. Neue Dateien ohne S1 bleiben hier.
   // P18-T88: $4 = S1-Blockprofil bei Schalter AN - vorhandene S1-Ergebnisse des anderen Profils laufen einmal neu (auch bei Ziel S2/S3).
-  for(const d of files)await this.tx(async db=>{const halt=await reverseAdmission(db);if(halt.aktiv||halt.letzter_fehler)return;await sperreReversePolicy(db,d.eintrag_id);await db.query('UPDATE reverse_dateien SET pipeline_gesehen_at=clock_timestamp() WHERE id=$1',[d.id]);return this.queue(db,{reverseId:d.eintrag_id,dateiId:d.id,mediumId:d.medium_id,
+  for(const d of files)await this.tx(async db=>{const halt=await reverseAdmission(db);if(halt.aktiv||halt.letzter_fehler)return;await sperreReversePolicy(db,d.eintrag_id);await db.query('UPDATE reverse_dateien SET pipeline_gesehen_at=clock_timestamp() WHERE id=$1',[d.id]);const r=await this.queue(db,{reverseId:d.eintrag_id,dateiId:d.id,mediumId:d.medium_id,
    project:'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:reverseBisSchichtGrenze(this.ein),prioritaet:'hintergrund',
    // P18-T112: abgeschlossene Legacy-Auftraege ohne Pin (z. B. manuelles E eines Mediums vor P18-T104) halten neue Dateien nicht
    // mehr fest; offene Altauftraege halten weiter. Die Medien-E-Schleife unten bleibt bewusst ohne diese Ausnahme.
-   ohneLegacyAbgeschlossen:true});});
+   ohneLegacyAbgeschlossen:true});
+   // P22-T245 Nacharbeit: bei einmalig an und nichts zu tun Marke setzen (Werkzeugstand:Grenze:Policy). entdecke() zieht die Datei
+   // danach nicht mehr endlos im Kreis; ein neuer Registry-Stand, eine andere Grenze oder Policy prueft sie genau einmal neu.
+   if(einmaligMarke&&r&&r.status==='fertig'&&r.auftrag_id==null)await db.query("UPDATE reverse_dateien d SET metadaten=COALESCE(d.metadaten,'{}'::jsonb)||jsonb_build_object('einmalig_geprueft',$2::text||':'||md5(COALESCE(e.analyse_policy::text,''))) FROM reverse_eintraege e WHERE d.id=$1 AND e.id=d.eintrag_id",[d.id,einmaligMarke]);
+   return r;});
   // Teil E: Metadatenereignis; dauerhafter Keyset-Scan im vorhandenen Leser-Executor.
   const {meldeReverseLeserKandidat}=await import('./reverse-leser-nachzug.js');
   for(const d of files)await meldeReverseLeserKandidat(this.pool,String(d.eintrag_id),String(d.id));
@@ -505,6 +525,19 @@ export class ReversePipelineDienst{
   // P18-T71: Ein neues Reverse-Image (anderer Werkzeugstand) reiht E fertiger Medien einmal neu ein (verschachtelte Container);
   // gibt es schon einen E-Auftrag mit diesem Stand (auch gescheitert), bleibt es dabei - keine Endlosschleife.
   for(const m of media)await this.tx(async db=>{const halt=await reverseAdmission(db);if(halt.aktiv||halt.letzter_fehler)return;await sperreReversePolicy(db,m.eintrag_id);await db.query('UPDATE reverse_medien SET pipeline_gesehen_at=clock_timestamp() WHERE id=$1',[m.id]);return this.queue(db,{reverseId:m.eintrag_id,dateiId:null,mediumId:m.id,project:'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:reverseBisSchichtGrenze(this.ein),prioritaet:'hintergrund'});});
+ }
+ /**
+  * P22-T245 Abnahme B-2: billiger Datenstand fuer die Leerlauf-Abkuerzung von entdecke(): Aenderungszaehler (pg_stat_user_tables,
+  * Einfuegen+Aendern+Loeschen) der Tabellen, von denen die Dateiauswahl abhaengt, plus Profil-/Grenz-Parameter. Die Zaehler laufen
+  * hoechstens Sekunden nach; eine so verspaetete Aenderung loest den Scan im naechsten Durchlauf aus. null = nicht bestimmbar (scannen).
+  */
+ private async entdeckeStand(parameter:unknown[]):Promise<string|null>{
+  try{
+   const r=(await this.pool.query(`SELECT string_agg(t.n||':'||COALESCE((SELECT (s.n_tup_ins+s.n_tup_upd+s.n_tup_del)::text FROM pg_stat_user_tables s
+     WHERE s.relid=to_regclass(t.n)),'?'),',' ORDER BY t.n) AS stand FROM unnest(ARRAY['reverse_auftraege','reverse_dateien','reverse_eintraege','reverse_schichten']) AS t(n)`)).rows[0]?.stand;
+   if(typeof r!=='string'||r.includes(':?'))return null;
+   return hash([r,this.version,parameter.slice(1)]);
+  }catch{return null;}
  }
  private async claim():Promise<Job|undefined>{
   return this.tx(async db=>{
@@ -730,7 +763,7 @@ export class ReversePipelineDienst{
  }
  /** P18-T98/T111: gedrosselter Nachzug (Schalter in reverse_einstellungen, Standard aus); wirft nie. */
  private async nachzugAuto():Promise<void>{
-  await reverseNachzugAutoTakt({pool:this.pool,ein:this.ein,parserProfil:this.parserAdapter?this.s1ParserProfil():null,s3Kennung:reverseContainerWerkzeugVersion(),einreihen:a=>this.nachziehen(a)});
+  await reverseNachzugAutoTakt({pool:this.pool,ein:this.ein,parserProfil:this.parserAdapter?this.s1ParserProfil():null,s3Kennung:reverseContainerWerkzeugVersion(),inspektorStand:this.version,einreihen:a=>this.nachziehen(a)});
  }
  async durchlauf():Promise<void>{
   if(this.beendet)return;await this.einstellungen();
@@ -757,7 +790,7 @@ export class ReversePipelineDienst{
   catch{last=NaN;latenz=NaN;}
   if(!Number.isFinite(last)||!Number.isFinite(latenz)){reverseDrosselStand.pausen_betrieb++;reverseDrosselStand.letzter_grund='last_nicht_lesbar';reverseDrosselStand.letzte_pause_am=new Date().toISOString();return true;}
   reverseDrosselStand.letzte_messung={load_je_cpu_milli:last,latenz_p99_ms:latenz,am:new Date().toISOString()};
-  const grund=this.drossel.lastMilli>0&&last>this.drossel.lastMilli?'last':this.drossel.latenzMs>0&&latenz>this.drossel.latenzMs?'latenz':null;
+  const grund=reverseBelastungsGrund(last,latenz,this.drossel);
   if(!grund)return false;
   reverseDrosselStand.pausen_betrieb++;reverseDrosselStand.letzter_grund=grund;reverseDrosselStand.letzte_pause_am=new Date().toISOString();
   return true;
@@ -772,26 +805,8 @@ export class ReversePipelineDienst{
 }
 // ─── P22-T245: einmalig + gedrosselt (Bestand/Entwurf thought c3f75f0f, Freigabe #t128-team 34623) ──────────────────────
 
-/** P22-T245: Debugstand dieses API-Prozesses (reverse(diagnose) Feld einmalig.drossel). */
-export const reverseDrosselStand={
- schalter:'aus' as 'aus'|'an', werte:{} as Record<string,unknown>, stand:null as {werkzeug:string;profil_s0:string;profil_s1:string}|null,
- auftraege:0, bytes:0, pause_ms_summe:0, pausen_betrieb:0, nachzug_erkannt:0,
- letzter_grund:null as string|null, letzte_pause_am:null as string|null, letzte_messung:null as Record<string,unknown>|null,
-};
-/** P22-T245 D: Wartezeit nach einem Auftrag = max(Pause, Lesebytes/Budget - Auftragsdauer). Rein, fuer Tests exportiert. */
-export function reverseDrosselWarteMs(pauseMs:number,mbS:number,bytes:number,dauerMs:number):number{
- const budget=mbS>0?Math.ceil(bytes*1000/(mbS*1_000_000))-dauerMs:0;
- return Math.max(0,pauseMs,budget);
-}
-/** P22-T245 C: Inspektor, der eine bisher UNERKANNTE Datei (format NULL/unbekannt) jetzt ueber Endung bzw. gespeicherte Magic abdeckt;
- * generic-binary zaehlt nicht. null = kein Nachzug. Rein, fuer Tests und Vorschau exportiert. */
-export function reverseNeuerInspektor(d:{pfad?:unknown;format?:unknown;magic?:unknown}|undefined):string|null{
- if(!d||(d.format!=null&&d.format!=='unbekannt'))return null;
- const hex=typeof d.magic==='string'&&/^([0-9a-f]{2})*$/i.test(d.magic)?d.magic:'';
- const det=standardRegistry.detect(String(d.pfad??''),Buffer.from(hex,'hex'));
- return det.inspector&&det.inspector.id!=='generic-binary'?det.inspector.id:null;
-}
-export function reverseFormatNeuAbgedeckt(d:{pfad?:unknown;format?:unknown;magic?:unknown}|undefined):boolean{return reverseNeuerInspektor(d)!==null;}
+// P22-T245 Nacharbeit: reverseDrosselStand, reverseDrosselWarteMs, reverseNeuerInspektor und reverseFormatNeuAbgedeckt liegen in
+// reverse-einmalig.ts (gemeinsam mit E- und Leser-Executor) und werden oben unveraendert re-exportiert.
 /** P22-T245: Werkzeugstand der S0/S1-Inspektion (wie this.version im Dienst). */
 export function reverseInspektorVersion():string{return hash(standardRegistry.list().map(i=>[i.id,i.version]).sort());}
 let eigenerPool:Pool|null=null;
@@ -804,56 +819,99 @@ function reverseEigenerPool(max:number):Pool{
  return eigenerPool;
 }
 let vorschauCache:{am:number;wert:Row}|null=null;
+/** Nur fuer Tests: Zwischenspeicher der Vorschau verwerfen. */
+export function vergissReverseEinmaligVorschau():void{vorschauCache=null;}
 /**
- * P22-T245 E (34623 (1)): Vorschau VOR dem Einschalten - was laeuft bei pipeline_einmalig aus (Obergrenze: jede fertige Schicht mit altem
- * Werkzeug-/Profilstand) bzw. an (nur neue Dateien/Medien, exakter Format-Nachzug je Datei, S1 hinter aktuellem S0). Nur lesend, 120 s
- * zwischengespeichert (der Entstoerer ruft diagnose regelmaessig). Profilstand nur, wenn die Pipeline in diesem Prozess laeuft.
+ * P22-T245 E (34623 (1)) + Nacharbeit (34651 E1/E3): Vorschau VOR dem Einschalten. MISST je Datei mit derselben reinen Entscheidung wie
+ * naechste() (reverseEinmaligSchicht, einmalig an, automatisch), was bei pipeline_einmalig an laufen wuerde, aufgeteilt nach Grund;
+ * altschichten_erneut_ohne_grund ist ein Messwert (Soll 0), kein Literal. Dazu, was die Einmaligkeit unterdrueckt (S1-Neu-Parsen,
+ * S3-Auto, Altschichten). Nur auf Anfrage (reverse(diagnose)), nie im Entstoerer-Automaten; ohne uebergebenen Pool der eigene kleine
+ * Pool der Pipeline statt des Haupt-Pools. Keyset in Bloecken von 5000 mit Pause im Event-Loop. 120 s zwischengespeichert.
+ * Profilstand nur, wenn die Pipeline in diesem Prozess laeuft (sonst zaehlt nur der Werkzeugstand).
  */
-export async function reverseEinmaligVorschau(db:Pick<Pool,'query'>=getPool()):Promise<Row>{
+export async function reverseEinmaligVorschau(db?:Pick<Pool,'query'>):Promise<Row>{
  if(vorschauCache&&Date.now()-vorschauCache.am<120_000)return {...vorschauCache.wert,aus_zwischenspeicher:true};
- const s=await leseReverseEinstellwerte({},db);
+ const pool:Pick<Pool,'query'>=db??reverseEigenerPool(2);
+ const s=await leseReverseEinstellwerte({},pool);
  const werkzeug=reverseDrosselStand.stand?.werkzeug??reverseInspektorVersion(),container=reverseContainerWerkzeugVersion();
  const p0=reverseDrosselStand.stand?.profil_s0??null,p1=reverseDrosselStand.stand?.profil_s1??null;
- const schichten=(await db.query(`SELECT s.schicht,count(*)::int AS gesamt,count(*) FILTER (WHERE s.werkzeug_version IS DISTINCT FROM (CASE WHEN s.schicht IN ('S0','S1') THEN $1 ELSE $2 END)
+ const ziel=reverseBisSchichtGrenze(s.letzter_fehler?undefined:s);
+ const schichten=(await pool.query(`SELECT s.schicht,count(*)::int AS gesamt,count(*) FILTER (WHERE s.werkzeug_version IS DISTINCT FROM (CASE WHEN s.schicht IN ('S0','S1') THEN $1 ELSE $2 END)
    OR ($3::text IS NOT NULL AND s.schicht='S0' AND s.profil_version IS DISTINCT FROM $3) OR ($4::text IS NOT NULL AND s.schicht='S1' AND s.profil_version IS DISTINCT FROM $4))::int AS alter_stand
   FROM reverse_schichten s WHERE s.aktuell AND s.status IN ('fertig','teilweise') GROUP BY 1 ORDER BY 1`,[werkzeug,container,p0,p1])).rows as Array<{schicht:string;gesamt:number;alter_stand:number}>;
- const s1Hinter=Number((await db.query(`SELECT count(*)::int AS n FROM reverse_schichten s1 JOIN reverse_schichten s0 ON s0.datei_id=s1.datei_id AND s0.schicht='S0' AND s0.aktuell
-   AND s0.status IN ('fertig','teilweise') AND s0.werkzeug_version=$1 AND ($2::text IS NULL OR s0.profil_version=$2)
-  WHERE s1.schicht='S1' AND s1.aktuell AND s1.status IN ('fertig','teilweise') AND (s1.werkzeug_version IS DISTINCT FROM $1 OR ($3::text IS NOT NULL AND s1.profil_version IS DISTINCT FROM $3))`,[werkzeug,p0,p1])).rows[0]?.n??0);
- const neu=(await db.query(`SELECT (SELECT count(*) FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id WHERE e.status='bestaetigt' AND d.storage_key IS NOT NULL AND d.sha256 IS NOT NULL
-    AND NOT EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.datei_id=d.id AND s.schicht='S0' AND s.aktuell AND s.status IN ('fertig','teilweise')))::int AS dateien_ohne_s0,
-   (SELECT count(*) FROM reverse_medien m JOIN reverse_eintraege e ON e.id=m.eintrag_id WHERE e.status='bestaetigt' AND m.status='vollstaendig' AND m.art<>'ordner'
-    AND NOT EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.medium_id=m.id AND s.datei_id IS NULL AND s.schicht='E' AND s.aktuell AND s.status IN ('fertig','teilweise')))::int AS medien_ohne_e`)).rows[0] as {dateien_ohne_s0:number;medien_ohne_e:number};
- // Exakt je Datei (dieselbe Funktion wie naechste()): nur bisher unerkannte Formate mit alter S0-Schicht, Keyset in Bloecken.
- const je=new Map<string,number>();let nachzug=0,geprueft=0,ab='0';
- for(let runde=0;runde<200;runde++){
-  const rows=(await db.query(`SELECT d.id::text AS id,d.pfad,d.format,d.metadaten->>'magic_hex' AS magic FROM reverse_dateien d
-    WHERE (d.format IS NULL OR d.format='unbekannt') AND d.id>$2::bigint AND EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.datei_id=d.id AND s.schicht='S0' AND s.aktuell
-     AND s.status IN ('fertig','teilweise') AND (s.werkzeug_version IS DISTINCT FROM $1 OR ($3::text IS NOT NULL AND s.profil_version IS DISTINCT FROM $3)))
-    ORDER BY d.id LIMIT 10000`,[werkzeug,ab,p0])).rows as Array<{id:string;pfad:string;format:string|null;magic:string|null}>;
+ // Messung je Datei (entdecke-Kandidaten: bestaetigt, gespeichert, automatische Policy) mit derselben Entscheidung wie naechste().
+ const aktuell=(stufe:string,z:ReverseSchichtZeile|undefined)=>{
+  if(!z||!OK.includes(String(z.status)))return false;
+  const p=stufe==='S1'?p1:p0;
+  if(p!==null&&z.profil_version!==p)return false;
+  return z.werkzeug_version===(stufe==='S0'||stufe==='S1'?werkzeug:container);
+ };
+ const zaehler:Record<'neu'|'wiederholung'|'format_nachzug'|'s1_nach_s0'|'ohne_grund',number>={neu:0,wiederholung:0,format_nachzug:0,s1_nach_s0:0,ohne_grund:0};
+ const je=new Map<string,number>(),beispiele:string[]=[];let geprueft=0,formatGeprueft=0,nachzugFormat=0,ab='0';
+ const zaehleEndung=(d:{pfad:string;format:string|null;magic:string|null})=>{
+  const endung=(String(d.pfad).match(/\.([^./]+)$/)?.[1]??'').toLowerCase(),k=endung+' -> '+(reverseNeuerInspektor(d)??'?');je.set(k,(je.get(k)??0)+1);
+ };
+ const parserProfil=p1&&p1.startsWith('parser-s1:')?p1:null,s1NachzugAn=!s.letzter_fehler&&reverseWert(s,'s1_neu_parsen_auto')==='an';
+ for(;;){
+  const rows=(await pool.query(`SELECT d.id::text AS id,d.pfad,d.format,d.metadaten->>'magic_hex' AS magic,d.metadaten->'nachzug_auto'->>'s1_kennung' AS s1_kennung,
+    COALESCE((SELECT json_agg(json_build_object('schicht',x.schicht,'status',x.status,'werkzeug_version',x.werkzeug_version,'profil_version',x.profil_version))
+     FROM reverse_schichten x WHERE x.datei_id=d.id AND x.aktuell),'[]'::json) AS schichten
+   FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id
+   WHERE e.status='bestaetigt' AND d.storage_key IS NOT NULL AND d.sha256 IS NOT NULL AND COALESCE((e.analyse_policy->>'automatisch')::boolean,true)
+    AND d.id>$1::bigint ORDER BY d.id LIMIT 5000`,[ab])).rows as Array<{id:string;pfad:string;format:string|null;magic:string|null;s1_kennung:string|null;schichten:ReverseSchichtZeile[]}>;
   for(const d of rows){
-   geprueft++;const insp=reverseNeuerInspektor(d);if(!insp)continue;nachzug++;
-   const endung=(String(d.pfad).match(/\.([^./]+)$/)?.[1]??'').toLowerCase(),k=endung+' -> '+insp;je.set(k,(je.get(k)??0)+1);
+   geprueft++;
+   // P22-T245 Abnahme f91640e2 B-1: derselbe Ausschluss wie entdecke() ($4). Bei Parser-Profil laufen Dateien mit fertiger S1 eines anderen
+   // Profils NICHT ueber entdecke, sondern nur ueber den S1-Nachzug (reverseS1FormatNachzugTakt): bei einmalig nur bisher unerkannte,
+   // jetzt abgedeckte Formate und nur mit s1_neu_parsen_auto an. Gezaehlt wird also nur, was dort wirklich laeuft.
+   if(parserProfil&&(d.schichten??[]).some(x=>x.schicht==='S1'&&OK.includes(String(x.status))&&x.profil_version!==parserProfil)){
+    if(s1NachzugAn&&d.s1_kennung!==parserProfil&&(d.format==null||d.format==='unbekannt')){
+     formatGeprueft++;if(reverseFormatNeuAbgedeckt(d)){zaehler.format_nachzug++;nachzugFormat++;zaehleEndung(d);}
+    }
+    continue;
+   }
+   const grund:{wert?:ReverseEinmaligGrund}={};
+   const stufe=await reverseEinmaligSchicht({schichten:d.schichten??[],ziel,einmalig:true,werkzeug,aktuell,grund,
+    formatNeu:()=>{if(d.format==null||d.format==='unbekannt')formatGeprueft++;return reverseFormatNeuAbgedeckt(d);}});
+   if(!stufe)continue;
+   const g=grund.wert&&grund.wert!=='alt'?grund.wert:'ohne_grund';
+   zaehler[g]++;
+   if(g==='ohne_grund'&&beispiele.length<10)beispiele.push(d.id+':'+stufe);
+   if(g==='format_nachzug')zaehleEndung(d);
   }
-  if(rows.length<10000)break;ab=rows[rows.length-1].id;
+  if(rows.length<5000)break;ab=rows[rows.length-1].id;
+  await new Promise(r=>setImmediate(r));
  }
+ const medien=Number((await pool.query(`SELECT count(*)::int AS n FROM reverse_medien m JOIN reverse_eintraege e ON e.id=m.eintrag_id WHERE e.status='bestaetigt' AND m.status='vollstaendig' AND m.art<>'ordner'
+   AND NOT EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.medium_id=m.id AND s.datei_id IS NULL AND s.schicht='E' AND s.aktuell AND s.status IN ('fertig','teilweise'))`)).rows[0]?.n??0);
+ // Unterdrueckt durch die Einmaligkeit (wuerde bei aus laufen): S1-Neu-Parsen (reverse-nachzug-auto.ts) und S3-Auto bei neuem Containerstand.
+ const s1NeuParsen=!s.letzter_fehler&&reverseWert(s,'s1_neu_parsen_auto')==='an'&&parserProfil?Number((await pool.query(`SELECT count(*)::int AS n FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id
+   WHERE e.status='bestaetigt' AND d.storage_key IS NOT NULL AND d.sha256 IS NOT NULL
+    AND EXISTS(SELECT 1 FROM reverse_schichten x WHERE x.datei_id=d.id AND x.schicht='S1' AND x.aktuell AND x.status IN ('fertig','teilweise') AND x.profil_version<>$1)
+    AND COALESCE(d.metadaten->'nachzug_auto'->>'s1_kennung','')<>$1`,[parserProfil])).rows[0]?.n??0):null;
+ const s3Auto=!s.letzter_fehler&&reverseWert(s,'s3_auto')==='an'?Number((await pool.query(`SELECT count(*)::int AS n FROM reverse_dateien d WHERE d.format='pe'
+   AND EXISTS(SELECT 1 FROM reverse_schichten x WHERE x.datei_id=d.id AND x.schicht='S3' AND x.aktuell AND x.status IN ('fertig','teilweise') AND x.werkzeug_version IS DISTINCT FROM $1)`,[container])).rows[0]?.n??0):null;
  const alt=schichten.reduce((n,z)=>n+Number(z.alter_stand),0);
+ const erneut=zaehler.neu+zaehler.wiederholung+zaehler.format_nachzug+zaehler.s1_nach_s0+zaehler.ohne_grund+medien;
  const wert:Row={
   schalter:s.letzter_fehler?'nicht_lesbar':reverseWert(s,'pipeline_einmalig'),einstellungen_fehler:s.letzter_fehler??null,
-  stand:{werkzeug_inspektoren:werkzeug,werkzeug_container:container,profil_s0:p0,profil_s1:p1,quelle:reverseDrosselStand.stand?'laufende_pipeline':'registry_ohne_profil'},
+  stand:{werkzeug_inspektoren:werkzeug,werkzeug_container:container,profil_s0:p0,profil_s1:p1,ziel_schicht:ziel,quelle:reverseDrosselStand.stand?'laufende_pipeline':'registry_ohne_profil'},
   schichten,
   bei_aus_erneut_obergrenze:alt,
-  bei_an:{altschichten_erneut_ohne_grund:0,format_nachzug_s0:nachzug,s1_folge_nachzug:nachzug,s1_hinter_aktuellem_s0:s1Hinter,
-   neue_dateien_ohne_s0:Number(neu.dateien_ohne_s0),neue_medien_ohne_e:Number(neu.medien_ohne_e),
+  bei_an:{erneut_gesamt:erneut,altschichten_erneut_ohne_grund:zaehler.ohne_grund,ohne_grund_beispiele:beispiele,
+   format_nachzug_s0:zaehler.format_nachzug,s1_folge_nachzug:zaehler.format_nachzug,s1_nach_neuem_s0:zaehler.s1_nach_s0,
+   format_nachzug_ueber_s1_nachzug:nachzugFormat,neue_dateien_ohne_schicht:zaehler.neu,wiederholung_nicht_fertig:zaehler.wiederholung,neue_medien_ohne_e:medien,
    format_nachzug_je_endung:[...je.entries()].sort((a,b)=>b[1]-a[1]).slice(0,30).map(([k,n])=>({endung_inspektor:k,dateien:n}))},
-  format_nachzug_geprueft:geprueft,
+  unterdrueckt_durch_einmalig:{altschichten:alt,s1_neu_parsen_auto:s1NeuParsen===null?'s1_neu_parsen_auto_aus_oder_ohne_parser_profil':Math.max(0,s1NeuParsen-nachzugFormat),s3_auto:s3Auto??'s3_auto_aus'},
+  dateien_geprueft:geprueft,format_nachzug_geprueft:formatGeprueft,
   drossel:{...reverseDrosselStand},
   berechnet_am:new Date().toISOString(),
-  hinweis:'P22-T245: bei_aus = Schichten mit altem Werkzeug-/Profilstand (wuerden ohne Schalter erneut laufen, Obergrenze). bei_an = was mit pipeline_einmalig an noch laeuft: neue Dateien/Medien, Format-Nachzug (bisher unerkannt, jetzt abgedeckt) und S1 hinter aktuellem S0. Vor dem Loesen von reverse_pipeline_halt pruefen.',
+  hinweis:'P22-T245: bei_an ist gemessen (dieselbe Entscheidung wie naechste(), je Datei): erneut_gesamt = neue Dateien/Medien, Wiederholung nicht fertiger Schichten, Format-Nachzug (bisher unerkannt, jetzt abgedeckt) und S1 nach neu inspiziertem S0; altschichten_erneut_ohne_grund muss 0 sein. format_nachzug_ueber_s1_nachzug = Teil von format_nachzug_s0, der wie in entdecke() ($4) ueber den S1-Nachzug laeuft (Abnahme f91640e2 B-1). unterdrueckt_durch_einmalig = was ohne Schalter zusaetzlich liefe. S1-Folge des Format-Nachzugs laeuft nach dem S0. Vor dem Loesen von reverse_pipeline_halt pruefen.',
  };
  vorschauCache={am:Date.now(),wert};
  return wert;
 }
+
 
 /** Called only by the API lifecycle, never stdio or the PC daemon. */
 export function starteReversePipeline():ApiAuftragsLoop|null{

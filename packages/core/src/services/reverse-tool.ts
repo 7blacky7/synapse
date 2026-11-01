@@ -608,7 +608,7 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       const limit=integer(a.limit,reverseZahl(ein,'diagnose_seiten_limit'),reverseZahl(ein,'diagnose_max_limit'));if(!limit)fail('werkzeug_fehler','parameter_ungueltig');
       // P18-T109: zentrales Fehlerlog nur mit Schalter reverse_fehlerlog EIN (AUS: Antwort unverändert).
       const fehlerlog=await reverseFehlerlogAktiv(pool)?{fehlerlog:await leseReverseFehlerlog({reverseId:rid,limit,pool})}:{};
-      return {reverse_id:rid,status:'diagnose',...await diagnoseReverse({reverseId:rid,limit,pool}),...fehlerlog};
+      return {reverse_id:rid,status:'diagnose',...await diagnoseReverse({reverseId:rid,limit,pool,einmalig:true}),...fehlerlog};
     }
     if(action==='entstoeren'){
       if(!darfKoordinatorOderUser(a.agent_id))fail('keine_berechtigung');

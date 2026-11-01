@@ -5,6 +5,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
 import {getPool,createWorkJobService,registerToolDescriptor,setToolActivation,validateToolDescriptor,
+ reverseDrosselTor,reverseDrosselBuche,
  materialisiereReverseLeser,leseReverseLeserSchalter,leseReverseLeserRevision,leseReverseEinstellwerte,reverseZahl,reverseBigInt,
  reverseLeserDezimal,reverseLeserPfad,reverseLeserKanonisch,reverseLeserHash,pruefeReverseLeserManifest,reverseLeserSchrittBudget,
  type ReverseLeserRevision,type ReverseLeserManifest,type ReverseEinstellSnapshot,
@@ -15,6 +16,7 @@ import type {ToolLifecycle,ToolInstanceContext,ToolResourceAdapter} from './tool
 import type {ResolvedToolMount} from './tool-container-docker.js';
 import {ReverseContainerRecovery,type ReverseStopBeleg} from './reverse-container-recovery.js';
 import {reverseNichtGesendet,ReverseEntfernungAusstehend} from './reverse-container-transport.js';
+import {reverseAuftragBytes,reverseDrosselAktiv} from './reverse-container-io.js';
 
 export const LESER_TOOL='reverse-leser',LESER_CAPABILITY='reverse_leser';
 const PROJEKT='reverse-bibliothek',PROTOKOLL='.leser-protokoll.jsonl';
@@ -467,6 +469,9 @@ export class ReverseLeserExecutor {
    await this.fehlerFortsetzen(String(row.id),s);
   }
   const frei=reverseZahl(this.s,'executor_parallel')-this.laufend.size;if(frei<=0)return {gestartet:0};
+  // P22-T245 Nacharbeit B2b + Abnahme f91640e2 B-5: das Tor steht VOR Nachzug-Planung, Pin-Pruefung, Wecken und Claim (Bestand fc7cf78a
+  // B2b: Planung UND Claim). Wirksam bei pipeline_einmalig an; nicht lesbare Einstellungen brechen schon oben ab.
+  const tor=reverseDrosselTor('leser',this.s);if(!tor.frei)return {gestartet:0,nachzug:{status:'ruht',grund:'reverse_drossel:'+tor.grund}};
   const nachzug:Record<string,unknown>=await planeReverseLeserNachzug(this.pool,this.k.reverseRoot,{image:this.k.image,digest:this.k.digest}).catch(e=>({status:'fehler',fehlercode:normalisiereLeserFehler(e).message}));
   const nz=await leseReverseLeserNachzugSchalter(this.pool);
   if(nz.aktiv&&!nz.letzter_fehler){
@@ -514,9 +519,15 @@ export class ReverseLeserExecutor {
   }
   const claims=await this.jobs.claim(this.wer,{limit:frei,leaseSeconds:reverseZahl(this.s,'executor_lease_s')});
   const wer=this.wer;
+  const drosselWerte=this.s;
   for(const job of claims){
+   // P22-T245 Nacharbeit B2b + Abnahme f91640e2 B-3 (1): nach jedem Leser-Lauf mit der Dateigroesse buchen (reverseAuftragBytes), damit
+   // pipeline_lese_mb_s im Mittel greift; die Spitzenrate in der Sandbox begrenzt das IO-Limit. Der Platz wird erst nach der Buchung frei.
+   const start=Date.now();
    const p=this.ausfuehren(lc,wer,job).catch(e=>{const f=normalisiereLeserFehler(e);console.error('[reverse-leser]',job.id,f.message,f.diagnose);})
-    .finally(()=>{this.laufend.delete(job.id);this.vorbereitet.delete(job.id);});
+    .finally(async()=>{const dauer=Date.now()-start;
+     try{reverseDrosselBuche('leser',drosselWerte,reverseDrosselAktiv(drosselWerte)?await reverseAuftragBytes(this.pool,'leser',job):0,dauer);}
+     finally{this.laufend.delete(job.id);this.vorbereitet.delete(job.id);}});
    this.laufend.set(job.id,p);
   }
   return {gestartet:claims.length,nachzug};

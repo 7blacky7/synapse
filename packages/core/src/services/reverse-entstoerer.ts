@@ -50,7 +50,9 @@ function envZahl(name: string, fallback: number, min = 0): number {
 const zahl = (v: unknown) => (v === null || v === undefined ? null : Number(v));
 const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : v === null || v === undefined ? null : String(v));
 
-export interface ReverseDiagnoseOptionen { reverseId?: string | null; limit?: number; pool?: Db }
+export interface ReverseDiagnoseOptionen { reverseId?: string | null; limit?: number; pool?: Db;
+  /** P22-T245 Nacharbeit E3: Vorschau einmalig berechnen (nur reverse(diagnose) setzt das; entstoereReverse nie). */
+  einmalig?: boolean }
 export interface ReverseDiagnoseEintrag extends Row {
   auftrag_id: string | null; p20_auftrag_id: string | null; reverse_id: string | null; schicht: string | null; kind: string | null;
   zustand: string; work_zustand: string | null; alter_s: number | null; lease_bis: string | null; owner: string | null;
@@ -71,9 +73,10 @@ function merke(m: ReverseMassnahme): void {
   void loggeReverseMassnahme(m);
 }
 
-/** P22-T245 E: Vorschau einmalig/Nachzug/Drossel; dynamisch (reverse-pipeline importiert diesen Entstoerer statisch). Wirft nie. */
-async function einmaligVorschau(db: Pick<Pool, 'query'>): Promise<Row> {
-  try { const { reverseEinmaligVorschau } = await import('./reverse-pipeline.js'); return await reverseEinmaligVorschau(db); }
+/** P22-T245 E: Vorschau einmalig/Nachzug/Drossel; dynamisch (reverse-pipeline importiert diesen Entstoerer statisch). Wirft nie.
+ * Nacharbeit E3: ohne Pool-Uebergabe, die Vorschau nimmt den eigenen kleinen Pool der Pipeline (nie den Haupt-Pool). */
+async function einmaligVorschau(): Promise<Row> {
+  try { const { reverseEinmaligVorschau } = await import('./reverse-pipeline.js'); return await reverseEinmaligVorschau(); }
   catch (e) { return { fehler: (e as Error).message }; }
 }
 
@@ -212,7 +215,7 @@ export async function diagnoseReverse(o: ReverseDiagnoseOptionen = {}): Promise<
     aufsicht: { zeitlimits_s: aus?.zeitlimits ?? null, hart_puffer_s: puffer, nachlauf_s: einstellung('nachlauf_s'), einstellungen_fehler: einst?.letzter_fehler ?? (einst ? null : 'reverse_einstellungen_nicht_lesbar'), hinweis: 'P18-T87: harte Frist und Storno setzt der Executor durch; diagnose zeigt ueber_zeitlimit/storno_angefordert.' },
     haenger_verdacht: eintraege.filter(e => (e.live as Row | undefined)?.haenger_verdacht === true).length,
     // P22-T245 E (Koordinator 34623 (1)): auch bei Schalter aus - vor dem Einschalten bzw. vor dem Loesen des Halts pruefen.
-    einmalig: await einmaligVorschau(db),
+    ...(o.einmalig ? { einmalig: await einmaligVorschau() } : {}),
     automatik: { aktiv: entstoererAktiv() && !!auto?.aktiv, worker_gestartet: entstoererAktiv(), schalter: auto, letzter_lauf: letzterAutoLauf,
       massnahmen: verlauf.slice(0, reverseZahl(s, 'diagnose_verlauf_anzeige')) },
   };
