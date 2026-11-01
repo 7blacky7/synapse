@@ -4,6 +4,9 @@ import GraphView from '../../components/GraphView';
 import { ProjektEditor } from '../ProjektEditor';
 import { ChannelFensterProvider } from '../../components/ChannelFenster';
 import { ChannelSuche } from '../../components/ChannelSuche';
+// P22-T270: Agententeam als Suche + Ausweis-Fenster (Schalter web_ui_agententeam_suche, Standard AUS = bisheriger Knopf/Seite).
+import { AusweisFensterProvider } from '../../components/AusweisFenster';
+import { AgentenTeamSuche } from '../../components/AgentenTeamSuche';
 import { leseArbeitsbereichSchalter, type ArbeitsbereichSchalter } from '../../api/arbeitsbereich-schalter';
 import { MeineInbox } from '../../components/MeineInbox';
 import { AnmerkungSammelkorb } from '../../components/QuellenAnmerkungen';
@@ -41,7 +44,7 @@ import '../../ui-version.css';
 import '../../workspace-mobil.css';
 
 export default function SynapseWorkspace(props: Props) {
-  return <ChannelFensterProvider><Arbeitsraum {...props} /></ChannelFensterProvider>;
+  return <ChannelFensterProvider><AusweisFensterProvider><Arbeitsraum {...props} /></AusweisFensterProvider></ChannelFensterProvider>;
 }
 function Arbeitsraum({ project: initialProject, onLogout }: Props) {
   const [theme, setTheme] = useState<Theme>('dark');
@@ -94,6 +97,8 @@ function Arbeitsraum({ project: initialProject, onLogout }: Props) {
   const [arbeitsbereich, setArbeitsbereich] = useState<ArbeitsbereichSchalter | null>(null);
   const [editorSchalter, setEditorSchalter] = useState<ArbeitsbereichSchalter | null>(null);
   useEffect(() => { let aktiv=true; void leseArbeitsbereichSchalter(selectedProject,'editor_modul').then(s=>{if(aktiv)setEditorSchalter(s);}); return()=>{aktiv=false;}; },[selectedProject]);
+  const [agententeamSuche, setAgententeamSuche] = useState<ArbeitsbereichSchalter | null>(null);
+  useEffect(() => { let aktiv=true; const lesen=()=>void leseArbeitsbereichSchalter(selectedProject,'web_ui_agententeam_suche').then(s=>{if(aktiv)setAgententeamSuche(s);}); lesen(); const t=window.setInterval(lesen,60000); return()=>{aktiv=false;window.clearInterval(t);}; },[selectedProject]);
   const [channelSuche, setChannelSuche] = useState<ArbeitsbereichSchalter | null>(null);
   useEffect(() => { let aktiv=true; const lesen=()=>void leseArbeitsbereichSchalter(selectedProject,'web_ui_channel_suche').then(s=>{if(aktiv)setChannelSuche(s);}); lesen(); const t=window.setInterval(lesen,60000); return()=>{aktiv=false;window.clearInterval(t);}; },[selectedProject]);
   useEffect(() => { const navigiere=(e:Event)=>{const d=(e as CustomEvent<{project:string;area:Area}>).detail;if(d?.project)setSelectedProject(d.project);if(d?.area)setArea(d.area);}; window.addEventListener('synapse:channel-navigation',navigiere);return()=>window.removeEventListener('synapse:channel-navigation',navigiere);},[]);
@@ -309,6 +314,7 @@ function Arbeitsraum({ project: initialProject, onLogout }: Props) {
       data-arbeitsbereich-quelle={arbeitsbereich?.quelle ?? 'laden'}
       data-arbeitsbereich-fehler={arbeitsbereich?.fehler ?? undefined}
       data-channel-suche={channelSuche?.aktiv ? 'ein' : 'aus'} data-channel-suche-quelle={channelSuche?.quelle ?? 'laden'} data-channel-suche-fehler={channelSuche?.fehler ?? undefined}
+      data-agententeam-suche={agententeamSuche?.aktiv ? 'ein' : 'aus'} data-agententeam-suche-quelle={agententeamSuche?.quelle ?? 'laden'} data-agententeam-suche-fehler={agententeamSuche?.fehler ?? undefined}
       data-animations={settings.animationsEnabled ? 'on' : 'off'}
       style={{
         '--accent': settings.accentColor,
@@ -340,7 +346,7 @@ function Arbeitsraum({ project: initialProject, onLogout }: Props) {
           {nav.map((group) => (
             <section key={group.label || 'uebersicht'}>
               {group.label && <label>{group.label}</label>}
-              {group.items.map((item) => item.area === 'channels' && channelSuche?.aktiv ? <ChannelSuche key={item.area} project={selectedProject} eingeklappt={eingeklappt} /> : (
+              {group.items.map((item) => item.area === 'channels' && channelSuche?.aktiv ? <ChannelSuche key={item.area} project={selectedProject} eingeklappt={eingeklappt} /> : item.area === 'agents' && agententeamSuche?.aktiv ? <AgentenTeamSuche key={item.area} project={selectedProject} eingeklappt={eingeklappt} label={item.label} glyph={item.glyph} /> : (
                 <button
                   type="button"
                   className={area === item.area ? 'active' : ''}

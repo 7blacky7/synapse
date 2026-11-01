@@ -181,7 +181,9 @@ export async function ladeDetail(project: string, identityId: string): Promise<I
     zuletztAktiv: zeit(i.zuletzt_aktiv),
     kontextVorhanden: i.kontext_vorhanden === true,
     werte: {
-      modell: str(roh.modell),
+      // P22-T270: profil_aendern legt modell in agent_identitaeten.modell_bestaetigt ab (spaltenAusInhalt), nicht in profil; der Resolver
+      // leseWirksamesProfil liest nur Typ und profil. Das Profil-Modell hat Vorrang, sonst gilt das geerbte (Panel und Ausweis-Fenster gleich).
+      modell: str(i.modell_bestaetigt) || str(roh.modell),
       effort: str(roh.effort),
       kontextStufe: str(roh.kontext_stufe),
       briefing: str(roh.briefing),
@@ -193,7 +195,7 @@ export async function ladeDetail(project: string, identityId: string): Promise<I
       erlaubteRuntimes: textListe(startrezept.erlaubte_runtimes),
     },
     startrezept,
-    herkunft: Object.fromEntries(Object.entries(wirksam ? obj(wirksam.herkunft) : {}).map(([k, v]) => [k, str(v)])),
+    herkunft: { ...Object.fromEntries(Object.entries(wirksam ? obj(wirksam.herkunft) : {}).map(([k, v]) => [k, str(v)])), ...(str(i.modell_bestaetigt) ? { modell: 'profil' } : {}) },
     // Eigener Zuschnitt des Profils (Override), nicht der vom Typ geerbte: der Editor ersetzt den Zuschnitt als Ganzes.
     zuschnitt: obj(obj(i.profil).zuschnitt),
     lauf: lauf ? { id: str(lauf.id), epoche: num(lauf.context_epoch), seit: zeit(lauf.erstellt_am) } : null,

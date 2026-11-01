@@ -17,6 +17,8 @@ Die Komponenten bilden die Anmeldemaske, Projektarbeitsfläche, Dashboards, Wiss
 | [Chat.tsx](Chat.tsx) | Stellt den projektbezogenen Chat mit Nachrichtenverlauf und REST-Aufruf dar. |
 | [ChannelProjectSurface.tsx](ChannelProjectSurface.tsx) | Bündelt projektbezogene Bereiche wie Agenten, Plan, Workspaces, Graph und Wissen. |
 | [ChannelAgentChatWindow.tsx](ChannelAgentChatWindow.tsx) | Stellt ein verschiebbares Chatfenster für einen Agenten in einem Channel dar. |
+| [AgentenTeamSuche.tsx](AgentenTeamSuche.tsx) | P22-T270: Knopf Agententeam als Suche (Schalter `web_ui_agententeam_suche`); erster Eintrag „Ausweis erstellen“, danach die Agenten des gewählten Projekts. |
+| [AusweisFenster.tsx](AusweisFenster.tsx) | P22-T270: verschiebbares Ausweis-Fenster zum Anlegen, Anzeigen und Bearbeiten der Ausweis-Felder sowie zur Channel-Zuweisung per Icon; nutzt die REST-Routen der Ausweisverwaltung. |
 | [ChatAttachments.tsx](ChatAttachments.tsx) | Verwaltet Auswahl, Ablegen und Vorschau von Chat-Anhängen. |
 | [chat-attachments.css](chat-attachments.css) | Stile für Auswahl, Ablegen und Vorschau von Chat-Anhängen. |
 | [Login.tsx](Login.tsx) | Bildet Einrichtung und Anmeldung mit TOTP-Code ab. |

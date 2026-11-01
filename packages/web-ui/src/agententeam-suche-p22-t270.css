@@ -1,0 +1,119 @@
+/*
+ * P22-T270 Agententeam-Suche und Ausweis-Fenster (Gestaltung claude-eiche).
+ * Baut auf channel-fenster-p22-t254.css auf (Fenster-Rahmen, Kopf, Knoepfe, Suchfeld und Trefferliste) und ergaenzt nur den Inhalt.
+ * Designvorgaben wie P22-T260: memory webui-design-standard, user-design-praeferenzen (Orange als Akzent, hell UND dunkel),
+ * design-decision-tactical-hud-dashboard (1px-Hairlines, 0-3px Ecken, Mono-Labels, wenig Glow). Farben NUR aus den Theme-Variablen
+ * (--accent, --accent-soft, --accent-contrast, --panel, --strong, --soft, --bg, --text, --muted, --faint, --border, --border2, --danger,
+ * --success), keine festen Farbwerte, keine Fallbacks. Orange nur als Akzent: Fokus, Zeigen, aktiv, zugewiesen.
+ */
+
+/* ---------------------------------------------------------------- Suche: erster Eintrag „Ausweis erstellen“ und Zustandspunkt */
+.seitenleiste-projektsuche.agententeam-suche .channel-suche-liste button.agententeam-suche-erstellen{border-left-color:var(--accent);background:var(--accent-soft)}
+.seitenleiste-projektsuche.agententeam-suche .channel-suche-liste button.agententeam-suche-erstellen strong{color:var(--accent)}
+.seitenleiste-projektsuche.agententeam-suche .channel-suche-liste button.agententeam-suche-erstellen:hover{background:color-mix(in srgb,var(--accent) 18%,transparent)}
+.seitenleiste-projektsuche.agententeam-suche .channel-suche-liste strong{display:flex;align-items:center;gap:8px}
+.seitenleiste-projektsuche.agententeam-suche .channel-suche-liste strong>i{flex:none;display:inline-grid;place-items:center;font-style:normal}
+.agententeam-suche-erstellen strong>i{width:16px;height:16px;border:1px solid var(--accent);color:var(--accent);font:700 12px/1 "IBM Plex Mono",monospace}
+.agententeam-suche-ton{width:7px;height:7px;border-radius:50%;background:var(--faint)}
+.agententeam-suche-ton.ready{background:var(--success);box-shadow:0 0 0 3px color-mix(in srgb,var(--success) 18%,transparent)}
+.agententeam-suche-ton.warning{background:color-mix(in srgb,var(--accent) 70%,var(--muted))}
+
+/* ---------------------------------------------------------------- Fenster: schmaler als ein Channel, Inhalt scrollt */
+.channel-eigenfenster.ausweis-fenster{width:min(600px,calc(100vw - 20px));height:min(82vh,860px)}
+.channel-eigenfenster.ausweis-fenster.minimiert{height:auto}
+.ausweis-fenster-inhalt{flex:1 1 auto;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:14px;padding:16px 18px 22px;box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+
+/* Zustand, Name, Werkzeuge */
+.af-status{display:flex;align-items:center;gap:8px;color:var(--muted);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase}
+.af-status>i{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+.af-status>i.ready{background:var(--success);box-shadow:0 0 0 3px color-mix(in srgb,var(--success) 18%,transparent)}
+.af-status>i.warning{background:color-mix(in srgb,var(--accent) 70%,var(--muted))}
+.af-status>em{font-style:normal;color:var(--accent)}
+.af-status>b{margin-left:auto;padding:2px 7px;border:1px solid var(--border);color:var(--muted);font:inherit}
+.af-kopfzeile{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding-bottom:12px;border-bottom:1px solid var(--border2)}
+.af-name{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0;margin:0;color:var(--text);font:700 22px/1.15 "Syne",sans-serif;letter-spacing:-.015em;overflow-wrap:anywhere}
+.af-werkzeuge{flex:none;display:inline-flex;gap:4px}
+.af-werkzeug{display:inline-flex;align-items:center;gap:7px;height:30px;margin:0;padding:0 11px;border:1px solid var(--border);border-radius:0;background:transparent;color:var(--muted);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:border-color .15s ease,color .15s ease,background-color .15s ease}
+.af-werkzeug:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.af-werkzeug.aktiv{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.af-werkzeug:disabled{opacity:.45;cursor:not-allowed}
+.af-werkzeug:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.af-channel-icon{padding:0 9px;font-size:14px;letter-spacing:0}
+.af-channel-icon>span{font:700 15px/1 "IBM Plex Mono",monospace}
+.af-channel-icon>b{min-width:16px;padding:1px 4px;background:var(--strong);border:1px solid var(--border);color:var(--text);font:700 9px/1.3 "IBM Plex Mono",monospace;text-align:center}
+.af-channel-icon.aktiv>b{background:var(--accent);border-color:var(--accent);color:var(--accent-contrast)}
+/* Stift als CSS-Symbol (keine Emoji, keine Bilddatei) */
+.af-symbol[data-art="stift"]{position:relative;width:11px;height:11px}
+.af-symbol[data-art="stift"]::before{content:'';position:absolute;left:4px;top:-1px;width:3px;height:11px;background:currentColor;transform:rotate(45deg);transform-origin:center}
+.af-symbol[data-art="stift"]::after{content:'';position:absolute;left:0;bottom:0;width:4px;height:1px;background:currentColor}
+
+/* Abschnitte (Felder, Channels, Editor) */
+.af-abschnitt{display:flex;flex-direction:column;gap:10px;padding:12px 14px 14px;border:1px solid var(--border);border-radius:3px;background:var(--soft);position:relative}
+.af-abschnitt::before{content:'';position:absolute;left:-1px;top:-1px;bottom:-1px;width:2px;background:var(--accent)}
+.af-abschnitt>header{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.af-abschnitt>header span{color:var(--text);font:700 10px "IBM Plex Mono",monospace;letter-spacing:.12em;text-transform:uppercase}
+.af-abschnitt>header small,.af-hilfe,.af-leer{color:var(--faint);font:500 9px/1.5 "IBM Plex Mono",monospace;letter-spacing:.03em}
+.af-hilfe,.af-leer{margin:0}
+
+/* Faktenliste wie rechts auf der Agententeam-Seite, als Hairline-Raster */
+.af-fakten{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0;margin:0;border-top:1px solid var(--border2)}
+.af-fakten>div{min-width:0;padding:8px 10px 8px 0;border-bottom:1px solid var(--border2)}
+.af-fakten>div:nth-child(odd){padding-right:14px}
+.af-fakten dt{margin:0 0 3px;color:var(--faint);font:700 8px "IBM Plex Mono",monospace;letter-spacing:.12em;text-transform:uppercase}
+.af-fakten dd{margin:0;color:var(--text);font-size:12px;line-height:1.4;overflow-wrap:anywhere}
+.af-profil{grid-template-columns:1fr;border-top:0}
+.af-profil dd.lang{white-space:pre-wrap;max-height:9.5em;overflow:auto;font:500 11px/1.5 "IBM Plex Mono",monospace;color:var(--muted)}
+
+/* Formular (Anlegen, Bearbeiten) */
+.af-einleitung{margin:0;color:var(--muted);font-size:12px;line-height:1.5}
+.af-einleitung b{color:var(--accent);font-weight:600}
+.af-formular{display:flex;flex-direction:column;gap:12px}
+.af-feld{display:flex;flex-direction:column;gap:5px;min-width:0;margin:0;padding:0;border:0}
+.af-feld>span,.af-feld>legend{display:flex;align-items:center;gap:8px;padding:0;color:var(--muted);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase}
+.af-feld>span em{padding:1px 5px;background:var(--accent);color:var(--accent-contrast);font:700 7px "IBM Plex Mono",monospace;font-style:normal;letter-spacing:.1em}
+.af-feld>small{color:var(--faint);font:500 9px/1.4 "IBM Plex Mono",monospace}
+.af-feld input,.af-feld textarea,.af-feld select,.af-hinzufuegen select,.af-filter{width:100%;box-sizing:border-box;margin:0;padding:8px 10px;border:1px solid var(--border);border-radius:0;background:var(--strong);color:var(--text);font-family:inherit;font-size:12px;font-weight:500;line-height:1.45;outline:0;transition:border-color .15s ease,box-shadow .15s ease}
+.af-feld textarea{resize:vertical;font-family:"IBM Plex Mono",monospace;font-size:11px}
+.af-feld input:focus-visible,.af-feld textarea:focus-visible,.af-feld select:focus-visible,.af-hinzufuegen select:focus-visible,.af-filter:focus-visible{border-color:var(--accent);box-shadow:inset 0 -2px 0 var(--accent)}
+.af-rollen{flex-direction:row;flex-wrap:wrap;gap:6px}
+.af-rollen>legend{width:100%;margin-bottom:5px}
+.af-rollen label{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--border);color:var(--text);font:600 11px "IBM Plex Mono",monospace;cursor:pointer}
+.af-rollen label:has(input:checked){border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.af-rollen input{accent-color:var(--accent);margin:0}
+.af-hinzufuegen{display:flex;gap:6px}
+.af-hinzufuegen select{flex:1 1 auto}
+.af-aktionen{display:flex;justify-content:flex-end;gap:6px;padding-top:2px}
+.af-primaer,.af-zweit{display:inline-flex;align-items:center;justify-content:center;height:32px;margin:0;padding:0 14px;border:1px solid var(--border);border-radius:0;font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;white-space:nowrap;transition:border-color .15s ease,color .15s ease,background-color .15s ease,filter .15s ease}
+.af-primaer{border-color:var(--accent);background:var(--accent);color:var(--accent-contrast)}
+.af-primaer:hover:not(:disabled){filter:brightness(1.08)}
+.af-zweit{background:transparent;color:var(--muted)}
+.af-zweit:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.af-primaer:disabled,.af-zweit:disabled{opacity:.45;cursor:not-allowed}
+.af-primaer:focus-visible,.af-zweit:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.af-meldung,.af-fehler{margin:0;padding:8px 10px;border-left:2px solid var(--accent);background:var(--accent-soft);color:var(--text);font:500 11px/1.5 "IBM Plex Mono",monospace}
+.af-fehler{border-left-color:var(--danger);background:color-mix(in srgb,var(--danger) 10%,transparent);color:var(--danger)}
+
+/* Channel-Zuweisung: Liste mit Haken, zugewiesen = orange Kante */
+.af-channel-liste{display:flex;flex-direction:column;max-height:300px;overflow:auto;border:1px solid var(--border2);background:var(--panel);scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+.af-channel{display:grid;grid-template-columns:16px minmax(0,1fr);align-items:center;gap:2px 10px;width:100%;margin:0;padding:8px 10px;border:0;border-left:2px solid transparent;border-bottom:1px solid var(--border2);border-radius:0;background:transparent;color:var(--text);text-align:left;cursor:pointer;transition:background-color .12s ease,border-color .12s ease}
+.af-channel:last-child{border-bottom:0}
+.af-channel:hover:not(:disabled){background:var(--strong);border-left-color:color-mix(in srgb,var(--accent) 50%,transparent)}
+.af-channel[aria-pressed="true"]{border-left-color:var(--accent);background:var(--accent-soft)}
+.af-channel:disabled{cursor:progress}
+.af-channel[data-arbeit="ja"]{opacity:.6}
+.af-channel:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.af-channel strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:600}
+.af-channel[aria-pressed="true"] strong{color:var(--accent)}
+.af-channel small{grid-column:2;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--faint);font:500 9px "IBM Plex Mono",monospace}
+.af-channel small:empty{display:none}
+.af-haken{grid-row:1/span 2;width:14px;height:14px;box-sizing:border-box;border:1px solid var(--border);background:var(--strong);position:relative}
+.af-channel[aria-pressed="true"] .af-haken{border-color:var(--accent);background:var(--accent)}
+.af-channel[aria-pressed="true"] .af-haken::after{content:'';position:absolute;left:4px;top:1px;width:4px;height:8px;border:solid var(--accent-contrast);border-width:0 2px 2px 0;transform:rotate(45deg)}
+
+/* Ausweis-Karte (P22-T265) im Fenster ohne eigene Aussenabstaende; Task-Absatz (AgentTaskMarke.tsx) leise wie die Fakten */
+.ausweis-fenster-inhalt .team-ausweis{margin:0}
+.ausweis-fenster-inhalt>p:not([class]),.ausweis-fenster-inhalt>.aktuelle-task-absatz{margin:0;color:var(--muted);font-size:12px;line-height:1.5}
+
+@media (max-width:760px){.af-fakten{grid-template-columns:1fr}.af-kopfzeile{flex-direction:column}.ausweis-fenster-inhalt{padding:14px}}
+@media (hover:none){.af-werkzeug,.af-primaer,.af-zweit{height:36px}.af-channel{padding-block:12px}}
+@media (prefers-reduced-motion:reduce){.ausweis-fenster *,.agententeam-suche *{animation:none!important;transition:none!important}}

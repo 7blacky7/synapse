@@ -19,6 +19,7 @@ Dieser Ordner verbindet den React-Einstieg und die Anwendungsansichten. Die Ansi
 | [App.tsx](App.tsx) | Prüft den Authentifizierungsstatus, wechselt zwischen Anmeldung und Arbeitsoberfläche und verarbeitet Abmeldung. |
 | [ControlPlaneApp.tsx](ControlPlaneApp.tsx) | Derzeit leere Datei ohne implementierte Komponente. |
 | [main.tsx](main.tsx) | Erstellt den React-Root und rendert die App. |
+| [agententeam-suche-p22-t270.css](agententeam-suche-p22-t270.css) | Stile der Agententeam-Suche und des Ausweis-Fensters (P22-T270, nur Theme-Variablen). |
 | [channel-project-surface.css](channel-project-surface.css) | Stile der Channel- und Projektoberfläche. |
 | [codex-runtime.css](codex-runtime.css) | Stile für Runtime-Steuerung und Terminal. |
 | [control-plane.css](control-plane.css) | Grundlegende Stile der Control-Plane-Oberfläche. |
