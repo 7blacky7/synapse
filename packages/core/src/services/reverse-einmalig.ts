@@ -29,6 +29,12 @@ export const reverseDrosselStand={
  entdecke:{uebersprungen:0,vollscans:0,leer_seit:null as string|null,letzter_stand:null as string|null},
  /** P22-T245 Abnahme B-3 (2): zuletzt ermitteltes IO-Limit des Reverse-Containers (rest-api reverse-container-io.ts), sonst null. */
  container_io:null as Record<string,unknown>|null,
+ /** P22-T275: letzter Nachzug-Takt (reverseNachzugAutoTakt): Aussetz- bzw. Ruhegrund je Teil, vorrang = erster Aussetzgrund oder null. */
+ nachzug:{vorrang:null as string|null,s1:null as string|null,s3:null as string|null,am:null as string|null},
+ /** P22-T275: E grosser Medien (e_auto_gross_ab_mb/-modus): zurueckgehalten, nachrangig eingereiht, offene Auto-E herabgestuft. */
+ e_gross:{grenze_mb:0,modus:null as string|null,zurueckgehalten:0,eingereiht:0,herabgestuft:0,letzter_grund:null as string|null},
+ /** P22-T275: gebuendelte Marken der Pipeline (Stapel-UPDATEs, Zeilen). */
+ schreib_bloecke:{stapel:0,zeilen:0},
  kanaele:Object.fromEntries(KANAELE.map(k=>[k,{auftraege:0,bytes:0,pause_ms_summe:0,ruhen:0,letzter_grund:null as string|null,naechster_start:null as string|null}])) as
   Record<ReverseDrosselKanal,{auftraege:number;bytes:number;pause_ms_summe:number;ruhen:number;letzter_grund:string|null;naechster_start:string|null}>,
 };

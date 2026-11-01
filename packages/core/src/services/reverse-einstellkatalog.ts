@@ -159,6 +159,13 @@ export const REVERSE_EINSTELLKATALOG = {
  // P22-T245 Abnahme f91640e2 B-2: bei einmalig entfaellt der Datei-Scan in entdecke(), solange sich der Datenstand nicht aendert;
  // spaetestens nach dieser Frist wird trotzdem neu gescannt (0 = Abkuerzung aus, jeder Durchlauf scannt).
  pipeline_entdecke_vollscan_ms:i('ms bis zum Pflicht-Scan ohne Aenderung',0,86400000,1800000,G,'Abkuerzung aus'),
+ // P22-T275 (User 01.11.2026): E grosser Medien (Images) laeuft nicht automatisch vor dem Nachzug. Ab dieser Mediengroesse reiht
+ // entdecke() E nur nachrangig ein (nachrang: Prioritaet nachzug, nur ohne Vorrang und ohne offenen Nachzug, hoechstens eins offen) bzw. gar
+ // nicht (anforderung: nur ueber reverse analysieren). 0 = keine Grenze (Verhalten vor T275). Wirkt unabhaengig von pipeline_einmalig.
+ e_auto_gross_ab_mb:i('MB Mediengroesse (10^6 Bytes)',0,I32,256,G,'keine Groessengrenze'),
+ e_auto_gross_modus:auswahl('Modus',['nachrang','anforderung'],'nachrang',G),
+ // P22-T275: Zeilen je Stapel-UPDATE der Pipeline-Marken (pipeline_gesehen_at, einmalig_geprueft) und je Leser-Kandidaten-Meldung.
+ pipeline_schreib_block_zeilen:i('Zeilen je Transaktion',1,50000,1000,G),
  // P22-T245 Abnahme B-3 (2), Koordinator-Entscheidung: IO-Limit der Reverse-Container (Docker BlkioDeviceReadBps/WriteBps je
  // Blockgeraet der Mounts), wirksam bei pipeline_einmalig an ab dem naechsten Containerstart (rest-api reverse-container-io.ts).
  container_io_lese_mb_s:i('MB/s Lesen je Blockgeraet im Reverse-Container',0,100000,20,G,'kein Leselimit'),

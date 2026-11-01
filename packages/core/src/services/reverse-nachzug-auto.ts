@@ -14,12 +14,12 @@
  * (Altbestand vor P18-T104) liessen bereiteReversePolicyPin mit policy_pin_fehlt scheitern; entdecke() reihte darum keine
  * Datei dieser Medien neu ein. Nachzug-Aufträge setzen ohneLegacyAbgeschlossen und sind davon nicht mehr betroffen.
  */
-import {reverseWert,reverseZahl,type ReverseEinstellSnapshot} from './reverse-einstellwerte.js';
+import {reverseWert,reverseZahl,leseReverseProduktSchalter,type ReverseEinstellSnapshot} from './reverse-einstellwerte.js';
 import {loggeReverseFehler,reverseFehlerKomponente} from './reverse-fehlerlog.js';
 import {reverseFehlerDeterministisch} from './reverse-ausfuehrer.js';
 import {projekteMitBacklog} from './code.js';
 import type {ReverseAnalyseAnfrage} from './reverse-tool.js';
-import {reverseFormatNeuAbgedeckt,reverseInspektorStand} from './reverse-einmalig.js';
+import {reverseFormatNeuAbgedeckt,reverseInspektorStand,reverseDrosselStand} from './reverse-einmalig.js';
 
 type Row=Record<string,unknown>;
 type Db={query:Function};
@@ -83,6 +83,15 @@ export const REVERSE_S3_AUTO_SQL=`SELECT d.id::text AS id,d.eintrag_id,d.medium_
   AND ${NICHT_ABGEBROCHEN}
  ORDER BY COALESCE(d.metadaten->'nachzug_auto'->>'s3_versuch_at',''),d.groesse NULLS LAST,d.id LIMIT $1`;
 
+/** P22-T275 (H-1 aus Nachabnahme 49201b76): Leser-Bestand zaehlt fuer den Vorrang nur bei reverse_leser an. Bei aus laeuft kein Leser-Job
+ * (work_jobs bleiben bewusst stehen, P27-T11) und haette den Nachzug fuer immer ausgesetzt. Schalter nicht lesbar = zaehlt. */
+export async function reverseLeserZaehlt(db:Db):Promise<boolean>{
+ try{const s=await leseReverseProduktSchalter('reverse_leser',null,db as never);return s.aktiv||!!s.letzter_fehler;}catch{return true;}
+}
+/** P22-T275: offene Nachzug-Auftraege aller Schichten einschliesslich nachrangiger Medien-E. Ein grosses Medien-E laeuft nur bei 0. */
+export async function reverseNachzugOffenGesamt(db:Db):Promise<number>{
+ return Number((await db.query(`SELECT count(*)::int AS n FROM reverse_auftraege WHERE status IN ${OFFEN} AND prioritaet='nachzug'`)).rows[0]?.n??0);
+}
 /** Vorrang: offene interaktive oder Hintergrund-Arbeit der Reverse-Pipeline geht immer vor. */
 export async function reverseNachzugVorrangOffen(db:Db):Promise<boolean>{
  return !!(await db.query(`SELECT 1 FROM reverse_auftraege WHERE status IN ${OFFEN} AND prioritaet IN ('interaktiv','hintergrund') LIMIT 1`)).rowCount;
@@ -93,8 +102,11 @@ export async function reverseNachzugVorrangOffen(db:Db):Promise<boolean>{
 export async function reverseNachzugVorrang(db:Db,ein?:ReverseEinstellSnapshot):Promise<string|null>{
  try{
   if(await reverseNachzugVorrangOffen(db))return 'vorrang_offen';
-  if((await db.query("SELECT 1 FROM reverse_leser_nachzug WHERE status='offen' LIMIT 1")).rowCount)return 'leser_nachzug_laeuft';
-  if((await db.query("SELECT 1 FROM work_jobs WHERE kind LIKE 'reverse-leser%' AND state IN ('pending','leased','staged') LIMIT 1")).rowCount)return 'leser_nachzug_laeuft';
+  // P22-T275 (H-1): Leser-Nachzug und Leser-Jobs nur bei reverse_leser an (reverseLeserZaehlt).
+  if(await reverseLeserZaehlt(db)){
+   if((await db.query("SELECT 1 FROM reverse_leser_nachzug WHERE status='offen' LIMIT 1")).rowCount)return 'leser_nachzug_laeuft';
+   if((await db.query("SELECT 1 FROM work_jobs WHERE kind LIKE 'reverse-leser%' AND state IN ('pending','leased','staged') LIMIT 1")).rowCount)return 'leser_nachzug_laeuft';
+  }
   const chunksMax=ein?reverseZahl(ein,'nachzug_vorrang_chunks_max'):1000,parseMax=ein?reverseZahl(ein,'nachzug_vorrang_parse_max'):100;
   if(chunksMax>0){
    const n=Number((await db.query('SELECT count(*)::int AS n FROM (SELECT 1 FROM code_chunks WHERE embedded_at IS NULL AND prio IS NOT NULL AND (zurueckgestellt_bis IS NULL OR zurueckgestellt_bis<clock_timestamp()) LIMIT $1) x',[chunksMax+1])).rows[0]?.n??0);
@@ -108,7 +120,7 @@ export async function reverseNachzugVorrang(db:Db,ein?:ReverseEinstellSnapshot):
  }catch(e){return 'vorrang_nicht_lesbar:'+String((e as {code?:string})?.code??(e as Error)?.message??e).slice(0,80);}
 }
 async function offeneNachzuege(db:Db,schicht:string):Promise<number>{
- return Number((await db.query(`SELECT count(*)::int AS n FROM reverse_auftraege WHERE status IN ${OFFEN} AND prioritaet='nachzug' AND (schicht=$1 OR ziel_schicht=$1)`,[schicht])).rows[0]?.n??0);
+ return Number((await db.query(`SELECT count(*)::int AS n FROM reverse_auftraege WHERE status IN ${OFFEN} AND prioritaet='nachzug' AND schicht<>'E' AND (schicht=$1 OR ziel_schicht=$1)`,[schicht])).rows[0]?.n??0);
 }
 
 /** Einreihen, Fehler ins Fehlerlog, Marke setzen (ausser bei vorübergehenden Gründen). Wirft nie. */
@@ -208,6 +220,10 @@ export async function reverseNachzugAutoTakt(k:ReverseNachzugAutoKontext):Promis
  const takt:Row={};
  try{takt.s1=await reverseS1NeuParsenTakt(k);}catch(e){takt.s1={fehler:String((e as Error)?.message??e).slice(0,200)};}
  try{takt.s3=await reverseS3AutoTakt(k);}catch(e){takt.s3={fehler:String((e as Error)?.message??e).slice(0,200)};}
+ // P22-T275: Ergebnis des Takts fuer reverse(diagnose) (einmalig.drossel.nachzug, Vorschau nachzug_vorrang.letzter_takt).
+ const kurz=(t:unknown):string=>{const r=(t??{}) as Row;return r.ausgesetzt!=null?String(r.ausgesetzt):r.grund!=null?String(r.grund):r.fehler!=null?'fehler':'lief';};
+ const s1=kurz(takt.s1),s3=kurz(takt.s3),aus=[takt.s1,takt.s3].map(t=>((t??{}) as Row).ausgesetzt).find(x=>x!=null);
+ Object.assign(reverseDrosselStand.nachzug,{vorrang:aus==null?null:String(aus),s1,s3,am:new Date().toISOString()});
  if(schalterAn(k.ein,'auto_nachzug_debug'))console.error('[Reverse-Nachzug-Auto]',JSON.stringify(takt));
  return takt;
 }

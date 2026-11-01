@@ -319,6 +319,17 @@ export async function planeReverseLeserNachzug(db:ReverseLeserDb,root?:string,im
  }
 }
 /** Metadatenereignis nach Speicherung; verlorene Notifications sind durch den persistenten Scan abgedeckt. */
+/** P22-T275: Kandidaten eines Entdecke-Blocks gebuendelt melden: Schalter einmal, Eintrag-Pruefung je Eintrag, ein Statement je Block
+ * (statt drei Abfragen je Datei). Liefert die Zahl gemeldeter Dateien. */
+export async function meldeReverseLeserKandidaten(db:Db,dateien:Array<{eintrag_id:string;id:string}>,block=1000):Promise<number>{
+ if(!dateien.length||!(await schalter(db)).aktiv)return 0;
+ const aktiv=new Map<string,boolean>();
+ for(const d of dateien)if(!aktiv.has(d.eintrag_id))aktiv.set(d.eintrag_id,await reverseEintragAktiv(db,d.eintrag_id));
+ const nutz=dateien.filter(d=>aktiv.get(d.eintrag_id)).map(d=>JSON.stringify({eintrag_id:d.eintrag_id,datei_id:d.id}));
+ const n=Math.max(1,block);
+ for(let i=0;i<nutz.length;i+=n)await db.query("SELECT pg_notify('reverse_leser_kandidat',u.p) FROM unnest($1::text[]) AS u(p)",[nutz.slice(i,i+n)]);
+ return nutz.length;
+}
 export async function meldeReverseLeserKandidat(db:Db,eintragId:string,dateiId:string){
  if(!(await schalter(db)).aktiv||!await reverseEintragAktiv(db,eintragId))return;
  await db.query("SELECT pg_notify('reverse_leser_kandidat',$1)",[JSON.stringify({eintrag_id:eintragId,datei_id:dateiId})]);

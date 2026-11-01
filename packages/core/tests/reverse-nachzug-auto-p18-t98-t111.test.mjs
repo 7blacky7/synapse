@@ -176,9 +176,15 @@ test('Review 6b9112b6 (2): Vorrang Leser-Nachzug und Projekt-Backlog setzen aus'
  await leeren();aufrufe.length=0;await setting('s3_auto','an');await setting('s1_neu_parsen_auto','an');
  await datei('v/a.dll',{format:'pe',s1Profil:'parser-s1:v'});
  await raw.query("INSERT INTO reverse_leser_nachzug(eintrag_id,leser_id,scan_id,einstellungen_revision,policy_revision,status) VALUES($1,'l-t98',gen_random_uuid(),repeat('a',64),repeat('a',64),'offen')",[rid]);
+ // (angepasst P22-T275, H-1 aus 49201b76): der Leser-Bestand zaehlt nur bei reverse_leser an; aus = kein Aussetzen (Schwellen 0).
+ await setting('nachzug_vorrang_chunks_max',0);await setting('nachzug_vorrang_parse_max',0);
+ assert.equal(await auto.reverseNachzugVorrang(pool,await ein()),null,'reverse_leser aus: offener Leser-Nachzug setzt nicht aus');
+ await setting('nachzug_vorrang_chunks_max',1000);await setting('nachzug_vorrang_parse_max',100);
+ await raw.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('global',NULL,'reverse_leser',true,'T275','fixture')");
  assert.equal(await auto.reverseNachzugVorrang(pool),'leser_nachzug_laeuft');
  assert.equal((await auto.reverseS3AutoTakt({pool,ein:await ein(),parserProfil:'parser-s1:v',s3Kennung:'g',einreihen:einreihen({status:'wartet'})})).ausgesetzt,'leser_nachzug_laeuft','Standard-Vorrang greift');
  await raw.query("DELETE FROM reverse_leser_nachzug WHERE leser_id='l-t98'");
+ await raw.query("DELETE FROM agent_profil_schalter WHERE funktion='reverse_leser' AND grund='T275'");
  for(const grund of ['projekt_parse_backlog','projekt_chunks_offen']){
   assert.equal((await auto.reverseS1NeuParsenTakt({vorrang:async()=>grund,pool,ein:await ein(),parserProfil:'parser-s1:neu2',s3Kennung:'g',einreihen:einreihen({status:'wartet'})})).ausgesetzt,grund);
   assert.equal((await auto.reverseS3AutoTakt({vorrang:async()=>grund,pool,ein:await ein(),parserProfil:'parser-s1:v',s3Kennung:'g',einreihen:einreihen({status:'wartet'})})).ausgesetzt,grund);
