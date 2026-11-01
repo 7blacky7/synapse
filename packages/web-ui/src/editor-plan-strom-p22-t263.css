@@ -1,0 +1,111 @@
+/*
+ * P22-T263 Editor-Plan-Strom (Gestaltung claude-linde), Stil wie P22-T262 (editor-p22-t256.css): 1px-Hairlines, 0-3px Ecken,
+ * IBM Plex Mono fuer Labels, Orange als Akzent, NUR Theme-Variablen (hell und dunkel). Eigene Variablen nur --offen-ms und
+ * --offen-seit an der Fristleiste (Offen-Fenster aus editor_plan_offen_sekunden, Startpunkt relativ zum Abschluss).
+ * Grundsatz des Users (9a3005ff): keine Animation wird abgeschnitten.
+ *   - Karte rein (ed-strom-rein) und jede neue Op rein (ed-strom-op-rein) laufen auf eigenen Elementen.
+ *   - Der Abschluss leuchtet auf einer eigenen Ebene ::after (ed-strom-abschluss bzw. ed-strom-verworfen, je 2.4s =
+ *     ABSCHLUSS_ANIMATION_MS in components/editor/plan-strom-logik.ts); die Karte bleibt, bis animationend kam UND das Offen-Fenster
+ *     vorbei ist, und blendet dann in .6s aus (ed-strom-raus = AUSBLENDEN_MS), erst danach wird sie entfernt.
+ *   - Farbe der Abschlussebene ueber currentColor: committet gruen (--success), verworfen/Konflikt rot (--danger), abgelaufen/veraltet leise (--faint).
+ */
+.ed-strom{gap:10px}
+.ed-strom-leiste{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.ed-strom-leiste h3{display:flex;align-items:center;gap:7px;min-width:0;margin:0;color:var(--muted);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.14em;text-transform:uppercase}
+.ed-strom-leiste .ed-mini span{font-size:10px;letter-spacing:0}
+.ed-strom-leiste .ed-mini[aria-pressed="true"]{border-color:var(--accent);background:var(--accent);color:var(--accent-contrast)}
+.ed-strom-liste,.ed-strom-ops,.ed-strom-verlauf{margin:0;padding:0;list-style:none}
+.ed-strom-liste{display:flex;flex-direction:column;gap:8px}
+
+/* Karte: Akzentkante links (entsteht = Orange), Kopf als Knopf, Ops darunter, Fristleiste unten. */
+.ed-strom-plan{position:relative;display:flex;flex-direction:column;min-width:0;border:1px solid var(--border);border-left:2px solid var(--accent);border-radius:0;background:var(--panel);overflow:hidden;transition:border-color .15s ease,background-color .15s ease;animation:ed-strom-rein .5s cubic-bezier(.2,.7,.2,1) both}
+.ed-strom-plan::after{content:'';position:absolute;inset:0;pointer-events:none;opacity:0;color:var(--success)}
+.ed-strom-plan:hover{border-color:var(--accent)}
+.ed-strom-plan[data-offen]{border-color:var(--accent);background:var(--accent-soft)}
+.ed-strom-kopf{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:3px 8px;width:100%;padding:8px 10px 6px;border:0;border-radius:0;background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer}
+.projekt-editor .ed-strom-kopf:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.ed-strom-plan[data-betrifft] .ed-plan-wer::before{content:'\25C6';margin-right:6px;color:var(--accent);font-size:8px;vertical-align:1px}
+.ed-strom-plan[data-zustand="entsteht"] .ed-chip{border-color:color-mix(in srgb,var(--accent) 55%,transparent);color:var(--accent)}
+.ed-strom-plan[data-zustand="entsteht"] .ed-chip::before{content:'';display:inline-block;width:5px;height:5px;margin-right:5px;border-radius:50%;background:var(--accent);vertical-align:1px;animation:ed-strom-puls 1.4s ease-in-out infinite}
+.ed-strom-plan:is([data-zustand="committet"],[data-zustand="auto-committet"]){border-left-color:var(--success)}
+.ed-strom-plan:is([data-zustand="committet"],[data-zustand="auto-committet"]) .ed-chip{border-color:var(--success);color:var(--success)}
+.ed-strom-plan[data-zustand="auto-committet"] .ed-chip{border-style:dashed}
+.ed-strom-plan:is([data-zustand="verworfen"],[data-zustand="konflikt"]){border-left-color:var(--danger)}
+.ed-strom-plan:is([data-zustand="verworfen"],[data-zustand="konflikt"]) .ed-chip{border-color:var(--danger);color:var(--danger)}
+.ed-strom-plan:is([data-zustand="verworfen"],[data-zustand="konflikt"])::after{color:var(--danger)}
+.ed-strom-plan:is([data-zustand="abgelaufen"],[data-zustand="veraltet"]){border-left-color:var(--border2)}
+.ed-strom-plan:is([data-zustand="abgelaufen"],[data-zustand="veraltet"])::after{color:var(--faint)}
+.ed-strom-plan:is([data-zustand="committet"],[data-zustand="auto-committet"],[data-zustand="abgelaufen"],[data-zustand="veraltet"])::after{animation:ed-strom-abschluss 2.4s ease-out both}
+.ed-strom-plan:is([data-zustand="verworfen"],[data-zustand="konflikt"])::after{animation:ed-strom-verworfen 2.4s ease-out both}
+.ed-strom-plan:not([data-zustand="entsteht"]) .ed-strom-op-datei{color:var(--muted)}
+.ed-strom-plan[data-phase="geht"]{pointer-events:none;animation:ed-strom-raus .6s ease-in both}
+
+/* Ops: jede neue Op laeuft einzeln ein (Schluessel = op_index, bestehende Zeilen bleiben stehen). */
+.ed-strom-ops{display:flex;flex-direction:column;padding:0 10px 8px}
+.ed-strom-ops>li{display:flex;align-items:baseline;gap:7px;min-width:0;padding:2px 0;border-top:1px dashed var(--border2);color:var(--muted);font:500 10.5px/1.5 "IBM Plex Mono",monospace;animation:ed-strom-op-rein .45s ease-out both}
+.ed-strom-op-art{flex:none;width:12px;color:var(--accent);text-align:center}
+.ed-strom-plan:is([data-zustand="committet"],[data-zustand="auto-committet"]) .ed-strom-op-art{color:var(--success)}
+.ed-strom-ops>li[data-action="delete"] .ed-strom-op-art,.ed-strom-ops>li[data-action="delete_lines"] .ed-strom-op-art,.ed-strom-ops>li:is([data-zustand="fehlerhaft"],[data-zustand="konflikt"],[data-zustand="drift"]) .ed-strom-op-art{color:var(--danger)}
+.ed-strom-op-datei{min-width:0;overflow:hidden;color:var(--text);text-overflow:ellipsis;white-space:nowrap}
+.ed-strom-ops small{flex:none;color:var(--faint);font-size:10px}
+.ed-strom-ops .ed-strom-op-name{margin-left:auto;font-size:9px;letter-spacing:.04em}
+.ed-strom-ops>li.ed-strom-op-mehr{color:var(--faint);animation:none}
+
+/* Fristleiste: zeigt die Restzeit des Offen-Fensters; Start relativ zum Abschluss, damit ein Neuzeichnen nicht neu beginnt. */
+.ed-strom-frist{position:absolute;left:0;right:0;bottom:0;height:2px;background:currentColor;color:var(--success);transform-origin:left center;animation:ed-strom-frist var(--offen-ms,20000ms) linear var(--offen-seit,0ms) both}
+.ed-strom-plan:is([data-zustand="verworfen"],[data-zustand="konflikt"]) .ed-strom-frist{color:var(--danger)}
+.ed-strom-plan:is([data-zustand="abgelaufen"],[data-zustand="veraltet"]) .ed-strom-frist{color:var(--faint)}
+
+/* Verlauf: kompakte Zeilen, Klick oeffnet denselben Detailbereich. */
+.ed-strom-verlauf{display:flex;flex-direction:column;gap:6px}
+.ed-strom-verlauf button{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:2px 8px;width:100%;padding:7px 10px;border:1px solid var(--border);border-left:2px solid var(--border2);border-radius:0;background:var(--panel);color:var(--text);font:inherit;text-align:left;cursor:pointer;transition:border-color .15s ease,background-color .15s ease}
+.ed-strom-verlauf button:hover{border-color:var(--accent)}
+.ed-strom-verlauf button[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft)}
+.ed-strom-verlauf button:is([data-zustand="committet"],[data-zustand="auto-committet"]){border-left-color:var(--success)}
+.ed-strom-verlauf button:is([data-zustand="verworfen"],[data-zustand="konflikt"]){border-left-color:var(--danger)}
+.ed-strom-verlauf small{grid-column:1 / -1;min-width:0;overflow:hidden;color:var(--faint);font:500 10px "IBM Plex Mono",monospace;text-overflow:ellipsis;white-space:nowrap}
+
+/* Detail als unteres Panel der Mitte (wie der Drei-Wege-Vergleich): Kante oben in der Farbe des Zustands. */
+.ed-strom-detail{display:flex;flex-direction:column;flex:none;min-height:200px;max-height:52%;border-top:2px solid var(--accent);background:var(--soft);animation:ed-strom-detail-rein .35s ease-out both}
+.ed-strom-detail:is([data-zustand="committet"],[data-zustand="auto-committet"]){border-top-color:var(--success)}
+.ed-strom-detail:is([data-zustand="verworfen"],[data-zustand="konflikt"]){border-top-color:var(--danger)}
+.ed-strom-detail:is([data-zustand="abgelaufen"],[data-zustand="veraltet"]){border-top-color:var(--border2)}
+.ed-strom-detail>header{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border2)}
+.ed-strom-detail>header .ed-auge{flex:none}
+.ed-strom-detail>header strong{flex:1;min-width:0;overflow:hidden;font-size:12px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.ed-strom-detail:is([data-zustand="committet"],[data-zustand="auto-committet"])>header .ed-chip{border-color:var(--success);color:var(--success)}
+.ed-strom-detail:is([data-zustand="verworfen"],[data-zustand="konflikt"])>header .ed-chip{border-color:var(--danger);color:var(--danger)}
+.ed-strom-detail[data-zustand="entsteht"]>header .ed-chip{border-color:var(--accent);color:var(--accent)}
+.ed-strom-laedt{color:var(--faint);font:700 8px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase}
+.ed-strom-grund{margin:0;padding:6px 12px;border-bottom:1px solid var(--border2);color:var(--muted);font:500 11px/1.5 "IBM Plex Mono",monospace;overflow-wrap:anywhere}
+.ed-strom-dateien{display:flex;flex-direction:column;gap:14px;flex:1;min-height:0;padding:10px 12px 14px;overflow:auto;scrollbar-width:thin}
+.ed-strom-datei{min-width:0}
+.ed-strom-datei h4{display:flex;align-items:center;gap:8px;margin:0 0 6px;color:var(--text);font:600 11px "IBM Plex Mono",monospace;overflow-wrap:anywhere}
+.ed-strom-datei h4 small{padding:0 5px;border:1px solid var(--border);color:var(--muted);font:700 8px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase}
+.ed-strom-spalten{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
+.ed-strom-spalte{display:flex;flex-direction:column;min-width:0}
+.ed-strom-spalte h5{display:flex;align-items:center;gap:8px;margin:0 0 4px;color:var(--muted);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.12em;text-transform:uppercase}
+.ed-strom-spalte[data-art="schatten"] h5{color:var(--accent)}
+.ed-strom-spalte[data-art="committet"] h5{color:var(--success)}
+.ed-strom-spalte h5 small{color:var(--faint);font-size:8px;letter-spacing:.08em}
+.ed-strom-spalte .ed-schatten{max-height:280px}
+.ed-strom-ergebnis{max-height:280px;margin:0;padding:6px 0;overflow:auto;border:1px solid var(--border2);background:var(--panel);color:var(--text);font:400 11px/1.55 "IBM Plex Mono",monospace;white-space:pre;tab-size:2;animation:ed-strom-detail-rein .35s ease-out both}
+.ed-strom-ergebnis>span{display:block;width:max-content;min-width:100%;padding-right:10px}
+.ed-strom-ergebnis i{display:inline-block;width:4ch;margin-right:10px;color:var(--faint);font-style:normal;text-align:right;user-select:none}
+.ed-strom-ergebnis .anders{background:color-mix(in srgb,var(--success) 14%,transparent);box-shadow:inset 2px 0 var(--success)}
+.ed-strom-fehlt{margin:0;padding:8px;border:1px solid var(--border2);color:var(--danger);font:500 11px "IBM Plex Mono",monospace;overflow-wrap:anywhere}
+
+@keyframes ed-strom-rein{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@keyframes ed-strom-op-rein{from{opacity:0;transform:translateX(-8px);background:var(--accent-soft)}to{opacity:1;transform:none;background:transparent}}
+@keyframes ed-strom-puls{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes ed-strom-abschluss{0%{opacity:1;background:color-mix(in srgb,currentColor 24%,transparent);box-shadow:inset 0 0 0 1px currentColor}55%{opacity:.55}100%{opacity:0;background:transparent;box-shadow:inset 0 0 0 1px transparent}}
+@keyframes ed-strom-verworfen{0%{opacity:1;background:color-mix(in srgb,currentColor 24%,transparent);box-shadow:inset 0 0 0 1px currentColor}12%{opacity:.35}24%{opacity:.9}100%{opacity:0;background:transparent;box-shadow:inset 0 0 0 1px transparent}}
+@keyframes ed-strom-frist{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+@keyframes ed-strom-raus{from{opacity:1;transform:none}to{opacity:0;transform:translateX(12px)}}
+@keyframes ed-strom-detail-rein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+@media (max-width:760px){
+ .ed-strom-spalten{grid-template-columns:minmax(0,1fr)}
+ .ed-strom-detail{max-height:70%}
+}
+@media (prefers-reduced-motion:reduce){.ed-strom-plan,.ed-strom-plan::after,.ed-strom-ops>li,.ed-strom-frist,.ed-strom-detail,.ed-strom-ergebnis,.ed-strom-plan .ed-chip::before{animation:none!important}}

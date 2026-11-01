@@ -13,7 +13,9 @@ export const NETZWERK_LABELS: Record<string, string> = {
  animation_ms: 'Animationsdauer (ms)', bilder_pro_sekunde: 'Bilder pro Sekunde', frame_budget_ms: 'Animationsbudget (ms)',
  buendel_ms: 'Ereignisse bündeln (ms)', abgleich_sekunden: 'Wiederabgleich (Sekunden)',
  plan_nachleuchten_sekunden: 'Committete Pläne sichtbar (Sekunden)', plan_nachleuchten_auto_sekunden: 'Auto-committete Pläne sichtbar (Sekunden)',
- plan_mindestanzeige_sekunden: 'Pläne mindestens anzeigen (Sekunden)', orbit_nebel: 'Trabanten, Nebel und Sterngröße (1 an, 0 aus)',
+ plan_mindestanzeige_sekunden: 'Pläne mindestens anzeigen (Sekunden)',
+ // P22-T263
+ editor_plan_offen_sekunden: 'Editor: fertiger Plan bleibt offen (Sekunden)', orbit_nebel: 'Trabanten, Nebel und Sterngröße (1 an, 0 aus)',
  an_user_animation: 'Artefakt-/User-Animation (1 an, 0 aus)',
  // P22-T153
  stern_voll_dateien: 'Stern voll ab Dateien', stern_min_promille: 'Mindestgröße des Sterns (Promille)',
@@ -51,7 +53,7 @@ export const NETZWERK_LABELS: Record<string, string> = {
 export const NETZWERK_GRUPPEN: ReadonlyArray<{ titel: string; namen: readonly string[] }> = [
  { titel: 'Anzeige und Fenster', namen: ['aktivitaet_sekunden', 'inaktiv_sekunden', 'sichtbare_agenten', 'sichtbare_channels', 'ereignis_limit', 'animation_limit',
   'animation_ms', 'bilder_pro_sekunde', 'frame_budget_ms', 'buendel_ms', 'abgleich_sekunden', 'orbit_nebel', 'an_user_animation'] },
- { titel: 'Pläne', namen: ['plan_nachleuchten_sekunden', 'plan_nachleuchten_auto_sekunden', 'plan_mindestanzeige_sekunden', 'plan_trabanten', 'plan_trabanten_max'] },
+ { titel: 'Pläne', namen: ['plan_nachleuchten_sekunden', 'plan_nachleuchten_auto_sekunden', 'plan_mindestanzeige_sekunden', 'plan_trabanten', 'plan_trabanten_max', 'editor_plan_offen_sekunden'] },
  { titel: 'Stern, Trabanten, Nebel', namen: ['stern_voll_dateien', 'stern_min_promille', 'stern_max_promille', 'dateien_je_trabant', 'trabanten_einzeln', 'trabanten_bahnen_max',
   'chunks_je_nebelpunkt', 'nebel_max', 'deko_sterne'] },
  { titel: 'Nebel-Bewegung', namen: ['nebel_treiben_x_promille', 'nebel_treiben_y_promille', 'nebel_treiben_x_mrad_s', 'nebel_treiben_y_mrad_s', 'nebel_drehung_mrad',

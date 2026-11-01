@@ -26,6 +26,9 @@ export const NETZWERK_EINSTELLUNGEN = {
  plan_nachleuchten_sekunden: { standard: 3, min: 1, max: 300 },
  plan_nachleuchten_auto_sekunden: { standard: 3, min: 1, max: 300 },
  plan_mindestanzeige_sekunden: { standard: 3, min: 1, max: 30 },
+ // P22-T263 (User 01.11.2026, thought 9a3005ff): Editor-Plan-Strom - abgeschlossener files-Plan bleibt im Editor so lange offen
+ // sichtbar (Abschlussanimation laeuft immer zu Ende). Eigener Wert, die Netzwerk-Werte oben bleiben unveraendert.
+ editor_plan_offen_sekunden: { standard: 20, min: 1, max: 3600 },
  // P22-T149: Datei-Trabanten, Chunk-Nebel und Sterngroesse aus dem Index (1 an, 0 = Rueckfall auf die feste Darstellung).
  orbit_nebel: { standard: 1, min: 0, max: 1 },
  // P22-T148: Artefakte und Nachrichten an den User als eigene Animation am Urheber (1 an, 0 = nur Feed-Eintrag).
