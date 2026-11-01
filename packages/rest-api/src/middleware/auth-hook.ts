@@ -114,6 +114,7 @@ function isSseRoute(method: string, pathname: string): boolean {
   // werden ueber das httpOnly-Session-Cookie oder einen kurzlebigen SSE-Token
   // authentifiziert; Chat-POST-Streams tragen normal den Bearer-Header.
   return /^\/api\/projects\/[^/]+\/events\/?$/.test(pathname)
+    || /^\/api\/main-agent\/editor\/ereignisse\/?$/.test(pathname)
     || /^\/api\/agent-runtimes\/[^/]+\/terminal\/sessions\/[^/]+\/events\/?$/.test(pathname);
 }
 
