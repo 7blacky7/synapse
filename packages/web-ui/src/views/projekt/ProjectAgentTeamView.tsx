@@ -11,6 +11,8 @@ import { ladeTeamAusweis } from '../../api/ausweis-verwaltung';
 import { herkunftText, loadProjectTeamViewModels } from '../../api/control-plane-adapter';
 import type { ProjectTeamAgentViewModel } from '../../control-plane/view-model';
 import { agentTon, teamAnmeldungText, teamKontextText, teamSchluessel } from './agententeam-logik';
+// P22-T265: gestaltete Ausweis-Anzeige (Daten unverändert aus P22-T257).
+import { TeamAusweisKarte } from './TeamAusweisKarte';
 
 // P22-T89: Das Team kommt aus GET /api/projects/:name/agenten-team: aktive Identitaeten
 // (Ausweis) des Projekts plus Wrapper-Spezialisten; archivierte blendet der Server aus.
@@ -67,12 +69,14 @@ export function ProjectAgentTeamView({ project }: { project: string }) {
       {current && <div className="entity-detail">
         <div className="detail-status"><i className={agentTon(current)} /><span>{current.status}</span><b>{current.art === 'wrapper' ? 'WRAPPER' : 'AUSWEIS'}</b></div>
         <h2>{current.name}<AgentTaskMarke project={project} identityId={current.identityId} name={current.agentId || current.name} /><LaufHerkunftMarke project={project} identityId={current.identityId} name={current.agentId || current.name} /></h2>
-        {current.art !== 'wrapper' && <p><button type="button" onClick={() => oeffneAusweisVerwaltung({ project, agentId: current.agentId || current.name })}>Ausweis und Profil verwalten</button></p>}
+        {current.art !== 'wrapper' && <TeamAusweisKarte key={current.identityId || current.name} zustand={current.ausweis}
+          stand={teamAusweis?.identityId === current.identityId ? teamAusweis : null}
+          onVerwalten={() => oeffneAusweisVerwaltung({ project, agentId: current.agentId || current.name })} />}
         <AktuelleTaskAbsatz project={project} identityId={current.identityId} name={current.agentId || current.name} rueckfall={current.currentTask} />
         <dl>
           <div><dt>Rolle</dt><dd>{current.rolle || '–'}</dd></div>
           <div><dt>Typ</dt><dd>{current.typ || '–'}</dd></div>
-          <div><dt>Ausweis</dt><dd>{current.ausweis === 'gueltig' ? 'gültig' : current.ausweis === 'keiner' ? 'kein gültiger Ausweis' : '–'}{teamAusweis?.identityId === current.identityId && teamAusweis?.aktiv && teamAusweis.ausweis && <> · <code>{teamAusweis.ausweis}</code> <button type="button" onClick={() => void navigator.clipboard.writeText(teamAusweis.ausweis)}>Kopieren</button></>}{teamAusweis?.fehler && <small> Anzeige nicht verfügbar ({teamAusweis.fehler})</small>}</dd></div>
+          {current.art === 'wrapper' && <div><dt>Ausweis</dt><dd>–</dd></div>}
           <div><dt>Modell</dt><dd>{current.model || '–'}</dd></div>
           <div><dt>Provider</dt><dd>{current.provider || '–'}</dd></div>
           <div><dt>Ort</dt><dd>{current.herkunft ? herkunftText(current.herkunft) : '–'}</dd></div>
