@@ -148,6 +148,14 @@ export const REVERSE_EINSTELLKATALOG = {
  pipeline_scan_ms:i('ms',1000,86400000,60000,G),
  pipeline_durchlauf_ms:i('ms',1,86400000,48000,G,null,'SYNAPSE_REVERSE_DURCHLAUF_MS'),
  pipeline_discovery_block:i('Jobs',1,50000,100,G,null,'SYNAPSE_REVERSE_DISCOVERY_BATCH'),
+ // P22-T245 (User 31.10., memory regel-reverse-assets-einmalig-gedrosselt-nie-blockierend): fertig ist fertig, Format-Nachzug nur fuer neu
+ // abgedeckte Formate, Drossel und Betriebsvorrang (reverse-pipeline.ts). Schalter Standard aus = Verhalten vor T245.
+ pipeline_einmalig:auswahl('Schalter',['aus','an'],'aus',G),
+ pipeline_pause_ms:i('ms Pause nach jedem Auftrag',0,3600000,2000,G,'keine Pause'),
+ pipeline_lese_mb_s:i('MB/s geschaetzte Lesemenge',1,100000,20,G),
+ pipeline_last_max_milli:i('Load1 je CPU x1000',0,1000000,1000,G,'nicht pruefen'),
+ pipeline_latenz_max_ms:i('ms Event-Loop-Verzoegerung p99',0,600000,250,G,'nicht pruefen'),
+ pipeline_db_verbindungen:i('Verbindungen eigener DB-Pool',1,8,2,G),
  inspektion_datei_bytes:b('Bytes',1,B64,268435456,GE),
  inspektion_read_schritt_bytes:b('Bytes',1,B64,67108864,GE),
  inspektion_hash_schritt_bytes:b('Bytes',1,B64,268435456,GE),

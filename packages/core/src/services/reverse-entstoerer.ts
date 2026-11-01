@@ -71,6 +71,12 @@ function merke(m: ReverseMassnahme): void {
   void loggeReverseMassnahme(m);
 }
 
+/** P22-T245 E: Vorschau einmalig/Nachzug/Drossel; dynamisch (reverse-pipeline importiert diesen Entstoerer statisch). Wirft nie. */
+async function einmaligVorschau(db: Pick<Pool, 'query'>): Promise<Row> {
+  try { const { reverseEinmaligVorschau } = await import('./reverse-pipeline.js'); return await reverseEinmaligVorschau(db); }
+  catch (e) { return { fehler: (e as Error).message }; }
+}
+
 async function tabelleDa(db: Pick<Pool, 'query'>, name: string): Promise<boolean> {
   return !!(await db.query('SELECT to_regclass($1) AS t', [name])).rows[0]?.t;
 }
@@ -205,6 +211,8 @@ export async function diagnoseReverse(o: ReverseDiagnoseOptionen = {}): Promise<
     fortschritt_live: live ?? { aktiv: false, letzter_fehler: 'reverse_fortschritt_schalter_nicht_lesbar' },
     aufsicht: { zeitlimits_s: aus?.zeitlimits ?? null, hart_puffer_s: puffer, nachlauf_s: einstellung('nachlauf_s'), einstellungen_fehler: einst?.letzter_fehler ?? (einst ? null : 'reverse_einstellungen_nicht_lesbar'), hinweis: 'P18-T87: harte Frist und Storno setzt der Executor durch; diagnose zeigt ueber_zeitlimit/storno_angefordert.' },
     haenger_verdacht: eintraege.filter(e => (e.live as Row | undefined)?.haenger_verdacht === true).length,
+    // P22-T245 E (Koordinator 34623 (1)): auch bei Schalter aus - vor dem Einschalten bzw. vor dem Loesen des Halts pruefen.
+    einmalig: await einmaligVorschau(db),
     automatik: { aktiv: entstoererAktiv() && !!auto?.aktiv, worker_gestartet: entstoererAktiv(), schalter: auto, letzter_lauf: letzterAutoLauf,
       massnahmen: verlauf.slice(0, reverseZahl(s, 'diagnose_verlauf_anzeige')) },
   };
