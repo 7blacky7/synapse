@@ -343,7 +343,7 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
   admin: {
     b: 'Verwaltung: Onboarding/Statistik, Jev-Steuerung, Profile/Ausweis, Kontextprofile, Wartung.' + FALL_SKILL_ZUSATZ('admin'),
     p: {
-      action: 'Admin-Aktion (fall-admin).',
+      action: 'Admin-Aktion, freier Name (fall-admin); unbekannt -> aehnliche Treffer.',
       collections: 'migrate: Collections.',
       dry_run: 'migrate: nur pruefen.',
       backup_type: 'restore: was.',
@@ -380,7 +380,15 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
       stufe: 'Kontextprofil: Ausgabestufe.',
       hinweise_aus: 'Kontextprofil: Hinweisarten aus.',
       hinweise_nur: 'Kontextprofil: nur diese Hinweisarten.',
-      profil_funktion: 'profil_schalter_setzen: Produkt-Schalter (fall-admin-produkt-schalter).',
+      profil_funktion: 'profil_schalter_setzen: Produkt-Schalter, freier Name (fall-admin-schalter-suchen).',
+      // P23-T10: Katalogsuche statt Komplettlisten.
+      query: 'Katalogsuche: Name, Namensteile oder Thema (fall-admin-schalter-suchen).',
+      nur_aktiv: 'Katalogsuche: nur eingeschaltete.',
+      nur_abweichend: 'Katalogsuche: nur vom Standard abweichende.',
+      fehlend_gegenueber_projekt: 'profil_schalter_status: dort an, hier nicht.',
+      voll: 'Katalogsuche: Komplettliste seitenweise.',
+      limit: 'Katalogsuche: Eintraege je Seite.',
+      offset: 'Katalogsuche: Startposition.',
       ziel_identity_id: 'Zielidentitaet.',
       schattenprofil_id: 'Schattenprofil.',
       zustand: 'schattenprofil_liste: Filter.',

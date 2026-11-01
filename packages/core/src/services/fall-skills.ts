@@ -105,6 +105,8 @@ export const FALL_SKILL_TABELLE: readonly FallSkillEintrag[] = [
   {codes:['parameter_nicht_verwendet'],tools:['hex'],skill:'fall-hex-parameter'},
   {codes:['quelle_fehlt','quelle_ungueltig','quelle_mehrdeutig','quelle_nicht_gefunden','pfad_ungueltig','nicht_gebunden','hex_deaktiviert','api_erforderlich'],tools:['hex'],skill:'fall-hex-quelle'},
   {codes:['cursor_ungueltig','cursor_abgelaufen','quelle_geaendert'],tools:['hex'],skill:'fall-hex-fortsetzung'},
+  // P23-T10: admin - unbekannte Aktion bzw. Produkt-Schalter (freie Namen statt enum) -> Suche erklaeren.
+  { codes: ['aktion_unbekannt', 'profil_funktion_unbekannt'], tools: ['admin'], skill: 'fall-admin-schalter-suchen' },
   // Identitaet / Weg
   { codes: ['agent_token_fehlt', 'identitaet_konflikt', 'token_ungueltig', 'token_abgelaufen'], skill: 'fall-querschnitt-ausweis-token' },
   { codes: ['shell_rueckfrage'], tools: ['shell'], ausweis: 'fall-shell-rueckfrage-ausweis', legacy: 'fall-shell-rueckfrage-legacy' },

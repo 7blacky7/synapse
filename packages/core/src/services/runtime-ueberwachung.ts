@@ -245,6 +245,14 @@ export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
       index: 5, asset: 10, asset_transfer: 15, mod_inbox: 5,
     },
   },
+  // P23-T10: admin-Katalogsuche (admin-katalog-suche.ts): Kosinus-Schwelle und Abstand zum besten Treffer in Promille (spezifischere
+  // Anfrage = weniger Treffer), Hoechstzahl Treffer je Antwort, Seitengroesse bei voll:true, Zeitbudget fuer das Einbetten des
+  // Katalogs (danach Rueckfall Wortsuche, Einbetten laeuft im Hintergrund weiter).
+  admin_suche_schwelle_promille: { art: 'zahl', standard: 450, min: 0, max: 1000 },
+  admin_suche_abstand_promille: { art: 'zahl', standard: 80, min: 0, max: 1000 },
+  admin_suche_max_treffer: { art: 'zahl', standard: 25, min: 1, max: 500 },
+  admin_suche_seite: { art: 'zahl', standard: 50, min: 1, max: 500 },
+  admin_suche_einbetten_ms: { art: 'zahl', standard: 8000, min: 200, max: 120000 },
 } as const satisfies Record<string, EinstellungDef>;
 export type RuntimeUeberwachungEinstellungName = keyof typeof RUNTIME_UEBERWACHUNG_EINSTELLUNGEN;
 export const RUNTIME_UEBERWACHUNG_EINSTELLUNG_NAMEN = Object.keys(RUNTIME_UEBERWACHUNG_EINSTELLUNGEN) as RuntimeUeberwachungEinstellungName[];

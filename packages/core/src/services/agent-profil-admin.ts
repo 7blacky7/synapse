@@ -45,6 +45,7 @@ import { deaktiviereAgentIdentitaet, reaktiviereAgentIdentitaet } from './agent-
 import { benenneIdentitaetUm } from './agent-umbenennung.js';
 import { aliaseDerIdentitaet } from './agent-namens-alias.js';
 import { HINWEIS_KATALOG } from './hinweis-katalog.js';
+import { ADMIN_SUCHE_PARAMETER } from './admin-katalog-suche.js';
 
 const W1B_KERN_AKTIONEN = [
   'profil_schalter_status', 'profil_schalter_setzen', 'profil_uebersicht',
@@ -69,7 +70,8 @@ export type W1bAdminAction = typeof W1B_KERN_AKTIONEN[number];
 
 /** Nur NEUE Parameternamen; bestehende (project, aktiv, grund, ebene, agent_id) bleiben byte-stabil unveraendert. */
 export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
-  profil_funktion: { type: 'string', enum: [...PROFIL_PRODUKT_FUNKTIONEN, ...ALT_AUSWEIS_FUNKTIONEN, 'alle'], description: 'Profilverwaltung: Produkt-Schalter-Funktion (profil_schalter_setzen)' },
+  // P23-T10: freier Name statt enum (~170 Werte); unbekannt -> aehnliche Treffer (admin-schlank.ts), REST-Dispatcher prueft wie bisher.
+  profil_funktion: { type: 'string', description: 'Profilverwaltung: Produkt-Schalter-Funktion (profil_schalter_setzen), freier Name; suchen mit profil_schalter_status query' },
   ziel_identity_id: { type: 'string', description: 'Profilverwaltung: Identitaets-ID des Zielprofils' },
   schattenprofil_id: { type: 'string', description: 'Profilverwaltung: ID des Schattenprofils' },
   zustand: { type: 'string', enum: [...SCHATTEN_ZUSTAENDE], description: 'Profilverwaltung: Filter schattenprofil_liste' },
@@ -118,6 +120,8 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   ...WS_ALTBESTAND_ADMIN_PARAMETER,
   ...CONTAINER_ADMIN_PARAMETER,
   ...AGENT_ANMELDUNGEN_ADMIN_PARAMETER,
+  // P23-T10: Katalogsuche (query, nur_aktiv, nur_abweichend, fehlend_gegenueber_projekt, voll, limit, offset).
+  ...ADMIN_SUCHE_PARAMETER,
 };
 
 export function istW1bAdminAction(action: string | undefined): boolean {

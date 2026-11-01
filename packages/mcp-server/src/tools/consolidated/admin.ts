@@ -20,6 +20,11 @@ import { saveProjectIdea, confirmIdea } from '../ideas.js';
 import { indexMediaWrapper } from '../search.js';
 import { migrateToRelativePaths, JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER, istJevAdminAction, fuehreJevAdminAus, KONTEXTPROFIL_ADMIN_ACTIONS, KONTEXTPROFIL_ADMIN_PARAMETER, istKontextprofilAdminAction, fuehreKontextprofilAdminAus, wendeSitzungsSignalAn, SITZUNG_PARAMETER } from '@synapse/core';
 import { W1B_ADMIN_ACTIONS, W1B_ADMIN_PARAMETER, istW1bAdminAction, fuehreW1bAdminAus } from '@synapse/core';
+// P23-T10: admin schlank (Katalogsuche, Setzen nur Diff, freie Namen statt grosser enums).
+import { fuehreAdminSchlankAus, adminUnbekannteAktion, ohneGrosseEnums } from '@synapse/core';
+
+/** P23-T10: bekannte Aktionen (Server-Pruefung statt enum im Schema). */
+const ADMIN_AKTIONEN: readonly string[] = ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', 'migrate_paths', ...JEV_ADMIN_ACTIONS, ...KONTEXTPROFIL_ADMIN_ACTIONS, ...W1B_ADMIN_ACTIONS];
 
 export const adminTool: ConsolidatedTool = {
   definition: {
@@ -28,10 +33,10 @@ export const adminTool: ConsolidatedTool = {
     inputSchema: {
       type: 'object',
       properties: {
+        // P23-T10: freier Name statt enum (~90 Werte; veraltete Client-Schemata liessen Aktionen uebersehen).
         action: {
           type: 'string',
-          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', 'migrate_paths', ...JEV_ADMIN_ACTIONS, ...KONTEXTPROFIL_ADMIN_ACTIONS, ...W1B_ADMIN_ACTIONS],
-          description: 'Die auszuführende Admin-Action',
+          description: 'Admin-Aktion, freier Name (fall-admin); unbekannt -> aehnliche Treffer',
         },
         // === migrate ===
         project: {
@@ -99,7 +104,7 @@ export const adminTool: ConsolidatedTool = {
         // === P15-T33 E0.5: Jev-Steuerung (jev_status, jev_schalten, jev_kosten, jev_budget) ===
         ...JEV_ADMIN_PARAMETER,
         ...KONTEXTPROFIL_ADMIN_PARAMETER,
-        ...W1B_ADMIN_PARAMETER,
+        ...ohneGrosseEnums(W1B_ADMIN_PARAMETER),
       },
       required: ['action'],
     },
@@ -114,7 +119,7 @@ export const adminTool: ConsolidatedTool = {
     if (istKontextprofilAdminAction(action)) return (await fuehreHinweisprofilAdminAus(action, args, str(args, 'agent_id'))) ?? fuehreKontextprofilAdminAus(action, args, str(args, 'agent_id'));
     if (istJevAdminAction(action)) return await fuehreJevAdminAus(action, args, str(args, 'agent_id'));
     // P22-T13 Paket D: Profilverwaltung (Akteur nur aus User-Herkunft/Tokenpruefung, nie aus Argumenten).
-    if (istW1bAdminAction(action)) return await fuehreW1bAdminAus(action, args);
+    if (istW1bAdminAction(action)) return await fuehreAdminSchlankAus(action, args, () => fuehreW1bAdminAus(action, args));
 
     switch (action) {
       // ===== MIGRATE =====
@@ -231,7 +236,8 @@ export const adminTool: ConsolidatedTool = {
       }
 
       default:
-        throw new Error(`Unbekannte Admin-Action: "${action}"`);
+        // P23-T10: kein enum mehr im Schema - unbekannte Aktion mit aehnlichen Treffern + Fall-Skill.
+        return await adminUnbekannteAktion(action, ADMIN_AKTIONEN);
     }
   },
 };

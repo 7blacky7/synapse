@@ -266,6 +266,8 @@ import { INTERN_DEFINITION, INTERN_TOOL_AUS, internToolAktiv, fuehreInternAus } 
 // P15-T33 E0.5: Jev-Schalter (tools/list-Filter, Sperre des Tools jev) und Jev-Steuerung am admin-Tool
 import { filtereJevTool, jevToolSperre, istJevAdminAction, fuehreJevAdminAus, JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER, KONTEXTPROFIL_ADMIN_ACTIONS, KONTEXTPROFIL_ADMIN_PARAMETER, istKontextprofilAdminAction, fuehreKontextprofilAdminAus } from '@synapse/core';
 import { W1B_ADMIN_ACTIONS, W1B_ADMIN_PARAMETER, istW1bAdminAction, fuehreW1bAdminAus } from '@synapse/core';
+// P23-T10: admin schlank (Katalogsuche, Setzen nur Diff, freie Namen statt grosser enums).
+import { fuehreAdminSchlankAus, adminUnbekannteAktion, ohneGrosseEnums } from '@synapse/core';
 // P15 E1: Entscheidungs-Topf am Tool jev (Definition + Dispatcher aus core, stdio identisch)
 import { fuehreJevTopfActionAus, istJevTopfAction, JEV_TOPF_ACTIONS, JEV_TOPF_BESCHREIBUNG, JEV_TOPF_PARAMETER } from '@synapse/core';
 import {
@@ -1011,8 +1013,8 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', ...JEV_ADMIN_ACTIONS, ...KONTEXTPROFIL_ADMIN_ACTIONS, ...W1B_ADMIN_ACTIONS],
-          description: 'Die auszufuehrende Admin-Action',
+          // P23-T10: freier Name statt enum; unbekannt -> aehnliche Treffer (adminUnbekannteAktion).
+          description: 'Admin-Aktion, freier Name (fall-admin); unbekannt -> aehnliche Treffer',
         },
         project: { type: 'string', description: 'Projekt-Name (erforderlich fuer alle Actions ausser confirm_idea)' },
         collections: { type: 'array', items: { type: 'string' }, description: 'Optional fuer migrate: Nur bestimmte Collections migrieren' },
@@ -1040,7 +1042,7 @@ export const MCP_TOOLS = [
         // P15-T33 E0.5: Jev-Steuerung (jev_status, jev_schalten, jev_kosten, jev_budget)
         ...JEV_ADMIN_PARAMETER,
         ...KONTEXTPROFIL_ADMIN_PARAMETER,
-        ...W1B_ADMIN_PARAMETER,
+        ...ohneGrosseEnums(W1B_ADMIN_PARAMETER),
       },
       required: ['action'],
     },
@@ -4584,7 +4586,7 @@ async function handleToolCallKern(
       if (istKontextprofilAdminAction(action as string)) return (await fuehreHinweisprofilAdminAus(action as string, args, effectiveAgentId)) ?? fuehreKontextprofilAdminAus(action as string, args, effectiveAgentId);
       if (istJevAdminAction(action)) return await fuehreJevAdminAus(action as string, args, effectiveAgentId);
       // P22-T13 Paket D: Profilverwaltung (Akteur nur aus User-Herkunft/Tokenpruefung, nie aus Argumenten).
-      if (istW1bAdminAction(action as string)) return await fuehreW1bAdminAus(action as string, args);
+      if (istW1bAdminAction(action as string)) return await fuehreAdminSchlankAus(action as string, args, () => fuehreW1bAdminAus(action as string, args));
       switch (action) {
         case 'migrate':
           return { success: false, error: 'Action "migrate" ist nur ueber MCP Server (stdio) verfuegbar' };
@@ -4747,7 +4749,8 @@ async function handleToolCallKern(
           };
         }
         default:
-          return { success: false, error: `Unbekannte admin action: "${action}"` };
+          // P23-T10: kein enum mehr im Schema - unbekannte Aktion mit aehnlichen Treffern + Fall-Skill.
+          return await adminUnbekannteAktion(String(action ?? ''), ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', ...JEV_ADMIN_ACTIONS, ...KONTEXTPROFIL_ADMIN_ACTIONS, ...W1B_ADMIN_ACTIONS]);
       }
     }
 

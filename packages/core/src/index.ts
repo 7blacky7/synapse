@@ -1153,6 +1153,10 @@ export { AGENT_AUSWEIS_PROJEKTE_SCHEMA_SQL } from './db/agent-ausweis-projekte-s
 export type { ProfilTokenAbruf, WebUiKoordinatorToken } from './services/agent-token-abruf.js';
 export { W1B_ADMIN_ACTIONS, W1B_ADMIN_PARAMETER, istW1bAdminAction, fuehreW1bAdminAus, w1bFehlerStatus } from './services/agent-profil-admin.js';
 export type { W1bAdminAction } from './services/agent-profil-admin.js';
+// P23-T10: admin schlank - Katalogsuche, Setzen nur Diff, freie Namen statt grosser enums.
+export { ADMIN_SUCHE_PARAMETER, KATALOG_SKILL, sucheKatalog, aehnlicheNamen, katalogAntwort, ohneGrosseEnums, katalogSucheDiagnose, leseKatalogSuchWerte } from './services/admin-katalog-suche.js';
+export type { KatalogEintrag, KatalogSuchWerte, KatalogSuchErgebnis } from './services/admin-katalog-suche.js';
+export { fuehreAdminSchlankAus, adminUnbekannteAktion, ADMIN_KATALOG_AKTIONEN, PROFIL_SCHALTER_ZWECK, katalogBereich } from './services/admin-schlank.js';
 export { AGENT_PROFIL_SCHEMA_SQL } from './db/agent-profil-schema.js';
 // Paket B: Anmeldung/Koordinatorliste/Fortsetzung; registerChatAgent = Legacy-Register + additives Schattenprofil (nur bei EIN).
 export {
