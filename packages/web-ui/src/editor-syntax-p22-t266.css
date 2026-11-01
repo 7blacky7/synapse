@@ -1,0 +1,45 @@
+/*
+ * P22-T266 Syntax-Hervorhebung im Editor (Gestaltung claude-linde). Klassen tok-* aus @lezer/highlight classHighlighter - dieselben im
+ * CodeMirror-Editor und in den Nur-Lese-Ansichten (Schatten, Committet, Drei-Wege, Verlauf, Pins).
+ * Farben NUR aus Theme-Variablen bzw. color-mix daraus (hell und dunkel): Schluesselwoerter Orange-Akzent, Zeichenketten --success,
+ * Zahlen/Konstanten aus --danger gemischt, Typen aus Akzent gemischt, Kommentare --faint kursiv, Satzzeichen --muted.
+ * CodeMirror bringt ein eigenes Grundthema mit festen Farben; die Regeln hier sind spezifischer (.projekt-editor .ed-codefeld ...).
+ */
+.projekt-editor :is(.tok-keyword,.tok-operatorKeyword,.tok-modifier,.tok-controlKeyword){color:var(--accent)}
+.projekt-editor :is(.tok-string,.tok-string2,.tok-inserted,.tok-character){color:var(--success)}
+.projekt-editor :is(.tok-number,.tok-bool,.tok-atom,.tok-literal){color:color-mix(in srgb,var(--danger) 72%,var(--text))}
+.projekt-editor :is(.tok-typeName,.tok-className,.tok-namespace,.tok-labelName){color:color-mix(in srgb,var(--accent) 55%,var(--text))}
+.projekt-editor .tok-propertyName{color:color-mix(in srgb,var(--success) 40%,var(--text))}
+.projekt-editor .tok-definition{color:var(--text);font-weight:600}
+.projekt-editor :is(.tok-comment,.tok-meta){color:var(--faint);font-style:italic}
+.projekt-editor .tok-macroName{color:var(--muted)}
+.projekt-editor :is(.tok-punctuation,.tok-operator){color:var(--muted)}
+.projekt-editor :is(.tok-invalid,.tok-deleted){color:var(--danger)}
+.projekt-editor .tok-invalid{text-decoration:underline wavy color-mix(in srgb,var(--danger) 60%,transparent)}
+.projekt-editor .tok-heading{color:var(--accent);font-weight:700}
+.projekt-editor .tok-emphasis{font-style:italic}
+.projekt-editor .tok-strong{font-weight:700}
+.projekt-editor :is(.tok-link,.tok-url){color:var(--accent);text-decoration:underline}
+
+/* CodeMirror im Code-Bereich: gleiche Schrift und Zeilenhoehe wie das Textfeld aus P22-T262, Rinne wie .ed-zeilen. */
+.projekt-editor .ed-code.mit-syntax:has(>.ed-codefeld){display:block}
+.projekt-editor .ed-codefeld{height:100%;min-height:0}
+.projekt-editor .ed-codefeld[aria-busy="true"]{background-image:linear-gradient(90deg,transparent,color-mix(in srgb,var(--accent) 8%,transparent),transparent);background-size:200% 100%;animation:ed-syntax-laedt 1.2s linear infinite}
+.projekt-editor .ed-codefeld .cm-editor{height:100%;background:var(--panel);color:var(--text);font:400 12px/1.65 "IBM Plex Mono",monospace}
+.projekt-editor .ed-codefeld .cm-editor.cm-focused{outline:none}
+.projekt-editor .ed-codefeld .cm-scroller{font:inherit;line-height:1.65}
+.projekt-editor .ed-codefeld .cm-content{padding:12px 0 48px;caret-color:var(--accent)}
+.projekt-editor .ed-codefeld .cm-line{padding:0 16px}
+.projekt-editor .ed-codefeld .cm-gutters{border-right:1px solid var(--border2);background:var(--panel);color:var(--faint)}
+.projekt-editor .ed-codefeld .cm-lineNumbers .cm-gutterElement{min-width:3.5ch;padding:0 10px 0 14px;font-variant-numeric:tabular-nums}
+.projekt-editor .ed-code[data-bearbeitbar] .ed-codefeld .cm-gutters{box-shadow:inset -2px 0 var(--accent)}
+.projekt-editor .ed-codefeld .cm-activeLine{background:color-mix(in srgb,var(--text) 4%,transparent)}
+.projekt-editor .ed-codefeld .cm-activeLineGutter{background:transparent;color:var(--text)}
+.projekt-editor .ed-codefeld .cm-cursor{border-left:2px solid var(--accent)}
+.projekt-editor .ed-codefeld :is(.cm-selectionBackground,.cm-content ::selection){background:color-mix(in srgb,var(--accent) 28%,transparent)}
+.projekt-editor .ed-codefeld .cm-focused :is(.cm-selectionBackground){background:color-mix(in srgb,var(--accent) 34%,transparent)}
+.projekt-editor .ed-codefeld .cm-matchingBracket{background:color-mix(in srgb,var(--success) 18%,transparent);outline:1px solid color-mix(in srgb,var(--success) 50%,transparent)}
+.projekt-editor .ed-codefeld .cm-nonmatchingBracket{background:color-mix(in srgb,var(--danger) 18%,transparent)}
+
+@keyframes ed-syntax-laedt{from{background-position:100% 0}to{background-position:-100% 0}}
+@media (prefers-reduced-motion:reduce){.projekt-editor .ed-codefeld[aria-busy="true"]{animation:none}}
