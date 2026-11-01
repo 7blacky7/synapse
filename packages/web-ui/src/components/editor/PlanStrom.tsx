@@ -27,7 +27,7 @@ async function json(url: string): Promise<any> {
   return d;
 }
 const q = (v: string) => encodeURIComponent(v);
-/** Höchstens so viele Schatten lädt das Detail auf einmal; weitere Dateien nennt es nur. */
+/** So viele Schatten lädt das Detail je Schritt; H1 (Entscheidung 8d464d44): weitere per Knopf nachladbar, nichts gekappt. */
 const SCHATTEN_MAX_DATEIEN = 20;
 /** Ops je Karte im Strom; darüber „+n weitere“. */
 const OPS_SICHTBAR = 12;
@@ -40,6 +40,10 @@ const QUELLE_TEXT: Record<ErgebnisDatei['nachher_quelle'], string> = { folgevers
 
 export interface PlanStrom {
   aktiv: boolean; live: boolean; offenMs: number;
+  /** P22-T263 Leinwand: Schalter editor_plan_leinwand (nur mit aktivem Strom) - Explorer einklappbar, Mitte zeigt den Strom vollständig. */
+  leinwand: boolean;
+  /** H1: Anzahl Dateien, deren Schatten das Detail lädt; mehrSchatten erhöht um SCHATTEN_MAX_DATEIEN. */
+  schattenMax: number; mehrSchatten: () => void;
   eintraege: Array<StromEintrag & { phase: StromPhase }>; anzahlEntstehend: number;
   offenId: string | null; offenerPlan: StromPlan | null;
   umschalten: (id: string) => void; schliessen: () => void; animationFertig: (id: string) => void;
@@ -51,6 +55,7 @@ export interface PlanStrom {
 
 export function usePlanStrom({ project, live, ereignisNr, onFehler }: { project: string; live: boolean; ereignisNr: number; onFehler: (text: string) => void }): PlanStrom {
   const gedaechtnis = useRef(new PlanStromGedaechtnis());
+  const [leinwand, setLeinwand] = useState(false);
   const [aktiv, setAktiv] = useState(false), [offenSek, setOffenSek] = useState(OFFEN_STANDARD_SEKUNDEN), [debug, setDebug] = useState<unknown>(null);
   const [jetzt, setJetzt] = useState(() => Date.now()), [stand, setStand] = useState(0);
   const [offenId, setOffenId] = useState<string | null>(null), [verlaufPlan, setVerlaufPlan] = useState<StromPlan | null>(null);
@@ -63,7 +68,7 @@ export function usePlanStrom({ project, live, ereignisNr, onFehler }: { project:
 
   const laden = useCallback(async () => {
     const d = await json('/api/main-agent/editor/plan-strom?project=' + q(project));
-    setAktiv(d.aktiv === true); setDebug(d.debug ?? null);
+    setAktiv(d.aktiv === true); setLeinwand(d.aktiv === true && d.leinwand === true); setDebug(d.debug ?? null);
     if (d.aktiv !== true) return;
     const s = Number(d.offen_sekunden); if (Number.isFinite(s) && s > 0) setOffenSek(s);
     const t = Date.now();
@@ -73,7 +78,7 @@ export function usePlanStrom({ project, live, ereignisNr, onFehler }: { project:
 
   // Projektwechsel: Gedaechtnis und Auswahl neu, erster Abruf (auch ohne Live, damit der Schalterstand bekannt ist).
   useEffect(() => {
-    gedaechtnis.current = new PlanStromGedaechtnis(); setAktiv(false); setOffenId(null); setVerlaufPlan(null); setVerlaufAn(false);
+    gedaechtnis.current = new PlanStromGedaechtnis(); setAktiv(false); setLeinwand(false); setOffenId(null); setVerlaufPlan(null); setVerlaufAn(false);
     setVerlauf({ plaene: [], naechste: null, laedt: false }); setSchatten({}); setErgebnis(null);
     let lebt = true; void laden().catch(e => { if (lebt) fehlerRef.current(String(e)); });
     return () => { lebt = false; };
@@ -133,8 +138,9 @@ export function usePlanStrom({ project, live, ereignisNr, onFehler }: { project:
   // Die zuletzt geladenen Schatten bleiben stehen („Letzter Schatten“), das Ergebnis kommt dazu.
   // H2: je Datei Signatur und Zeitpunkt des letzten Schatten-Abrufs; ein Wecker holt gedrosselte Abrufe nach.
   const schattenStand = useRef(new Map<string, { sig: string; zeit: number }>());
-  const [schattenWecker, setSchattenWecker] = useState(0);
-  useEffect(() => { setSchatten({}); setErgebnis(null); setDetailLaedt(false); schattenStand.current = new Map(); }, [offenId]);
+  const [schattenWecker, setSchattenWecker] = useState(0), [schattenMax, setSchattenMax] = useState(SCHATTEN_MAX_DATEIEN);
+  const mehrSchatten = useCallback(() => setSchattenMax(n => n + SCHATTEN_MAX_DATEIEN), []);
+  useEffect(() => { setSchatten({}); setErgebnis(null); setDetailLaedt(false); schattenStand.current = new Map(); setSchattenMax(SCHATTEN_MAX_DATEIEN); }, [offenId]);
   const sig = offenerPlan ? offenerPlan.id + '|' + offenerPlan.zustand + '|' + offenerPlan.ops.length : '';
   const schattenTakt = offenerPlan?.zustand === 'entsteht' ? stand : 0;
   useEffect(() => {
@@ -144,7 +150,7 @@ export function usePlanStrom({ project, live, ereignisNr, onFehler }: { project:
       // H2: nur Dateien mit geaenderten Ops (bzw. erstmals oder nach SCHATTEN_AUFFRISCHEN_MS), je Datei hoechstens 1 Abruf pro Sekunde.
       // Ergebnisse gelten, solange derselbe Plan offen ist (ein neuer Abgleich verwirft laufende Abrufe nicht).
       const t = Date.now(), sigVon = (f: string) => dateiSignatur(p, f);
-      const { jetzt: faellig, naechste } = schattenFaellig(p.dateien.slice(0, SCHATTEN_MAX_DATEIEN), sigVon, schattenStand.current, t);
+      const { jetzt: faellig, naechste } = schattenFaellig(p.dateien.slice(0, schattenMax), sigVon, schattenStand.current, t);
       if (naechste !== null) wecker = window.setTimeout(() => setSchattenWecker(n => n + 1), Math.max(50, naechste - t + 10));
       if (faellig.length) {
         for (const f of faellig) schattenStand.current.set(f, { sig: sigVon(f), zeit: t });
@@ -166,11 +172,11 @@ export function usePlanStrom({ project, live, ereignisNr, onFehler }: { project:
     }
     return () => { lebt = false; if (wecker !== null) window.clearTimeout(wecker); };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sig/schattenTakt/schattenWecker fassen offenerPlan zusammen
-  }, [sig, schattenTakt, schattenWecker, project]);
+  }, [sig, schattenTakt, schattenWecker, schattenMax, project]);
 
   const eintraege = useMemo(() => gedaechtnis.current.sichtbar(jetzt, offenMs, offenId), [jetzt, stand, offenMs, offenId]);
   return {
-    aktiv, live, offenMs, eintraege, anzahlEntstehend: eintraege.filter(e => e.phase === 'entsteht').length,
+    aktiv, live, offenMs, leinwand, schattenMax, mehrSchatten, eintraege, anzahlEntstehend: eintraege.filter(e => e.phase === 'entsteht').length,
     offenId, offenerPlan, umschalten, schliessen, animationFertig,
     verlaufAn, setVerlaufAn, verlauf, verlaufMehr, verlaufOeffnen, schatten, ergebnis, detailLaedt, debug,
   };
@@ -248,7 +254,7 @@ export function PlanStromDetail({ strom }: { strom: PlanStrom }) {
   if (!p) return null;
   const entsteht = p.zustand === 'entsteht', ergebnis = strom.ergebnis;
   const dateien = [...new Set([...p.dateien, ...(ergebnis?.dateien.map(d => d.file_path) ?? [])])];
-  const ohneSchatten = entsteht ? dateien.slice(SCHATTEN_MAX_DATEIEN) : [];
+  const ohneSchatten = entsteht ? dateien.slice(strom.schattenMax) : [];
   return <section className="ed-strom-detail" data-zustand={p.zustand} aria-label={'Plan ' + p.id}>
     <header>
       <span className="ed-auge">Plan {p.id}</span><strong>{p.owner_agent_id || 'unbekannt'}</strong>
@@ -275,7 +281,10 @@ export function PlanStromDetail({ strom }: { strom: PlanStrom }) {
           </div>
         </article>;
       })}
-      {ohneSchatten.length > 0 && <p className="ed-leer-text">Weitere {dateienText(ohneSchatten.length)} ohne Schatten (mehr als {SCHATTEN_MAX_DATEIEN}): {ohneSchatten.map(dateiname).join(', ')}</p>}
+      {ohneSchatten.length > 0 && <div className="ed-strom-mehr">
+        <p className="ed-leer-text">+{dateienText(ohneSchatten.length)} ohne geladenen Schatten: {ohneSchatten.map(dateiname).join(', ')}</p>
+        <button type="button" className="ed-knopf breit" onClick={strom.mehrSchatten}><span aria-hidden="true">↓</span>Nächste {dateienText(Math.min(SCHATTEN_MAX_DATEIEN, ohneSchatten.length))} laden</button>
+      </div>}
       {!dateien.length && <p className="ed-leer-text">Der Plan hat noch keine Datei.</p>}
     </div>
   </section>;

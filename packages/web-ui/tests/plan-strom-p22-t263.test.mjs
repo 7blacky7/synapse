@@ -121,14 +121,14 @@ ok(!/style=\{\{(?! '--offen-ms')/.test(ps), 'P22-T263 PlanStrom.tsx: keine Inlin
   const spaeter = L.schattenFaellig(p2.dateien, sig2, stand, t0 + L.SCHATTEN_TAKT_MS);
   ok(spaeter.jetzt.length === 1 && spaeter.jetzt[0] === 'src/a0.ts', 'P22-T263 H2 schattenFaellig: nach dem Takt NUR die geaenderte Datei', spaeter);
   ok(L.SCHATTEN_TAKT_MS >= 1000, 'P22-T263 H2: hoechstens 1 Abruf je Datei und Sekunde', L.SCHATTEN_TAKT_MS);
-  ok(ps.includes('schattenFaellig(p.dateien.slice(0, SCHATTEN_MAX_DATEIEN), sigVon, schattenStand.current, t)') && ps.includes('faellig.map(async (f)') && !ps.includes('p.dateien.slice(0, SCHATTEN_MAX_DATEIEN).map(async'),
+  ok(ps.includes('schattenFaellig(p.dateien.slice(0, schattenMax), sigVon, schattenStand.current, t)') && ps.includes('faellig.map(async (f)') && !ps.includes('p.dateien.slice(0, SCHATTEN_MAX_DATEIEN).map(async'),
     'P22-T263 H2 PlanStrom.tsx: Detail laedt nur faellige Schatten (nicht mehr alle je Abgleich)');
   ok(ps.includes('setSchattenWecker(n => n + 1)') && ps.includes('if (wecker !== null) window.clearTimeout(wecker)'), 'P22-T263 H2 PlanStrom.tsx: gedrosselte Abrufe holt ein Wecker nach, Aufraeumen beim Wechsel');
 }
 const t = lies('packages/web-ui/src/components/ProjektEditor.tsx');
 ok(t.includes("import { usePlanStrom, PlanStromListe, PlanStromDetail } from './editor/PlanStrom';") && t.includes('const strom=usePlanStrom({project,live,ereignisNr,onFehler:setFehler});'), 'P22-T263 ProjektEditor.tsx: Hook eingebunden');
 ok(t.includes('source.onmessage=()=>{setEreignisNr(n=>n+1);'), 'P22-T263 ProjektEditor.tsx: bestehender SSE-Strom stoesst den Plan-Strom an (keine zweite Verbindung)');
-ok(t.includes("{seite==='live'&&strom.aktiv\n     ? <PlanStromListe strom={strom} pfad={pfad}/>") && t.includes('{strom.aktiv&&<PlanStromDetail strom={strom}/>}'), 'P22-T263 ProjektEditor.tsx: Strom nur bei strom.aktiv, sonst Ansicht P22-T262');
+ok(t.includes("{seite==='live'&&strom.aktiv\n     ? <PlanStromListe strom={strom} pfad={pfad}/>") && t.includes('{strom.aktiv&&!zu&&<PlanStromDetail strom={strom}/>}'), 'P22-T263 ProjektEditor.tsx: Strom nur bei strom.aktiv, sonst Ansicht P22-T262 (Detail nicht auf der Leinwand)');
 ok(t.includes('ed-plan nachklang') && t.includes('Number(d.nachleuchten_sekunden)*1000'), 'P22-T263 ProjektEditor.tsx: Schalter AUS = bisheriges Nachleuchten unveraendert');
 ok(t.includes('Mein Plan') && t.includes("json('/api/main-agent/editor/user-plan',{method:'POST'"), 'P22-T263/T264 ProjektEditor.tsx: Speichern-Teil liegt bei P22-T264 (User-Plan), Strom unabhaengig davon');
 
@@ -150,7 +150,7 @@ ok(dienst.includes('maskiereDatei(z.file_path, z.vorher)') && dienst.includes('m
 const rt = lies('packages/rest-api/src/routes/agent-runtimes.ts');
 for (const r of ['/api/main-agent/editor/plan-strom', '/api/main-agent/editor/plan-verlauf', '/api/main-agent/editor/plan-ergebnis'])
   ok(rt.includes("'" + r + "'"), 'P22-T263 agent-runtimes.ts: Route ' + r);
-ok(rt.includes("leseUiProduktSchalter('editor_plan_strom', project)") && rt.includes('aktiv:editor.aktiv && !editor.letzter_fehler && strom.aktiv && !strom.letzter_fehler'), 'P22-T263 agent-runtimes.ts: Routen pruefen editor_modul UND editor_plan_strom');
+ok(rt.includes("leseUiProduktSchalter('editor_plan_strom', project)") && rt.includes('const aktiv=editor.aktiv && !editor.letzter_fehler && strom.aktiv && !strom.letzter_fehler'), 'P22-T263 agent-runtimes.ts: Routen pruefen editor_modul UND editor_plan_strom');
 ok(!/fastify\.put[^\n]*editor\/einstellungen/.test(rt), 'P22-T263 agent-runtimes.ts: kein eigener Einstellweg (Setzen ueber admin agentennetzwerk einstellen)');
 
 console.log('OK P22-T263 Editor-Plan-Strom: ' + n + ' Pruefungen');

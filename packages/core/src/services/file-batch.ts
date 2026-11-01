@@ -7940,6 +7940,34 @@ export async function getCodeIntelSchatten(plan: Parameters<typeof ladeSchattenS
   };
 }
 
+/**
+ * P22-T263 Leinwand (User 01.11.2026, thought ad8d1f41): Plan-Schatten je Datei VOLLSTAENDIG fuer die Editor-Leinwand.
+ * Basis und Endstand ungekuerzt (unmaskiert; maskiert wird in editor-plan-strom.ts), Zeilen-Diff mit Hunks (3 Zeilen Umfeld),
+ * je Hunk die erzeugenden Ops und die nicht anwendbaren Ops mit Grund. Nur lesend, dieselbe Op-Anwendung wie plan_status.
+ */
+export async function planSchattenVollstaendig(plan: Parameters<typeof ladeSchattenStand>[0]): Promise<{
+  dateien: Array<{
+    file_path: string; basis: string; ergebnis: string | null; d: DateiDiff | null; hunk_ops: number[][]; ops: number[];
+    neu: boolean; geloescht: boolean; drift?: string; zu_gross?: number;
+  }>;
+  nicht_anwendbar: Array<{ op_index: number; file_path: string; fehler: string }>;
+} | { fehler: string }> {
+  const stand = await ladeSchattenStand(plan);
+  if ('fehler' in stand) return { fehler: stand.fehler };
+  const ops = Array.isArray(plan.ops) ? plan.ops : [];
+  return {
+    dateien: schattenDateien(stand, ops).map((s) => {
+      const buf = stand.buffers.get(s.file_path);
+      return {
+        file_path: s.file_path, basis: stand.basen.get(s.file_path) ?? '', ergebnis: buf && !buf.deleted ? buf.finalContent : null,
+        d: s.d, hunk_ops: s.hunkOps, ops: s.ops, neu: s.neu, geloescht: s.geloescht,
+        ...(s.drift ? { drift: s.drift } : {}), ...(s.zu_gross ? { zu_gross: s.zu_gross } : {}),
+      };
+    }),
+    nicht_anwendbar: stand.angewendet.fehler.map((f) => ({ op_index: f.index, file_path: ops[f.index]?.file_path ?? '', fehler: f.message })),
+  };
+}
+
 /** plan_status-Antwort mit Diff je Datei ueber alle Ops (MCP-Server und REST-API). */
 export async function buildPlanStatusResponseMitDiff(plan: FileBatchPlanRow): Promise<Record<string, unknown>> {
   const antwort = buildPlanStatusResponse(plan);

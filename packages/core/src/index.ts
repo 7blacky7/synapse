@@ -4,7 +4,7 @@ export { editorDiffOps } from './services/editor-plan-diff.js';
 
 export { erstelleEditorAbbild, leseEditorAbbild, leseEditorAbbildDatei } from './services/editor-abbild.js';
 // P22-T263: Editor-Plan-Strom aus PG (Schalter editor_plan_strom, Einstellung editor_plan_offen_sekunden).
-export { EDITOR_PLAN_STROM_FUNKTION, EDITOR_PLAN_STROM_GRENZEN, editorPlanZustand, editorStromPlan, leseEditorPlanOffen, leseEditorPlanStrom, leseEditorPlanVerlauf, leseEditorPlanErgebnis } from './services/editor-plan-strom.js';
+export { EDITOR_PLAN_STROM_FUNKTION, EDITOR_PLAN_STROM_GRENZEN, editorPlanZustand, editorStromPlan, leseEditorPlanOffen, leseEditorPlanStrom, leseEditorPlanVerlauf, leseEditorPlanErgebnis, EDITOR_PLAN_LEINWAND_FUNKTION, leseEditorPlanAenderungen } from './services/editor-plan-strom.js';
 
 export * from './services/api-agent-auswahl.js';
 export { userChannelUngelesen, userChannelGelesen } from './services/channel-unread.js';
@@ -170,6 +170,8 @@ export { reverseBisSchichtGrenze, begrenzeReverseSchicht } from './services/reve
 export { REVERSE_EXECUTOR_UNTERSTUETZT, meldeReverseAusfuehrer, reverseAusfuehrer, reverseKindAusfuehrbar, zerlegeReverseFehlercode, reverseFehlerDeterministisch } from './services/reverse-ausfuehrer.js';
 export type { ReverseAusfuehrerInfo } from './services/reverse-ausfuehrer.js';
 export { diagnoseReverse, entstoereReverse, starteReverseEntstoerer, REVERSE_URSACHEN, REVERSE_ENTSTOERBAR } from './services/reverse-entstoerer.js';
+// P22-T245 Nacharbeit: gemeinsame Drossel/Betriebsvorrang fuer E- und Leser-Executor (rest-api).
+export { reverseDrosselTor, reverseDrosselBuche, reverseDrosselStand, type ReverseDrosselKanal } from './services/reverse-einmalig.js';
 
 // P18-T12/RV2: feste interne Bereiche für Projekt- und Reverse-Abfragen.
 export { PROJEKT_BEREICH, REVERSE_BEREICH, ASSET_BEREICH, REVERSE_ASSET_BEREICH } from './services/intel-bereich.js';
@@ -254,7 +256,7 @@ export type {
   WirksameAssetProjektoptionen,
   TransferFormatErgebnis,
 } from './config/asset-konfig.js';
-export { leseAssetTransferGenerisch, leseAssetIndexWirklichkeit, ASSET_TRANSFER_GENERISCH, ASSET_INDEX_WIRKLICHKEIT } from './services/asset-transfer-generisch.js';
+export { leseAssetTransferGenerisch, ASSET_TRANSFER_GENERISCH } from './services/asset-transfer-generisch.js';
 export type { AssetTransferGenerischStand, AssetSchalterStand } from './services/asset-transfer-generisch.js';
 // P22-T236: Projekt-Assets 'Index = Wirklichkeit' (lokal entfernte Assets melden, Altbestand).
 export { meldeAssetQuellenFehlen, pruefeAssetAltbestand, ausgeblendeteAssetPfade } from './services/asset-altbestand.js';
@@ -1207,6 +1209,9 @@ export {
 } from './services/agent-entfernung.js';
 export type { EntfernungKandidat, EntfernungAusnahme, EntfernungErmittlung, EntfernungSchalter, EntfernungSchwelle, ArchivVerweis } from './services/agent-entfernung.js';
 export { AGENT_ENTFERNUNG_SCHEMA_SQL, AGENT_UMBENENNUNG_SCHEMA_SQL } from './db/agent-entfernung-schema.js';
+// P27-T11: Altbestand in Warteschlangen ausblenden (admin warteschlangen_aufraeumen).
+export { WARTESCHLANGEN_ALTBESTAND_SCHEMA_SQL } from './db/warteschlangen-altbestand-schema.js';
+export { WS_ALTBESTAND_FUNKTION, WS_ALTBESTAND_ADMIN_ACTIONS, WS_ALTBESTAND_ADMIN_PARAMETER, istWsAltbestandAdminAction, fuehreWsAltbestandAdminAus, ermittleWsAltbestand, leseWsAltbestandStatus, inboxNichtAusgeblendet } from './services/warteschlangen-altbestand.js';
 // P22-T173: Identitaet umbenennen (Ausweis bleibt), fruehere Namen als Aliase.
 export { AGENT_UMBENENNUNG_FUNKTION, AGENT_NAME_MUSTER, pruefeNeuenAgentNamen, benenneIdentitaetUm } from './services/agent-umbenennung.js';
 export type { UmbenennungErgebnis } from './services/agent-umbenennung.js';

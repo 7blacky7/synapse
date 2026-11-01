@@ -3,6 +3,8 @@ import { apiFetch } from '../api/auth';
 import '../editor-p22-t256.css';
 // P22-T263: Editor-Live-Plan als durchgehender Strom aus PG (Schalter editor_plan_strom; AUS = Live-Pläne je Datei wie unten).
 import { usePlanStrom, PlanStromListe, PlanStromDetail } from './editor/PlanStrom';
+// P22-T263 Leinwand (Schalter editor_plan_leinwand): Explorer einklappbar, eingeklappt zeigt die Mitte den Plan-Strom vollständig.
+import { PlanLeinwand } from './editor/PlanLeinwand';
 // P22-T266: Syntax-Hervorhebung (Schalter editor_syntax; CodeMirror nur per dynamischem import in editor/syntax.ts).
 import { leseArbeitsbereichSchalter } from '../api/arbeitsbereich-schalter';
 import { CodeFeld } from './editor/CodeFeld';
@@ -20,6 +22,8 @@ async function json(url:string, init?:RequestInit):Promise<any> {
   return d;
 }
 const q=(v:string)=>encodeURIComponent(v);
+/** P22-T263 Leinwand: eingeklappter Explorer nur als Komfort im Browser gemerkt (fehlt der Speicher, ist er offen). */
+const EXPLORER_ZU='synapse.editor.explorer_zu';
 
 /*
  * P22-T262 Gestaltung (claude-linde): Bedienung wie VS Code - Explorer (Baum + Filter) links, Reiter, Pfadzeile und Code mit
@@ -69,7 +73,7 @@ export function ProjektEditor({project}:{project:string}) {
  const offeneRef=useRef<Plan[]>([]), timers=useRef<number[]>([]);
  const [fehler,setFehler]=useState(''),[info,setInfo]=useState(''),[busy,setBusy]=useState(false),[live,setLive]=useState(true);
  const [userPlan,setUserPlan]=useState<UserPlan|null>(null),[pruefText,setPruefText]=useState('');
- const [vergleich,setVergleich]=useState<{basis:string|null;entwurf:string|null;aktuell:string|null;konflikt:boolean;file_path?:string}|null>(null);
+ const [vergleich,setVergleich]=useState<{basis:string|null;entwurf:string|null;aktuell:string|null;konflikt:boolean;file_path?:string;nicht_anwendbar?:Array<{op_index:number;file_path:string;fehler:string}>}|null>(null);
  const [ereignisNr,setEreignisNr]=useState(0);
  // P22-T266: Syntax-Hervorhebung (Schalter editor_syntax, Standard AUS; AUS = Textfeld und Klartext wie P22-T262).
  const [syntaxAn,setSyntaxAn]=useState(false);
@@ -116,6 +120,12 @@ export function ProjektEditor({project}:{project:string}) {
  const [reiter,setReiter]=useState<string[]>([]),[offen,setOffen]=useState<Set<string>>(()=>new Set()),[filter,setFilter]=useState(''),[seite,setSeite]=useState<'live'|'userplan'>('live');
  const zeilenRef=useRef<HTMLPreElement>(null);
  const strom=usePlanStrom({project,live,ereignisNr,onFehler:setFehler});
+ // P22-T263 Leinwand (User ad8d1f41): nur mit Schalter editor_plan_leinwand lässt sich der Explorer einklappen; eingeklappt zeigt die
+ // Mitte statt Reiter und Code den Plan-Strom vollständig (PlanLeinwand). Schalter AUS = Editor wie bisher.
+ const leinwandAn=strom.aktiv&&strom.leinwand;
+ const [explorerZu,setExplorerZu]=useState(()=>{try{return localStorage.getItem(EXPLORER_ZU)==='1';}catch{return false;}});
+ const explorerUmschalten=()=>setExplorerZu(v=>{try{localStorage.setItem(EXPLORER_ZU,v?'0':'1');}catch{/* nur Komfort */}return !v;});
+ const zu=leinwandAn&&explorerZu;
  useEffect(()=>{setReiter([]);setOffen(new Set());setFilter('');},[project]);
  const baum=useMemo(()=>baueBaum(dateien),[dateien]);
  const treffer=useMemo(()=>{const f=filter.trim().toLowerCase();return f?dateien.filter(p=>p.toLowerCase().includes(f)).slice(0,400):null;},[dateien,filter]);
@@ -154,7 +164,7 @@ export function ProjektEditor({project}:{project:string}) {
   ...k.dateien.map(p=>dateiKnopf(p,tiefe,false)),
  ];
 
- return <SyntaxAn.Provider value={syntaxAn}><section className="projekt-editor" data-syntax={syntaxAn?'an':'aus'} data-abbild={freeze??''} data-modus={modus} data-live={live?'an':'aus'} data-reiter={reiter.length} data-strom={strom.aktiv?'an':'aus'} onKeyDown={taste}>
+ return <SyntaxAn.Provider value={syntaxAn}><section className="projekt-editor" data-syntax={syntaxAn?'an':'aus'} data-abbild={freeze??''} data-modus={modus} data-live={live?'an':'aus'} data-reiter={reiter.length} data-strom={strom.aktiv?'an':'aus'} data-leinwand={leinwandAn?'an':'aus'} onKeyDown={taste}>
   {/* User 01.11. (34584): keine Überschrift mehr, Baum und Code bekommen den Platz; Schalter und Status bleiben in einer schmalen Werkzeugzeile. */}
   <header className="ed-kopf" aria-label="Editor-Werkzeuge">
    <span className="ed-projekt-chip" title="Projekt im Editor"><span aria-hidden="true">▤</span>{project}</span>
@@ -174,16 +184,20 @@ export function ProjektEditor({project}:{project:string}) {
   {info&&<p className="ed-hinweis" role="status"><span>{info}</span><button type="button" aria-label="Hinweis schließen" onClick={()=>setInfo('')}>×</button></p>}
   {fehler&&<p className="ed-hinweis fehler" role="alert"><span>{fehler}</span><button type="button" aria-label="Fehlermeldung schließen" onClick={()=>setFehler('')}>×</button></p>}
 
-  <div className="ed-werkbank">
-   <nav className="ed-explorer" aria-label="Projektdateien">
-    <div className="ed-leiste"><span>Explorer</span><b>{dateien.length}</b></div>
+  <div className="ed-werkbank" data-explorer={zu?'zu':'offen'}>
+   {zu ? <nav className="ed-explorer zu" aria-label="Projektdateien">
+    <button type="button" className="ed-explorer-schiene" aria-expanded={false} onClick={explorerUmschalten} title="Explorer einblenden: die Mitte zeigt wieder den Code">
+     <span className="ed-schiene-pfeil" aria-hidden="true">›</span><span className="ed-schiene-text">Explorer</span><b>{dateien.length}</b></button>
+   </nav> : <nav className="ed-explorer" aria-label="Projektdateien">
+    <div className="ed-leiste"><span>Explorer</span><b>{dateien.length}</b>{leinwandAn&&<button type="button" className="ed-einklappen" aria-expanded={true} onClick={explorerUmschalten} title="Explorer einklappen: die Mitte zeigt die File-Pläne mit allen Änderungen als Strom"><span aria-hidden="true">‹</span></button>}</div>
     <input className="ed-filter" type="search" value={filter} onChange={e=>setFilter(e.target.value)} placeholder="Datei suchen …" aria-label="Dateien filtern" spellCheck={false}/>
     <ul className="ed-baum">{treffer?treffer.map(p=>dateiKnopf(p,0,true)):zweig(baum,0)}</ul>
     {treffer&&!treffer.length&&<p className="ed-leer-text">Keine Datei passt.</p>}
     {!dateien.length&&!fehler&&<p className="ed-leer-text laedt">Projektindex lädt</p>}
-   </nav>
+   </nav>}
 
    <div className="ed-mitte">
+    {zu?<PlanLeinwand strom={strom} project={project}/>:<>
     <div className="ed-reiter" role="tablist" aria-label="Geöffnete Dateien">{reiter.map(p=>{const dirty=p===pfad?geaendert:entwurfVon(p)!==undefined;
      return <div key={p} className={'ed-reiter-eintrag'+(p===pfad?' aktiv':'')+(dirty?' geaendert':'')}>
       <button type="button" role="tab" aria-selected={p===pfad} title={p} onClick={()=>setPfad(p)} onAuxClick={e=>{if(e.button===1)schliessen(p);}}>{dateiname(p)}</button>
@@ -200,15 +214,17 @@ export function ProjektEditor({project}:{project:string}) {
      : <div className="ed-leer">{pfad
        ? <p className="laedt">{dateiname(pfad)} lädt</p>
        : <><strong>Keine Datei offen</strong><p>Links im Explorer eine Datei wählen. Im Freeze ändern und mit <kbd>Strg</kbd>+<kbd>S</kbd> in deinem files-Plan speichern.</p></>}</div>}
+    </>}
     {vergleich&&<section className={'ed-vergleich'+(vergleich.konflikt?' konflikt':'')} aria-label="Drei-Wege-Vergleich">
      <header><span className="ed-auge">Drei-Wege-Vergleich</span><strong>{vergleich.konflikt?'Konflikt mit aktuellem Stand':'Abbildbasis stimmt mit aktuellem Stand überein'}</strong>
       <button type="button" className="ed-mini" onClick={()=>setVergleich(null)}>Schließen</button></header>
+     {!!vergleich.nicht_anwendbar?.length&&<ul className="ed-vergleich-na" aria-label="Nicht anwendbare Ops">{vergleich.nicht_anwendbar.map(n=><li key={n.op_index}><b>Op #{n.op_index} nicht anwendbar</b><span>{n.fehler}</span></li>)}</ul>}
      <div className="ed-vergleich-raster">
       <DreiWegeSpalte titel="Abbildbasis" text={vergleich.basis} bezug={bezug?.entwurf??null} art="basis" pfad={vergleich.file_path||pfad}/>
       <DreiWegeSpalte titel="User-Entwurf" text={vergleich.entwurf} bezug={bezug?.basis??null} art="entwurf" pfad={vergleich.file_path||pfad}/>
       <DreiWegeSpalte titel="Aktueller Stand" text={vergleich.aktuell} bezug={bezug?.basis??null} art="aktuell" pfad={vergleich.file_path||pfad}/>
      </div></section>}
-    {strom.aktiv&&<PlanStromDetail strom={strom}/>}
+    {strom.aktiv&&!zu&&<PlanStromDetail strom={strom}/>}
    </div>
 
    <aside className="ed-inspektor" aria-label="Pläne und Prüfungen">

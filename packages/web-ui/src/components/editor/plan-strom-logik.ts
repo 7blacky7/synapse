@@ -157,3 +157,102 @@ export function schattenFaellig(dateien: string[], sig: (datei: string) => strin
   }
   return { jetzt: faellig, naechste };
 }
+
+/*
+ * P22-T263 Leinwand (User 01.11.2026, thought ad8d1f41): Explorer eingeklappt -> die Mitte zeigt die Plaene des Stroms mit ihren
+ * Aenderungen als durchgehenden Strom, VOLLSTAENDIG statt gekuerzt. Hier nur die reine Logik der Leinwand (Diff-Stuecke, Abruf-Takt,
+ * Mitlaufen). Die Hunks rechnet der Server (core editor-plan-strom.ts leseEditorPlanAenderungen ueber file-diff.ts dateiDiff).
+ */
+export interface LeinwandBereich { a0: number; a1: number; b0: number; b1: number }
+export interface LeinwandHunk extends LeinwandBereich { bereiche: LeinwandBereich[]; ops: number[] }
+export interface LeinwandDatei {
+  file_path: string; vorher: string | null; nachher: string | null; neu: boolean; geloescht: boolean; maskiert: boolean;
+  hunks: LeinwandHunk[]; plus: number; minus: number; ops: number[]; drift: string | null; nur_zeilenenden: boolean;
+  /** Summen-Grenze der Server-Antwort: Inhalt fehlt, per datei=<pfad> nachladen. */
+  zurueckgestellt: boolean;
+  zu_gross: number | null; quelle: 'schatten' | 'commit';
+}
+export interface LeinwandNichtAnwendbar { op_index: number; file_path: string; fehler: string }
+export interface LeinwandDaten { dateien: LeinwandDatei[]; nicht_anwendbar: LeinwandNichtAnwendbar[]; quelle: string; hinweise: string[] }
+/** Hoechstens so viele Plan-Abrufe der Leinwand gleichzeitig. */
+export const LEINWAND_PARALLEL = 3;
+/** So nah (px) am unteren Rand gilt die Leinwand als "unten": dann laeuft sie mit neuen Plaenen mit. */
+export const LEINWAND_FOLGEN_PX = 48;
+
+/** Zeilen wie file-diff.ts anzeigeZeilen (\r am Ende nur fuer die Anzeige weg) - dieselben Indizes wie die Server-Hunks. */
+export function anzeigeZeilen(text: string): string[] {
+  return text.split('\n').map((z) => (z.endsWith('\r') ? z.slice(0, -1) : z));
+}
+
+export type DiffZeile = { art: 'gleich' | 'weg' | 'neu'; a: number | null; b: number | null };
+export type DiffStueck =
+  | { art: 'hunk'; index: number; ops: number[]; kopf: string; zeilen: DiffZeile[] }
+  | { art: 'umfeld'; schluessel: string; zeilen: DiffZeile[] }
+  | { art: 'luecke'; schluessel: string; a0: number; b0: number; anzahl: number };
+
+/** Zeilen eines Hunks in Anzeige-Reihenfolge: Umfeld, je Bereich erst entfernt, dann neu (wie hunkZeilen in file-diff.ts). 0-basiert. */
+export function hunkZeilen(h: LeinwandHunk): DiffZeile[] {
+  const out: DiffZeile[] = [];
+  let a = h.a0, b = h.b0;
+  for (const r of h.bereiche) {
+    for (; a < r.a0; a++, b++) out.push({ art: 'gleich', a, b });
+    for (let i = r.a0; i < r.a1; i++) out.push({ art: 'weg', a: i, b: null });
+    for (let j = r.b0; j < r.b1; j++) out.push({ art: 'neu', a: null, b: j });
+    a = r.a1; b = r.b1;
+  }
+  for (; a < h.a1; a++, b++) out.push({ art: 'gleich', a, b });
+  return out;
+}
+/** Kopf wie im Unified-Diff: @@ -a,n +b,m @@ (1-basiert). */
+export function hunkKopf(h: LeinwandBereich): string {
+  const n = h.a1 - h.a0, m = h.b1 - h.b0;
+  return '@@ -' + (n ? h.a0 + 1 : h.a0) + ',' + n + ' +' + (m ? h.b0 + 1 : h.b0) + ',' + m + ' @@';
+}
+/**
+ * Ganze Datei als Stuecke: jeder Hunk vollstaendig, die unveraenderten Strecken dazwischen (auch Anfang/Ende) als Luecke, die sich
+ * aufklappen laesst (offen(schluessel) = als Zeilen). Nichts faellt weg: Hunks + Luecken decken die alte Datei lueckenlos ab.
+ */
+export function diffStuecke(hunks: LeinwandHunk[], altLaenge: number, offen: (schluessel: string) => boolean): DiffStueck[] {
+  const out: DiffStueck[] = [];
+  let a = 0, b = 0;
+  const strecke = (bisA: number) => {
+    const n = bisA - a;
+    if (n <= 0) return;
+    const schluessel = a + ':' + b;
+    if (offen(schluessel)) out.push({ art: 'umfeld', schluessel, zeilen: Array.from({ length: n }, (_, k) => ({ art: 'gleich' as const, a: a + k, b: b + k })) });
+    else out.push({ art: 'luecke', schluessel, a0: a, b0: b, anzahl: n });
+  };
+  hunks.forEach((h, k) => {
+    strecke(h.a0);
+    out.push({ art: 'hunk', index: k, ops: h.ops, kopf: hunkKopf(h), zeilen: hunkZeilen(h) });
+    a = h.a1; b = h.b1;
+  });
+  strecke(altLaenge);
+  return out;
+}
+/** Signatur eines Plans fuer die Leinwand (Zustand + Ops mit Zustand); aendert sie sich, ist er neu zu laden. */
+export function leinwandSignatur(p: Pick<StromPlan, 'zustand' | 'ops'>): string {
+  return p.zustand + '|' + p.ops.map((o) => o.i + ':' + o.action + ':' + (o.zustand ?? '')).join(',');
+}
+/**
+ * Faellige Leinwand-Abrufe (Last wie H2): neu bzw. mit geaenderter Signatur hoechstens 1 Abruf je Plan und SCHATTEN_TAKT_MS;
+ * entstehende Plaene zusaetzlich alle SCHATTEN_AUFFRISCHEN_MS (plan_update kann Inhalte ohne neue Metadaten aendern);
+ * beendete Plaene mit gleicher Signatur nie wieder.
+ */
+export function leinwandFaellig(plaene: Array<Pick<StromPlan, 'id' | 'zustand' | 'ops'>>, stand: SchattenStand, jetzt: number): { jetzt: string[]; naechste: number | null } {
+  const sig = new Map(plaene.map((p) => [p.id, leinwandSignatur(p)] as const));
+  const kandidaten = plaene.filter((p) => p.zustand === 'entsteht' || stand.get(p.id)?.sig !== sig.get(p.id)).map((p) => p.id);
+  return schattenFaellig(kandidaten, (id) => sig.get(id) ?? '', stand, jetzt);
+}
+/**
+ * User-Entscheidung cc9c22eb (01.11.2026): fertige Plaene verlassen die Live-Leinwand nach dem Offen-Fenster, der VERLAUF bleibt.
+ * Aufgeklappte Plaene des Verlaufs (aus PG, plan-verlauf) als feste Eintraege fuer die Leinwand: Phase immer 'abgeschlossen', kein
+ * Offen-Fenster, nichts blendet aus; Reihenfolge wie im Verlauf (neueste zuerst).
+ */
+export function verlaufAlsEintraege(plaene: StromPlan[], offen: ReadonlySet<string>): Array<StromEintrag & { phase: StromPhase }> {
+  return plaene.filter((p) => offen.has(p.id)).map((p) => ({ plan: p, gesehen: 0, ende: 0, animation_fertig: 0, geschlossen: null, phase: 'abgeschlossen' as const }));
+}
+/** Steht die Leinwand (fast) unten? Dann laeuft sie mit, sonst bleibt sie, wo der User liest. */
+export function amEnde(scrollHeight: number, scrollTop: number, clientHeight: number, toleranz = LEINWAND_FOLGEN_PX): boolean {
+  return scrollHeight - scrollTop - clientHeight <= toleranz;
+}

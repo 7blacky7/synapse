@@ -51,6 +51,8 @@ import { leseAgentHeartbeatFenster, setzeAgentHeartbeatFenster } from '@synapse/
 import { leseVerweis } from '../services/verweise.js';
 // P22-T263: Editor-Plan-Strom aus PG (Strom, Verlauf, Commit-Ergebnis).
 import { leseEditorPlanStrom, leseEditorPlanVerlauf, leseEditorPlanErgebnis } from '@synapse/core';
+// P22-T263 Leinwand (User ad8d1f41): Aenderungen eines Plans vollstaendig fuer die Editor-Leinwand.
+import { leseEditorPlanAenderungen } from '@synapse/core';
 import { abonniereArtefaktLive, artefaktLiveStatus } from '../services/artefakt-live.js';
 import { letzterMainWegFehler } from '../services/agent-runtime/dauerhafter-main.js';
 import { gleicheCliListeMitRegistry } from '../services/agent-runtime/registry-abgleich.js';
@@ -829,9 +831,12 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
   // P22-T263 (User-Vorgabe 9a3005ff): Plan-Strom aus PG, nur lesend. Wirkt nur mit editor_modul UND editor_plan_strom (Standard AUS);
   // Strom AUS = 200 mit aktiv:false, die Web-UI zeigt dann die Live-Plaene je Datei wie P22-T262. Nur User-Session (Guard oben).
   // Offen-Fenster: editor_plan_offen_sekunden (agentennetzwerk_einstellungen, Standard 20). DEBUG: debug.schalter, debug.offen (Wert, Quelle).
+  // P22-T263 Leinwand: leinwand = zusaetzlich Schalter editor_plan_leinwand (Standard AUS); AUS = Editor ohne Einklappen und Leinwand.
   const planStromSchalter = async (project:string) => {
     const editor=await editorSchalter(project), strom=await leseUiProduktSchalter('editor_plan_strom', project);
-    return {editor,strom,aktiv:editor.aktiv && !editor.letzter_fehler && strom.aktiv && !strom.letzter_fehler};
+    const flaeche=await leseUiProduktSchalter('editor_plan_leinwand', project);
+    const aktiv=editor.aktiv && !editor.letzter_fehler && strom.aktiv && !strom.letzter_fehler;
+    return {editor,strom,flaeche,aktiv,leinwand:aktiv && flaeche.aktiv && !flaeche.letzter_fehler};
   };
   fastify.get<{Querystring:{project?:string}}>('/api/main-agent/editor/plan-strom', async (request,reply) => {
     const project=request.query.project ?? ''; if(!project)return reply.code(400).send({success:false,error:'projekt_fehlt'});
@@ -840,7 +845,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     if(!s.aktiv)return {success:true,aktiv:false,debug:{schalter:s}};
     try {
       const r=await leseEditorPlanStrom(project);
-      return {success:true,aktiv:true,plaene:r.plaene,stand:r.stand,voll:r.voll,offen_sekunden:r.offen.sekunden,
+      return {success:true,aktiv:true,leinwand:s.leinwand,plaene:r.plaene,stand:r.stand,voll:r.voll,offen_sekunden:r.offen.sekunden,
         debug:{schalter:s,offen:r.offen,fenster_sekunden:r.fenster_sekunden}};
     } catch(e) { return reply.code(500).send({success:false,error:'plan_strom_fehler',message:errorMessage(e)}); }
   });
@@ -861,6 +866,19 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       const r=await leseEditorPlanErgebnis(project,plan);
       return r ? {success:true,...r} : reply.code(404).send({success:false,error:'plan_unbekannt'});
     } catch(e) { return reply.code(500).send({success:false,error:'plan_ergebnis_fehler',message:errorMessage(e)}); }
+  });
+
+  // P22-T263 Leinwand (User ad8d1f41): Aenderungen EINES Plans vollstaendig (je Datei vorher/nachher, Hunks mit Ops, nicht anwendbare Ops).
+  // Wirkt nur mit editor_modul, editor_plan_strom UND editor_plan_leinwand (Standard AUS). datei=<pfad> laedt eine zurueckgestellte Datei
+  // einzeln nach (Summen-Grenze statt Kappen). Nur lesend, nur User-Session (Guard oben). DEBUG: debug.schalter, grenzen, hinweise.
+  fastify.get<{Querystring:{project?:string;plan?:string;datei?:string}}>('/api/main-agent/editor/plan-aenderungen', async (request,reply) => {
+    const project=request.query.project ?? '', plan=request.query.plan ?? ''; const s=await planStromSchalter(project);
+    if(!s.leinwand)return reply.code(403).send({success:false,error:'funktion_aus',debug:{schalter:s}});
+    if(!/^[0-9]+$/.test(plan))return reply.code(400).send({success:false,error:'parameter_ungueltig'});
+    try {
+      const r=await leseEditorPlanAenderungen(project,plan,{datei:request.query.datei || null});
+      return r ? {success:true,...r,debug:{schalter:s}} : reply.code(404).send({success:false,error:'plan_unbekannt'});
+    } catch(e) { return reply.code(500).send({success:false,error:'plan_aenderungen_fehler',message:errorMessage(e)}); }
   });
 
   // P22-T164: Das bestehende Auth-Modell hat genau einen interaktiven User (TOTP Single-Row).

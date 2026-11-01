@@ -1,0 +1,163 @@
+/*
+ * P22-T263 Leinwand (User-Vorgabe thought ad8d1f41, Gestaltung claude-linde). Stil wie P22-T262/T263 (editor-p22-t256.css,
+ * editor-plan-strom-p22-t263.css): 1px-Hairlines, 0-3px Ecken, IBM Plex Mono fuer Labels, Syne nur im Leerzustand, Orange als Akzent,
+ * Gruen = hinzugefuegt/committet, Rot = entfernt/verworfen. NUR Theme-Variablen, damit hell und dunkel automatisch gelten.
+ *  - Explorer einklappbar (nur mit Schalter editor_plan_leinwand): schmale Schiene mit senkrechter Beschriftung, die Spalte wird 34px.
+ *  - Leinwand: Punktraster wie der Leerzustand des Editors; je Plan eine Karte mit klebendem Kopf, allen Ops und je Datei dem
+ *    vollstaendigen Diff (zwei Zeilennummern-Spalten, +/-, Code mit Syntax-Klassen tok-* aus editor-syntax-p22-t266.css).
+ *  - Animationen: Einlauf, Abschluss auf ::after und Ausblenden nutzen die Keyframes aus editor-plan-strom-p22-t263.css
+ *    (ed-strom-rein/-abschluss/-verworfen/-raus, gleiche Dauern wie ABSCHLUSS_ANIMATION_MS und AUSBLENDEN_MS), nichts wird abgeschnitten.
+ *  - Zusaetzlich: Liste der nicht anwendbaren Ops im Drei-Wege-Vergleich (.ed-vergleich-na) und "weitere Schatten laden" (.ed-strom-mehr, H1).
+ */
+
+/* Explorer einklappen: Knopf in der Explorer-Leiste, eingeklappt eine Schiene. */
+.ed-leiste:has(.ed-einklappen) b{margin-left:auto}
+.ed-einklappen{display:grid;place-items:center;flex:none;width:22px;height:22px;margin-left:8px;padding:0;border:1px solid var(--border);border-radius:2px;background:transparent;color:var(--muted);font:500 13px/1 "IBM Plex Mono",monospace;cursor:pointer;transition:border-color .15s ease,color .15s ease}
+.ed-einklappen:hover{border-color:var(--accent);color:var(--accent)}
+.ed-werkbank[data-explorer="zu"]{grid-template-columns:34px minmax(0,1fr) minmax(250px,320px)}
+.ed-explorer.zu{align-items:stretch}
+.ed-explorer-schiene{display:flex;flex:1;flex-direction:column;align-items:center;gap:12px;width:100%;padding:10px 0;border:0;border-radius:0;background:transparent;color:var(--muted);cursor:pointer;transition:color .15s ease,background-color .15s ease}
+.ed-explorer-schiene:hover{background:var(--accent-soft);color:var(--accent)}
+.ed-schiene-pfeil{font:500 14px/1 "IBM Plex Mono",monospace}
+.ed-schiene-text{writing-mode:vertical-rl;font:700 9px "IBM Plex Mono",monospace;letter-spacing:.18em;text-transform:uppercase}
+.ed-explorer-schiene b{padding:2px 0;border-top:1px solid var(--border2);color:var(--text);font:700 10px "IBM Plex Mono",monospace;writing-mode:vertical-rl}
+.projekt-editor .ed-explorer-schiene:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
+
+/* Leinwand: ersetzt Reiter, Pfadzeile und Code; der Kopf hat dieselbe Hoehe wie die Reiterleiste. */
+.ed-lw{position:relative;display:flex;flex:1;flex-direction:column;min-height:0;background:var(--panel)}
+.ed-lw-kopf{display:flex;align-items:center;gap:12px;flex:none;min-height:34px;padding:0 12px;border-bottom:1px solid var(--border);background:var(--soft)}
+.ed-lw-kopf .ed-auge{display:flex;align-items:center;gap:7px;white-space:nowrap}
+.ed-lw-zahl{min-width:0;overflow:hidden;color:var(--faint);font:500 10px "IBM Plex Mono",monospace;text-overflow:ellipsis;white-space:nowrap}
+.ed-lw-kopf .ed-mini:first-of-type{margin-left:auto}
+.ed-lw .ed-mini[aria-pressed="true"]{border-color:var(--accent);background:var(--accent);color:var(--accent-contrast)}
+.ed-lw-fenster{flex:1;min-height:0;overflow:auto;padding:14px 16px 56px;scrollbar-width:thin;background-image:radial-gradient(circle,color-mix(in srgb,var(--muted) 22%,transparent) 1px,transparent 1.4px);background-size:24px 24px;background-position:-12px -12px}
+.ed-lw-leer{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-height:100%;padding:24px;text-align:center}
+.ed-lw-leer strong{color:var(--faint);font:700 28px/1 "Syne",sans-serif;letter-spacing:-.015em}
+.ed-lw-leer p{margin:0;max-width:52ch;color:var(--muted);font:500 11px/1.7 "IBM Plex Mono",monospace}
+.ed-lw-nach-unten{position:absolute;right:20px;bottom:16px;display:inline-flex;align-items:center;gap:7px;padding:7px 12px;border:1px solid var(--accent);border-radius:0;background:var(--panel);color:var(--accent);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;box-shadow:0 6px 18px color-mix(in srgb,var(--bg) 70%,transparent);animation:ed-strom-detail-rein .25s ease-out both}
+.ed-lw-nach-unten span{font-size:12px;letter-spacing:0}
+.ed-lw-nach-unten:hover{background:var(--accent);color:var(--accent-contrast)}
+
+/* Plan-Karte: Akzentkante links in der Farbe des Zustands, Kopf klebt beim Lesen oben. */
+.ed-lw-plan{position:relative;max-width:1400px;margin:0 auto 16px;border:1px solid var(--border);border-left:2px solid var(--accent);background:var(--panel);animation:ed-strom-rein .5s cubic-bezier(.2,.7,.2,1) both}
+.ed-lw-plan::after{content:'';position:absolute;inset:0;pointer-events:none;opacity:0;color:var(--success)}
+.ed-lw-plan[data-offen]{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.ed-lw-plan:is([data-zustand="committet"],[data-zustand="auto-committet"]){border-left-color:var(--success)}
+.ed-lw-plan:is([data-zustand="verworfen"],[data-zustand="konflikt"]){border-left-color:var(--danger)}
+.ed-lw-plan:is([data-zustand="verworfen"],[data-zustand="konflikt"])::after{color:var(--danger)}
+.ed-lw-plan:is([data-zustand="abgelaufen"],[data-zustand="veraltet"]){border-left-color:var(--border2)}
+.ed-lw-plan:is([data-zustand="abgelaufen"],[data-zustand="veraltet"])::after{color:var(--faint)}
+.ed-lw-plan:is([data-zustand="committet"],[data-zustand="auto-committet"],[data-zustand="abgelaufen"],[data-zustand="veraltet"])::after{animation:ed-strom-abschluss 2.4s ease-out both}
+.ed-lw-plan:is([data-zustand="verworfen"],[data-zustand="konflikt"])::after{animation:ed-strom-verworfen 2.4s ease-out both}
+.ed-lw-plan[data-phase="geht"]{pointer-events:none;animation:ed-strom-raus .6s ease-in both}
+.ed-lw-plan-kopf{position:sticky;top:-14px;z-index:2;display:flex;align-items:center;gap:10px;min-width:0;padding:9px 12px;border-bottom:1px solid var(--border2);background:var(--panel)}
+.ed-lw-plan-kopf .ed-plan-wer{flex:none;max-width:30%}
+.ed-lw-meta{flex:1;min-width:0;overflow:hidden;color:var(--faint);font:500 10px "IBM Plex Mono",monospace;text-overflow:ellipsis;white-space:nowrap}
+.ed-lw-plan[data-zustand="entsteht"] .ed-lw-plan-kopf .ed-chip{border-color:color-mix(in srgb,var(--accent) 55%,transparent);color:var(--accent)}
+.ed-lw-plan[data-zustand="entsteht"] .ed-lw-plan-kopf .ed-chip::before{content:'';display:inline-block;width:5px;height:5px;margin-right:5px;border-radius:50%;background:var(--accent);vertical-align:1px;animation:ed-strom-puls 1.4s ease-in-out infinite}
+.ed-lw-plan:is([data-zustand="committet"],[data-zustand="auto-committet"]) .ed-lw-plan-kopf .ed-chip{border-color:var(--success);color:var(--success)}
+.ed-lw-plan[data-zustand="auto-committet"] .ed-lw-plan-kopf .ed-chip{border-style:dashed}
+.ed-lw-plan:is([data-zustand="verworfen"],[data-zustand="konflikt"]) .ed-lw-plan-kopf .ed-chip{border-color:var(--danger);color:var(--danger)}
+.ed-lw-grund{margin:0;padding:7px 12px;border-bottom:1px solid var(--border2);color:var(--muted);font:500 11px/1.55 "IBM Plex Mono",monospace;overflow-wrap:anywhere}
+
+/* Ops: alle, jede neue laeuft einzeln ein; nicht anwendbare rot mit Grund. */
+.ed-lw-ops{margin:0;padding:4px 12px 8px;list-style:none;border-bottom:1px solid var(--border2)}
+.ed-lw-ops>li{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 8px;min-width:0;padding:3px 0 3px 6px;border-top:1px dashed var(--border2);color:var(--muted);font:500 10.5px/1.5 "IBM Plex Mono",monospace;animation:ed-strom-op-rein .45s ease-out both}
+.ed-lw-ops>li:first-child{border-top:0}
+.ed-lw-op-nr{flex:none;min-width:3.5ch;color:var(--faint)}
+.ed-lw-op-art{flex:none;width:12px;color:var(--accent);text-align:center}
+.ed-lw-plan:is([data-zustand="committet"],[data-zustand="auto-committet"]) .ed-lw-op-art{color:var(--success)}
+.ed-lw-ops>li:is([data-action="delete"],[data-action="delete_lines"]) .ed-lw-op-art{color:var(--danger)}
+.ed-lw-op-datei{min-width:0;color:var(--text);overflow-wrap:anywhere}
+.ed-lw-ops small{color:var(--faint);font-size:10px}
+.ed-lw-ops .ed-lw-op-name{margin-left:auto;font-size:9px;letter-spacing:.04em}
+.ed-lw-op-grund{flex-basis:100%;padding-left:calc(3.5ch + 28px);color:var(--faint);font-size:10px;overflow-wrap:anywhere}
+.ed-lw-ops>li[data-zustand="nicht_anwendbar"]{box-shadow:inset 2px 0 var(--danger)}
+.ed-lw-ops>li[data-zustand="nicht_anwendbar"] .ed-lw-op-art{color:var(--danger)}
+.ed-lw-op-fehler{flex-basis:100%;padding-left:calc(3.5ch + 28px);color:var(--danger);font-weight:600;overflow-wrap:anywhere}
+.ed-lw-ops>li.ed-lw-op-leer{color:var(--faint);animation:none}
+
+/* Dateien mit vollstaendigem Diff. */
+.ed-lw-dateien{display:flex;flex-direction:column;gap:12px;padding:12px}
+.ed-lw-datei{min-width:0;border:1px solid var(--border2);background:var(--panel)}
+.ed-lw-datei>h4{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin:0;padding:6px 10px;border-bottom:1px solid var(--border2);background:var(--soft);font:600 11px "IBM Plex Mono",monospace}
+.ed-lw-pfad{min-width:0;color:var(--faint);font-weight:500;overflow-wrap:anywhere}
+.ed-lw-pfad b{color:var(--text);font-weight:600}
+.ed-lw-datei>h4 small{padding:0 5px;border:1px solid var(--border);color:var(--muted);font:700 8px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase}
+.ed-lw-datei[data-neu]>h4 small:first-of-type{border-color:var(--success);color:var(--success)}
+.ed-lw-datei[data-geloescht]>h4 small:first-of-type{border-color:var(--danger);color:var(--danger)}
+.ed-lw-plusminus{display:inline-flex;gap:6px;margin-left:auto;font:700 10px "IBM Plex Mono",monospace}
+.ed-lw-plusminus ins{color:var(--success);text-decoration:none}
+.ed-lw-plusminus del{color:var(--danger);text-decoration:none}
+.ed-lw-datei-ops{color:var(--accent);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.04em}
+.ed-lw-hinweis,.ed-lw-zurueck,.ed-lw-gleich{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0;padding:7px 10px;color:var(--muted);font:500 10.5px/1.5 "IBM Plex Mono",monospace;overflow-wrap:anywhere}
+.ed-lw-hinweis{border-left:2px solid var(--accent);background:var(--accent-soft)}
+.ed-lw-plan>.ed-lw-hinweis{margin:8px 12px 0}
+.ed-lw-fehler{display:flex;align-items:center;gap:8px;margin:8px 12px 0;padding:7px 10px;border:1px solid var(--border2);border-left:2px solid var(--danger);color:var(--danger);font:500 11px "IBM Plex Mono",monospace;overflow-wrap:anywhere}
+.ed-lw-laedt{margin:0;padding:10px 12px;color:var(--faint);font:500 11px "IBM Plex Mono",monospace}
+.ed-lw-na{display:flex;flex-direction:column;gap:2px;margin:0;padding:6px 10px;list-style:none;border-bottom:1px solid var(--border2);background:color-mix(in srgb,var(--danger) 8%,transparent)}
+.ed-lw-na li{display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--muted);font:500 10.5px/1.5 "IBM Plex Mono",monospace;overflow-wrap:anywhere}
+.ed-lw-na b{color:var(--danger);font-weight:700}
+
+/* Diff: zwei Nummernspalten (vorher | nachher), Marke, Code. Zeilen breiter als die Karte scrollen waagerecht, Koepfe bleiben links. */
+.ed-lw-diff{overflow-x:auto;padding:2px 0 4px;background:var(--panel);color:var(--text);font:400 11.5px/1.6 "IBM Plex Mono",monospace;tab-size:2;scrollbar-width:thin}
+.ed-lw-z{display:grid;grid-template-columns:5ch 5ch 2.4ch max-content;width:max-content;min-width:100%}
+.ed-lw-z i{padding-right:8px;color:var(--faint);font-style:normal;font-variant-numeric:tabular-nums;text-align:right;user-select:none}
+.ed-lw-z i+i{border-right:1px solid var(--border2)}
+.ed-lw-z b{color:var(--faint);font-weight:700;text-align:center;user-select:none}
+.ed-lw-z code{padding-right:18px;font:inherit;white-space:pre}
+.ed-lw-z[data-art="neu"]{background:color-mix(in srgb,var(--success) 13%,transparent);box-shadow:inset 2px 0 var(--success)}
+.ed-lw-z[data-art="neu"] b{color:var(--success)}
+.ed-lw-z[data-art="weg"]{background:color-mix(in srgb,var(--danger) 11%,transparent);box-shadow:inset 2px 0 var(--danger)}
+.ed-lw-z[data-art="weg"] b{color:var(--danger)}
+.ed-lw-hunk+.ed-lw-hunk,.ed-lw-umfeld+.ed-lw-hunk{border-top:1px solid var(--border2)}
+.ed-lw-hunk-kopf{position:sticky;left:0;display:flex;gap:12px;width:max-content;min-width:100%;padding:2px 10px;background:var(--accent-soft);color:var(--accent);font:700 9.5px/1.7 "IBM Plex Mono",monospace;letter-spacing:.04em}
+.ed-lw-hunk-kopf span{color:var(--muted);font-weight:500}
+.ed-lw-luecke{position:sticky;left:0;display:block;width:100%;padding:3px 10px;border:0;border-block:1px dashed var(--border2);border-radius:0;background:var(--soft);color:var(--faint);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-align:left;text-transform:uppercase;cursor:pointer;transition:color .15s ease,background-color .15s ease}
+.ed-lw-luecke:hover{background:var(--accent-soft);color:var(--accent)}
+.projekt-editor .ed-lw-luecke:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.ed-lw-diff.schreibt::after{content:'\258D';display:block;padding-left:calc(12.4ch + 8px);color:var(--accent);animation:ed-cursor 1s steps(2,start) infinite}
+.ed-lw-plan:not([data-zustand="entsteht"]) .ed-lw-diff.schreibt::after{display:none}
+
+/* Verlauf (User-Entscheidung cc9c22eb): abgeschlossene Plaene bleiben abrufbar; zugeklappt eine Zeile, aufgeklappt dieselbe Karte wie live
+ * (ohne Abschlussanimation, weil der Abschluss laengst vorbei ist). */
+.ed-lw-verlauf{display:flex;flex-direction:column;gap:8px;max-width:1400px;margin:0 auto}
+.ed-lw-verlauf>.ed-lw-plan{margin:0}
+.ed-lw-verlauf-hinweis{margin:0 0 4px;color:var(--muted);font:500 11px/1.6 "IBM Plex Mono",monospace}
+.ed-lw-verlauf-zeile{display:flex;align-items:center;gap:10px;width:100%;min-width:0;padding:9px 12px;border:1px solid var(--border);border-left:2px solid var(--border2);border-radius:0;background:var(--panel);color:var(--text);font:inherit;text-align:left;cursor:pointer;transition:border-color .15s ease,background-color .15s ease}
+.ed-lw-verlauf-zeile:hover{border-color:var(--accent);background:var(--accent-soft)}
+.projekt-editor .ed-lw-verlauf-zeile:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.ed-lw-verlauf-zeile .ed-plan-wer{flex:none;max-width:30%}
+.ed-lw-verlauf-zeile:is([data-zustand="committet"],[data-zustand="auto-committet"]){border-left-color:var(--success)}
+.ed-lw-verlauf-zeile:is([data-zustand="committet"],[data-zustand="auto-committet"]) .ed-chip{border-color:var(--success);color:var(--success)}
+.ed-lw-verlauf-zeile:is([data-zustand="verworfen"],[data-zustand="konflikt"]){border-left-color:var(--danger)}
+.ed-lw-verlauf-zeile:is([data-zustand="verworfen"],[data-zustand="konflikt"]) .ed-chip{border-color:var(--danger);color:var(--danger)}
+.ed-lw-verlauf-auf{margin-left:auto;color:var(--faint);font:500 12px/1 "IBM Plex Mono",monospace}
+.ed-lw-verlauf-zeile:hover .ed-lw-verlauf-auf{color:var(--accent)}
+.ed-lw-plan[data-verlauf]{animation:ed-strom-detail-rein .3s ease-out both}
+.ed-lw-plan[data-verlauf]::after{animation:none}
+.ed-lw-verlauf .ed-knopf.breit{margin-top:4px}
+
+/* H1 (Entscheidung 8d464d44): weitere Schatten im Detail nachladen statt nur Namen nennen. */
+.ed-strom-mehr{display:flex;flex-direction:column;gap:6px}
+/* P22-T264 Rest: nicht anwendbare Ops des User-Plans im Drei-Wege-Vergleich (Feld nicht_anwendbar aus /editor/user-plan/datei). */
+.ed-vergleich-na{display:flex;flex-direction:column;gap:2px;margin:0;padding:6px 12px;list-style:none;border-bottom:1px solid var(--border2);background:color-mix(in srgb,var(--danger) 8%,transparent)}
+.ed-vergleich-na li{display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--muted);font:500 10.5px/1.5 "IBM Plex Mono",monospace;overflow-wrap:anywhere}
+.ed-vergleich-na b{color:var(--danger);font-weight:700}
+
+@media (max-width:1180px){
+ .ed-werkbank[data-explorer="zu"]{grid-template-columns:34px minmax(0,1fr)}
+}
+@media (max-width:760px){
+ .ed-werkbank[data-explorer="zu"]{grid-template-columns:minmax(0,1fr)}
+ .ed-explorer-schiene{flex-direction:row;justify-content:center;padding:8px 12px}
+ .ed-schiene-text,.ed-explorer-schiene b{writing-mode:horizontal-tb}
+ .ed-explorer-schiene b{padding:0 0 0 8px;border-top:0;border-left:1px solid var(--border2)}
+ .ed-lw-fenster{padding:10px 8px 48px}
+ .ed-lw-plan-kopf{flex-wrap:wrap}
+ .ed-lw-meta{flex-basis:100%;order:3}
+ .ed-lw-z{grid-template-columns:4ch 4ch 2ch max-content}
+ .ed-lw-verlauf-zeile{flex-wrap:wrap}
+ .ed-lw-verlauf-zeile .ed-lw-meta{flex-basis:100%;order:3}
+}
+@media (prefers-reduced-motion:reduce){.ed-lw-plan,.ed-lw-plan::after,.ed-lw-ops>li,.ed-lw-nach-unten,.ed-lw-diff.schreibt::after{animation:none!important}}
