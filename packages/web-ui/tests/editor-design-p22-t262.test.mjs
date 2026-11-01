@@ -46,6 +46,7 @@ ok(/\.ed-reiter-eintrag\.aktiv\{[^}]*box-shadow:inset 0 2px var\(--accent\)/.tes
 ok(/@keyframes ed-nachleuchten/.test(c) && /\.ed-plan\.nachklang\{[^}]*animation:ed-nachleuchten/.test(c), 'P22-T262 editor-p22-t256.css: Nachleuchten abgeschlossener Plaene');
 ok(/\.ed-schatten\.schreibt::after\{content:'\\258D'/.test(c), 'P22-T262 editor-p22-t256.css: Schreibcursor im live entstehenden Schatten');
 ok(/\.ed-zeilen\{[^}]*font:400 12px\/1\.65/.test(c) && /\.ed-code textarea\{[^}]*font:400 12px\/1\.65/.test(c), 'P22-T262 editor-p22-t256.css: Zeilennummern und Code mit gleicher Schrift/Zeilenhoehe');
+ok(/\.projekt-editor \.ed-code textarea\{/.test(c), 'P22-T262 editor-p22-t256.css: Code-Feld schlaegt .synapse-control textarea{line-height:1.4} (Live-Befund t230: 16.8px statt 19.8px)');
 
 // ---------------------------------------------------------------- B ProjektEditor.tsx
 const t = lies('packages/web-ui/src/components/ProjektEditor.tsx');
