@@ -3,7 +3,7 @@
  * ZWECK: Altbestand der Projekt-Assets an 'Index = Wirklichkeit' angleichen (asset-altbestand.ts pruefeAssetAltbestand):
  *        verwaiste Eintraege ohne Datei (quelle_nicht_gefunden) und Textdateien doppelt im Asset-Index (SVG u. a.).
  * ABLAUF: ohne ausfuehren:true nur Vorschau (Zaehlung, Beispiele). ausfuehren:true nur Koordinator/User, nur mit project
- *         und Produkt-Schalter asset_index_wirklichkeit EIN; limit je Aufruf (Standard 1000, max 10000).
+ *         (P22-T271: ohne Schalter); limit je Aufruf (Standard 1000, max 10000).
  * NICHT UMKEHRBAR: entfernte Metadaten-Zeilen sind weg (die Dateien selbst gibt es nicht bzw. sie stehen im Code-Index).
  */
 import { pruefeAssetAltbestand } from './asset-altbestand.js';
@@ -19,7 +19,7 @@ export function istAssetAltAction(action: string): action is AssetAltAction {
 export const ASSET_ALT_BESCHREIBUNG =
   'ASSET-ALTBESTAND: asset_altbestand_bereinigen (project, ausfuehren, limit): Projekt-Asset-Eintraege ohne Datei (quelle_nicht_gefunden) ' +
   'und Textdateien doppelt im Asset-Index (z. B. SVG neben dem Code-Index) finden; ohne ausfuehren:true nur Vorschau, ausfuehren:true nur ' +
-  'Koordinator/User, mit project und Produkt-Schalter asset_index_wirklichkeit, entfernt nur Metadaten ohne Share-Bytes. ';
+  'Koordinator/User, mit project, entfernt nur Metadaten ohne Share-Bytes. ';
 
 /** Dispatcher-Anteil. Wirft nie. */
 export async function fuehreAssetAltAus(action: AssetAltAction, a: Record<string, unknown>, agentId?: string): Promise<Record<string, unknown>> {

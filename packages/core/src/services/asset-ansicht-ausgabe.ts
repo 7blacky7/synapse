@@ -22,7 +22,6 @@ import { gemeinsamerAnsichtDienst, standardAnsichtLinkDienst, type AnsichtLinkEi
 import type { AssetAnsichtErgebnis, AssetAnsichtReferenz } from './asset-ansicht.js';
 import { isProjectEnabled } from './project-registry.js';
 import { projektAssetSql } from './intel-bereich.js';
-import { leseAssetIndexWirklichkeit } from './asset-transfer-generisch.js';
 
 export const ANSICHT_MODI = ['inline', 'link', 'beides'] as const;
 export type AnsichtModus = (typeof ANSICHT_MODI)[number];
@@ -148,10 +147,9 @@ function dienste(): AnsichtAusgabeDienste {
 interface AssetZeile { id: string; format: string | null; mime_type: string | null; asset_type: string | null }
 
 async function holeAsset(project: string, filePath: string): Promise<AssetZeile | null> {
-  // P22-T236: mit Schalter asset_index_wirklichkeit nur vorhandene Assets (ohne quelle_nicht_gefunden).
-  const nur = (await leseAssetIndexWirklichkeit(project)).aktiv;
+  // P22-T236/T271: nur vorhandene Assets (ohne quelle_nicht_gefunden), immer.
   const r = await getPool().query(
-    projektAssetSql('SELECT id::text AS id, format, mime_type, asset_type FROM asset_files WHERE project = $1 AND file_path = $2 AND deleted_at IS NULL', nur),
+    projektAssetSql('SELECT id::text AS id, format, mime_type, asset_type FROM asset_files WHERE project = $1 AND file_path = $2 AND deleted_at IS NULL'),
     [project, filePath],
   );
   return (r.rows[0] as AssetZeile | undefined) ?? null;

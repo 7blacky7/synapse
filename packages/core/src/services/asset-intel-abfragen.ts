@@ -39,7 +39,6 @@ function reverseGrenzen(bereich: AssetBereich): ReverseAssetGrenzen | undefined 
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { assetBereichSql, pruefeAssetBereich, ASSET_BEREICH, REVERSE_ASSET_BEREICH } from './intel-bereich.js';
-import { leseAssetIndexWirklichkeit } from './asset-transfer-generisch.js';
 import type { AssetBereich } from './intel-bereich.js';
 export { ASSET_BEREICH, REVERSE_ASSET_BEREICH } from './intel-bereich.js';
 export type { AssetBereich } from './intel-bereich.js';
@@ -97,8 +96,7 @@ function leseTimeoutMs(): number {
 
 async function mitLeser<T>(bereich: AssetBereich, project: string, fn: (q: Leser) => Promise<T>): Promise<T> {
   pruefeAssetBereich(bereich);
-  // P22-T236: Schalter asset_index_wirklichkeit EIN = nur vorhandene Projekt-Assets sichtbar (intel-bereich.ts). AUS/Lesefehler = Altverhalten.
-  const nurVorhandene = bereich === ASSET_BEREICH ? (await leseAssetIndexWirklichkeit(project)).aktiv : false;
+  // P22-T236/T271: Projekt-Assets immer nur vorhandene (intel-bereich.ts assetBereichSql, 'Index = Wirklichkeit', kein Schalter).
   const client: PoolClient = await (bereich === REVERSE_ASSET_BEREICH ? reverseAssetLeser.getStore()?.pool ?? getPool() : getPool()).connect();
   const g = reverseGrenzen(bereich);
   const timeout = g?.lese_timeout_ms ?? leseTimeoutMs();
@@ -107,7 +105,7 @@ async function mitLeser<T>(bereich: AssetBereich, project: string, fn: (q: Leser
       'SET statement_timeout = ' + timeout + '; SET lock_timeout = ' + (g?.lock_timeout_ms ?? LOCK_TIMEOUT_MS) +
         '; SET idle_in_transaction_session_timeout = ' + (g?.idle_tx_timeout_ms ?? Math.max(timeout, ASSET_LESE_TIMEOUT_MS))
     );
-    const q: Leser = async (sql, params = []) => (await client.query(assetBereichSql(sql, bereich, { nurVorhandene }), params)).rows as Zeile[];
+    const q: Leser = async (sql, params = []) => (await client.query(assetBereichSql(sql, bereich), params)).rows as Zeile[];
     return await fn(q);
   } finally {
     try {
@@ -1161,17 +1159,18 @@ export async function assetHealth(project: string, filePath?: unknown, bereich: 
     };
     // P22-T236 Debug: ausgeblendete (nicht vorhandene) Eintraege zaehlen - sie erscheinen in keiner anderen Abfrage.
     // Quotiertes "asset_files" = Tabelle ohne Sicht (intel-bereich.ts).
-    if (bereich === ASSET_BEREICH && (await leseAssetIndexWirklichkeit(project)).aktiv) {
+    if (bereich === ASSET_BEREICH) {
       const [u] = await q(
         `SELECT count(*) FILTER (WHERE deleted_at IS NULL AND status = 'quelle_nicht_gefunden')::int AS quelle_fehlt,
                 count(*) FILTER (WHERE deleted_at IS NOT NULL)::int AS im_wiederherstellungsfenster
            FROM "asset_files" WHERE project = $1`,
         [project]
       );
-      aus.ausgeblendet = {
+      // P22-T271: nur wenn etwas ausgeblendet ist - ohne ausgeblendete Eintraege bleibt die health-Antwort wie vor T236.
+      if (u.quelle_fehlt > 0 || u.im_wiederherstellungsfenster > 0) aus.ausgeblendet = {
         quelle_fehlt: u.quelle_fehlt,
         im_wiederherstellungsfenster: u.im_wiederherstellungsfenster,
-        hinweis: 'Nicht vorhandene Assets (Schalter asset_index_wirklichkeit): geloeschte nur ueber asset_intel geloescht/wiederherstellen; fehlende Quellen bereinigt intern asset_altbestand_bereinigen.',
+        hinweis: 'Nicht vorhandene Assets (Index = Wirklichkeit): geloeschte nur ueber asset_intel geloescht/wiederherstellen; fehlende Quellen bereinigt intern asset_altbestand_bereinigen.',
       };
     }
     if (s.dateien === 0) aus.hinweis = 'Keine Asset-Eintraege fuer dieses Projekt. Inspiziert wird nur im lokalen Watcher-Prozess (sieht die Dateien); Container/REST lesen nur.';

@@ -22,14 +22,10 @@ import { escapeLike, inspiziereAusDb, kappeAntwort, zerlegeSuchanfrage } from '.
 import { normalisiereAssetPfad } from './asset-intel-store.js';
 import {holeAssetKonflikt} from './asset-konflikte.js';
 import { projektAssetLeser, projektAssetSql } from './intel-bereich.js';
-import { leseAssetIndexWirklichkeit } from './asset-transfer-generisch.js';
 
-/** P22-T236: Leser mit Sicht nur vorhandener Assets, wenn der Schalter asset_index_wirklichkeit fuer das Projekt EIN ist. */
-async function nurVorhandene(project: string): Promise<boolean> {
-  return (await leseAssetIndexWirklichkeit(project)).aktiv;
-}
-async function assetLeser(project: string) {
-  return projektAssetLeser(await nurVorhandene(project));
+/** P22-T236/T271: Leser mit Sicht nur vorhandener Projekt-Assets ('Index = Wirklichkeit', immer, kein Schalter). */
+async function assetLeser(_project: string) {
+  return projektAssetLeser();
 }
 
 /** Hoechstzahl Asset-Zeilen je Verzeichnis im code_intel-Baum; der Rest wird zur Sammelzeile. */
@@ -252,7 +248,8 @@ export async function holeBaumAssets(project: string, dirPath?: string): Promise
   if (!(await projektHatAssets(project))) return LEERER_BAUM();
   try {
     const params: unknown[] = [project, BAUM_ASSETS_JE_VERZEICHNIS];
-    let wo = 'a.project = $1';
+    // P22-T271: geloeschte Assets (Wiederherstellungsfenster) erscheinen nie im Live-Baum; die Sicht filtert zusaetzlich.
+    let wo = 'a.project = $1 AND a.deleted_at IS NULL';
     if (dirPath) {
       params.push('%' + dirPath + '%');
       wo += ' AND a.file_path LIKE $3';
@@ -371,17 +368,16 @@ async function sucheAssetTreffer(project: string, query: string): Promise<{ tref
     ' WHERE o.asset_id = ANY(' + platz(1) + '::bigint[]) AND o.name ILIKE ANY(' + platz(2) + '::text[])' +
     " UNION ALL SELECT r.asset_id, 'verweis|' || r.target FROM asset_references r" +
     ' WHERE r.asset_id = ANY(' + platz(1) + '::bigint[]) AND r.target ILIKE ANY(' + platz(2) + '::text[])) x';
-  const nur = await nurVorhandene(project);
   const client = await getPool().connect();
   const start = Date.now();
   let kaputt = false;
   try {
     await client.query('SET statement_timeout = ' + WEICHE_SUCH_ZEITGRENZE_MS);
-    const zeilen = (await client.query(projektAssetSql(sql, nur), [project, ...muster])).rows;
+    const zeilen = (await client.query(projektAssetSql(sql), [project, ...muster])).rows;
     if (zeilen.length === 0) return { treffer: [], total: 0, gekappt: false };
     // Restzeit fuer die Fundstellen: beide Abfragen zusammen bleiben unter der Zeitgrenze.
     await client.query('SET statement_timeout = ' + Math.max(1, WEICHE_SUCH_ZEITGRENZE_MS - (Date.now() - start)));
-    const fz = (await client.query(projektAssetSql(fundSql, nur), [zeilen.map(z => z.id), muster])).rows;
+    const fz = (await client.query(projektAssetSql(fundSql), [zeilen.map(z => z.id), muster])).rows;
     const fund = new Map<string, Set<string>>();
     for (const r of fz) {
       const k = String(r.asset_id);

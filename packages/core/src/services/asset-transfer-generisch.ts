@@ -5,11 +5,9 @@
  *   werden als generisches Binaer-Asset (Hash, Groesse, Endung als Format) auf den Share uebertragen und sind als Original
  *   oeffenbar. AUS = nur Formate mit Inspector. Lesestellen: AssetUploadKern.erstellen, AssetKonfliktKern (PC-Uebernahme),
  *   REST GET .../assets/sync-optionen (Daemon-Policy generischeFormate + generisch_debug).
- * asset_index_wirklichkeit (P22-T236): 'Index = Wirklichkeit'. EIN = asset_intel-Abfragen und die code_intel-Weiche zeigen nur
- *   VORHANDENE Projekt-Assets (ohne deleted_at, ohne quelle_nicht_gefunden; intel-bereich.ts), der Daemon meldet lokal
- *   entfernte Assets ohne Share-Bytes (POST .../assets/quelle-fehlt) und intern asset_altbestand_bereinigen darf ausfuehren.
- *   AUS = Altverhalten. Lesestellen: asset-intel-abfragen.ts mitLeser/assetHealth, asset-weiche.ts, routes/assets.ts,
- *   asset-altbestand.ts.
+ * P22-T271 (User 01.11.2026): Der fruehere Schalter asset_index_wirklichkeit (P22-T236) ist entfernt. 'Index = Wirklichkeit'
+ *   (nur VORHANDENE Projekt-Assets, ohne deleted_at und ohne quelle_nicht_gefunden) gilt immer und global: intel-bereich.ts
+ *   assetBereichSql, asset-altbestand.ts. Vorhandene PG-Zeilen dieses Namens werden ignoriert.
  *
  * SCHALTER (regel-neue-funktionen-mit-schalter-und-debug), je Funktion gleich:
  *   (I) Produkt-Schalter (agent_profil_schalter, projekt > global, Standard AUS, nur ausdruecklich - 'alle' schaltet ihn
@@ -23,8 +21,7 @@ import { internToolAktiv } from './intern-tool-aktiv.js';
 import { leseProfilProduktSchalterGepuffert } from './agent-profil-schalter.js';
 
 export const ASSET_TRANSFER_GENERISCH = 'asset_transfer_generisch' as const;
-export const ASSET_INDEX_WIRKLICHKEIT = 'asset_index_wirklichkeit' as const;
-export type AssetGrundsatzSchalter = typeof ASSET_TRANSFER_GENERISCH | typeof ASSET_INDEX_WIRKLICHKEIT;
+export type AssetGrundsatzSchalter = typeof ASSET_TRANSFER_GENERISCH;
 
 export interface AssetTransferGenerischStand {
   aktiv: boolean;
@@ -61,9 +58,4 @@ async function leseAssetSchalter(funktion: AssetGrundsatzSchalter, project: stri
 /** P22-T238: generischer Transfer (Formate ohne Inspector). */
 export function leseAssetTransferGenerisch(project: string): Promise<AssetTransferGenerischStand> {
   return leseAssetSchalter(ASSET_TRANSFER_GENERISCH, project);
-}
-
-/** P22-T236: Index = Wirklichkeit (nur vorhandene Assets sichtbar, Meldung lokal entfernter Assets, Altbestand). */
-export function leseAssetIndexWirklichkeit(project: string): Promise<AssetSchalterStand> {
-  return leseAssetSchalter(ASSET_INDEX_WIRKLICHKEIT, project);
 }

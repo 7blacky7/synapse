@@ -8,8 +8,9 @@
  *   B core services/asset-ansicht.ts projektAnsichtAdapter.aufloesen: ehrliche Codes asset_geloescht | asset_quelle_fehlt |
  *     asset_nur_lokal (Befund: legacy_local meldete 'geloescht'). Fake-DB, kein PG.
  *   C file-watcher-daemon-ts asset-sync.ts DaemonAssetSync.meldeQuelleFehlt: Route quelle-fehlt, Ruhe nach funktion_aus/404.
- *   D (nur DATABASE_URL = synapse_test) asset-intel-abfragen.ts holeAssetBaum/sucheAssets/assetHealth mit Schalter
- *     asset_index_wirklichkeit AUS/EIN (eigenes Testprojekt, aufgeraeumt), asset-altbestand.ts meldeAssetQuellenFehlen +
+ *   D (nur DATABASE_URL = synapse_test) asset-intel-abfragen.ts holeAssetBaum/sucheAssets/assetHealth und asset-weiche.ts
+ *     holeBaumAssets immer nur vorhandene (P22-T271: Schalter asset_index_wirklichkeit entfernt, alte PG-Zeile ignoriert;
+ *     eigenes Testprojekt, aufgeraeumt), asset-altbestand.ts meldeAssetQuellenFehlen +
  *     pruefeAssetAltbestand (Vorschau/ausfuehren, text_doppelt nur fuer Text), Schalter-Katalog.
  * AUFRUF: mise run build:core && pnpm --filter @synapse/file-watcher-daemon-ts run build &&
  *   node packages/core/tests/asset-index-wirklichkeit-p22-t236.test.mjs
@@ -34,15 +35,15 @@ async function wirft(fn) { try { await fn(); return null; } catch (e) { return e
 // ------------------------------------------------------------------ A Sicht nur vorhandener Assets (intel-bereich.ts)
 {
   const sql = 'SELECT a.id FROM asset_files a JOIN asset_objects o ON o.asset_id = a.id WHERE a.project = $1';
-  check('P22-T236 A intel-bereich.ts assetBereichSql: ohne nurVorhandene bleibt Projekt-SQL bytegleich', B.assetBereichSql(sql) === sql);
-  const neu = B.projektAssetSql(sql, true);
+  check('P22-T271 A intel-bereich.ts assetBereichSql: Projekt-SQL immer mit Sicht (kein Schalter)', B.assetBereichSql(sql) === B.projektAssetSql(sql) && B.assetBereichSql(sql) !== sql);
+  const neu = B.projektAssetSql(sql);
   check("P22-T236 A intel-bereich.ts projektAssetSql: asset_files gefiltert (deleted_at, quelle_nicht_gefunden)",
     /FROM \(SELECT \* FROM asset_files WHERE deleted_at IS NULL AND status IS DISTINCT FROM 'quelle_nicht_gefunden'\) a/.test(neu), neu);
   check('P22-T236 A intel-bereich.ts projektAssetSql: asset_objects folgt der Datei', /asset_objects o WHERE EXISTS \(SELECT 1 FROM asset_files f WHERE f\.id = o\.asset_id AND f\.deleted_at IS NULL AND f\.status/.test(neu), neu);
   const roh = 'SELECT count(*) FROM "asset_files" WHERE project = $1';
-  check('P22-T236 A intel-bereich.ts: quotiertes "asset_files" (health-Zaehler) bleibt unveraendert', B.projektAssetSql(roh, true) === roh);
-  check('P22-T236 A intel-bereich.ts: code_files bleibt unveraendert', B.projektAssetSql('SELECT 1 FROM code_files', true) === 'SELECT 1 FROM code_files');
-  check('P22-T236 A intel-bereich.ts: Reverse-Bereich unveraendert gegenueber nurVorhandene', B.assetBereichSql(sql, B.REVERSE_ASSET_BEREICH, { nurVorhandene: true }) === B.assetBereichSql(sql, B.REVERSE_ASSET_BEREICH));
+  check('P22-T236 A intel-bereich.ts: quotiertes "asset_files" (health-Zaehler) bleibt unveraendert', B.projektAssetSql(roh) === roh);
+  check('P22-T236 A intel-bereich.ts: code_files bleibt unveraendert', B.projektAssetSql('SELECT 1 FROM code_files') === 'SELECT 1 FROM code_files');
+  check('P22-T236 A intel-bereich.ts: Reverse-Bereich ohne Projekt-Sicht', !/quelle_nicht_gefunden/.test(B.assetBereichSql(sql, B.REVERSE_ASSET_BEREICH)), B.assetBereichSql(sql, B.REVERSE_ASSET_BEREICH));
 }
 
 // ------------------------------------------------------------------ B ehrliche Ansicht (asset-ansicht.ts)
@@ -88,11 +89,9 @@ async function wirft(fn) { try { await fn(); return null; } catch (e) { return e
   // rest-api services/verweise.ts loeseAssetVerweis: mit Schalter nur vorhandene Assets (Sicht-SQL), ohne Schalter bytegleich.
   const { loeseAssetVerweis } = await import(resolve(here, '../../rest-api/dist/services/verweise.js'));
   const gesehen = [];
-  const dienste = (nur) => ({ frage: async (sql) => { gesehen.push(sql); return []; }, wurzeln: async () => [], nurVorhandene: async () => nur });
-  await loeseAssetVerweis('p22t236', 'bilder/a.png', dienste(true));
-  await loeseAssetVerweis('p22t236', 'bilder/a.png', dienste(false));
-  check("P22-T236 E verweise.ts loeseAssetVerweis: Schalter EIN -> Sicht ohne quelle_nicht_gefunden", /status IS DISTINCT FROM 'quelle_nicht_gefunden'/.test(gesehen[0] ?? ''), gesehen[0]);
-  check('P22-T236 E verweise.ts loeseAssetVerweis: Schalter AUS -> bisheriges SQL', !/IS DISTINCT FROM/.test(gesehen[1] ?? ''), gesehen[1]);
+  const dienste = { frage: async (sql) => { gesehen.push(sql); return []; }, wurzeln: async () => [] };
+  await loeseAssetVerweis('p22t236', 'bilder/a.png', dienste);
+  check("P22-T271 E verweise.ts loeseAssetVerweis: immer Sicht ohne quelle_nicht_gefunden (kein Schalter)", /status IS DISTINCT FROM 'quelle_nicht_gefunden'/.test(gesehen[0] ?? ''), gesehen[0]);
   // core services/asset-altbestand.ts ausgeblendeteAssetPfade (Filter der Medien-Suche code.ts searchMedia): leere Liste ohne DB.
   const ALT = await import(resolve(here, '../dist/services/asset-altbestand.js'));
   check('P22-T236 E asset-altbestand.ts ausgeblendeteAssetPfade: leere Liste -> leere Menge', (await ALT.ausgeblendeteAssetPfade('p22t236', [])).size === 0);
@@ -111,30 +110,39 @@ if (!url || !/synapse_test/.test(url)) {
   const S = await import(resolve(here, '../dist/services/agent-profil-schalter.js'));
   const A = await import(resolve(here, '../dist/services/asset-intel-abfragen.js'));
   const ALT = await import(resolve(here, '../dist/services/asset-altbestand.js'));
+  const W = await import(resolve(here, '../dist/services/asset-weiche.js'));
+  const IS = await import(resolve(here, '../dist/services/intern-schalter.js'));
+  const TG = await import(resolve(here, '../dist/services/asset-transfer-generisch.js'));
   const { getPool } = await import(resolve(here, '../dist/db/client.js'));
   const pool = getPool();
   const P = 'p22-t236-' + Date.now().toString(36);
   const zeile = (pfad, extra) => pool.query(
     "INSERT INTO asset_files(project,file_path,file_name,extension,asset_type,format,status,deleted_at) VALUES($1,$2,$3,$4,'image','png',$5,$6)",
     [P, pfad, pfad.split('/').pop(), pfad.split('.').pop(), extra.status ?? 'ok', extra.deleted_at ?? null]);
-  const schalter = (aktiv) => S.setzeProfilProduktSchalter({ ebene: 'projekt', project: P, funktion: 'asset_index_wirklichkeit', aktiv, grund: 'P22-T236 Test' }, { system: 'user' });
+  // P22-T271: eine alte PG-Zeile asset_index_wirklichkeit=AUS muss wirkungslos sein (direkt eingefuegt, der Katalog kennt sie nicht mehr).
+  const alteZeile = () => pool.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('projekt',$1,'asset_index_wirklichkeit',false,'P22-T271 Test alte Zeile','fixture')", [P]);
   try {
-    check('P22-T236 D agent-profil-schalter.ts: asset_index_wirklichkeit im Katalog, nur ausdruecklich, Standard AUS',
-      S.PROFIL_PRODUKT_FUNKTIONEN.includes('asset_index_wirklichkeit') && S.NUR_AUSDRUECKLICH.includes('asset_index_wirklichkeit') && !S.STANDARD_EIN.includes('asset_index_wirklichkeit'));
+    check('P22-T271 D Kataloge: asset_index_wirklichkeit weder Produkt- noch intern-Schalter, keine Lesestelle mehr',
+      !S.PROFIL_PRODUKT_FUNKTIONEN.includes('asset_index_wirklichkeit') && !S.NUR_AUSDRUECKLICH.includes('asset_index_wirklichkeit')
+      && !('asset_index_wirklichkeit' in IS.INTERN_SCHALTER) && TG.leseAssetIndexWirklichkeit === undefined && TG.ASSET_INDEX_WIRKLICHKEIT === undefined);
+    const unbekannt = await S.setzeProfilProduktSchalter({ ebene: 'projekt', project: P, funktion: 'asset_index_wirklichkeit', aktiv: true, grund: 'P22-T271 Test' }, { system: 'user' }).then(() => 'gesetzt', (e) => e?.code ?? e?.message);
+    check('P22-T271 D admin profil_schalter_setzen: asset_index_wirklichkeit -> funktion_unbekannt', /funktion_unbekannt/.test(String(unbekannt)), unbekannt);
+    await alteZeile();
     await zeile('bilder/da.png', {});
     await zeile('bilder/geloescht.png', { deleted_at: new Date() });
     await zeile('coedit-test/t51-golden-x/weg.png', { status: 'quelle_nicht_gefunden' });
     await pool.query("INSERT INTO asset_files(project,file_path,file_name,extension,status) VALUES($1,'icons/logo.svg','logo.svg','svg','nicht_erkannt')", [P]);
     await pool.query("INSERT INTO code_files(id,project,file_path,file_name,file_type,content) VALUES(gen_random_uuid(),$1,'icons/logo.svg','logo.svg','svg','<svg/>') ON CONFLICT DO NOTHING", [P]).catch((e) => console.log('# code_files-Insert: ' + e.message));
     const pfade = (t) => t.baum ?? JSON.stringify(t);
-    let baum = await A.holeAssetBaum(P, {});
-    check('P22-T236 D holeAssetBaum: Schalter AUS = Altverhalten (alle Zeilen sichtbar)', /geloescht\.png/.test(pfade(baum)) && /weg\.png/.test(pfade(baum)), pfade(baum));
-    await schalter(true);
-    baum = await A.holeAssetBaum(P, {});
-    check('P22-T236 D holeAssetBaum: Schalter EIN -> nur vorhandene (da.png ja, geloescht/weg nein)',
+    const baum = await A.holeAssetBaum(P, {});
+    check('P22-T271 D holeAssetBaum: immer nur vorhandene (da.png ja, geloescht/weg nein), alte AUS-Zeile wirkungslos',
       /da\.png/.test(pfade(baum)) && !/geloescht\.png/.test(pfade(baum)) && !/weg\.png/.test(pfade(baum)), pfade(baum));
+    W.vergissAssetStand(P);
+    const wb = await W.holeBaumAssets(P);
+    check('P22-T271 D asset-weiche.ts holeBaumAssets (code_intel-Baum): da.png ja, geloescht/weg nein',
+      wb.zeilen.some((z) => z.file_path === 'bilder/da.png') && !wb.zeilen.some((z) => /geloescht|weg/.test(z.file_path)), wb.zeilen.map((z) => z.file_path));
     const such = await A.sucheAssets(P, { query: 'png' });
-    check('P22-T236 D sucheAssets: Schalter EIN -> keine geloeschten/fehlenden Treffer', such.treffer.every((t) => !/geloescht|weg/.test(t.file_path)), such.treffer);
+    check('P22-T271 D sucheAssets: keine geloeschten/fehlenden Treffer', such.treffer.every((t) => !/geloescht|weg/.test(t.file_path)), such.treffer);
     const h = await A.assetHealth(P);
     check('P22-T236 D assetHealth: ausgeblendet zaehlt quelle_fehlt=1, im_wiederherstellungsfenster=1',
       h.ausgeblendet?.quelle_fehlt === 1 && h.ausgeblendet?.im_wiederherstellungsfenster === 1, h.ausgeblendet);
@@ -147,11 +155,8 @@ if (!url || !/synapse_test/.test(url)) {
       x.success === true && !rest.includes('coedit-test/t51-golden-x/weg.png') && rest.includes('bilder/da.png') && rest.includes('bilder/geloescht.png'), { x, rest });
     const m = await ALT.meldeAssetQuellenFehlen(P, ['bilder/da.png', '../boese']);
     check('P22-T236 D meldeAssetQuellenFehlen: markiert legacy-Zeile, ungueltiger Pfad gezaehlt', m.success === true && m.markiert === 1 && m.ungueltig === 1, m);
-    await schalter(false);
-    const aus = await ALT.meldeAssetQuellenFehlen(P, ['bilder/da.png']);
-    check('P22-T236 D meldeAssetQuellenFehlen: Schalter AUS -> funktion_aus', aus.success === false && aus.error?.code === 'funktion_aus', aus);
-    const xa = await ALT.pruefeAssetAltbestand({ project: P, ausfuehren: true });
-    check('P22-T236 D pruefeAssetAltbestand: ausfuehren bei Schalter AUS -> funktion_aus', xa.success === false && xa.error === 'funktion_aus', xa);
+    check('P22-T271 D meldeAssetQuellenFehlen/pruefeAssetAltbestand: kein funktion_aus, kein schalter-Feld mehr',
+      !('schalter' in m) && !('schalter' in x) && x.error !== 'funktion_aus', { m, x });
   } finally {
     await pool.query('DELETE FROM asset_files WHERE project=$1', [P]).catch(() => undefined);
     await pool.query('DELETE FROM code_files WHERE project=$1', [P]).catch(() => undefined);

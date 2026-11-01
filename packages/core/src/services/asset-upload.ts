@@ -153,10 +153,10 @@ export class AssetUploadKern {
     if(!(bereichsPolicy?.(eingang)??zulaessig))return fail('format_verboten',415,'Transferformat '+(format??'unbekannt')+' nicht in Betreiber-/Projektfreigabe'
       +(format&&!bekannt&&!generisch?' (kein Inspector; generischer Transfer aus: Produkt-Schalter asset_transfer_generisch)':'')+'.');
     // P22-T236 / thought 5eae0647: Textformate (SVG, .txt, .lock, Code mit Parser) sind Code und nie ein Projekt-Asset;
-    // nur mit Schalter asset_index_wirklichkeit (AUS = Altverhalten).
+    // P22-T271: immer (Schalter asset_index_wirklichkeit entfernt).
     if(ctx.bereich==='projekt'&&!bereichsPolicy){
-      const alt=await import('./asset-altbestand.js'),wirk=await import('./asset-transfer-generisch.js');
-      if(await alt.istTextFormatPfad(a.logischer_pfad)&&(await wirk.leseAssetIndexWirklichkeit(ctx.ziel_ref)).aktiv)
+      const alt=await import('./asset-altbestand.js');
+      if(await alt.istTextFormatPfad(a.logischer_pfad))
         return fail('kein_asset',415,'Textdatei '+a.logischer_pfad+' gehoert in den Code-Index, nicht in den Asset-Share (P22-T236).');
     }
     if(!Number.isSafeInteger(eingang.groesse)||eingang.groesse<0||eingang.groesse>max)return fail('quote',413,'Dateigröße überschreitet Betreibergrenze.');

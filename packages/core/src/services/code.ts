@@ -2881,7 +2881,7 @@ export async function searchMedia(
     limit,
     must.length > 0 ? filter : undefined
   );
-  // P22-T236 (User-Grundsatz 'Index = Wirklichkeit', thought 4d6e67d6): mit Schalter asset_index_wirklichkeit keine Treffer
+  // P22-T236/T271 (User-Grundsatz 'Index = Wirklichkeit', thought 4d6e67d6): immer (kein Schalter) keine Treffer
   // fuer geloeschte (Wiederherstellungsfenster) oder fehlende Projekt-Assets. Vektoren bleiben (Wiederherstellen ohne Neueinbettung).
   try {
     const { ausgeblendeteAssetPfade } = await import('./asset-altbestand.js');

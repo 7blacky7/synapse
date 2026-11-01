@@ -12,7 +12,6 @@ import { gemeinsamerAnsichtDienst } from './asset-ansicht-link.js';
 import type { AssetAnsichtErgebnis, AssetAnsichtReferenz } from './asset-ansicht.js';
 import { isProjectEnabled } from './project-registry.js';
 import { projektAssetSql } from './intel-bereich.js';
-import { leseAssetIndexWirklichkeit } from './asset-transfer-generisch.js';
 
 export interface ToolBildEingabe { project: unknown; file_path: unknown; revision?: unknown }
 export type ToolBildErgebnis =
@@ -30,9 +29,8 @@ const standardDienste = (): ToolBildDienste => ({
   ansicht: gemeinsamerAnsichtDienst(),
   projektAktiv: isProjectEnabled,
   assetId: async (projekt, pfad) => {
-    // P22-T236: mit Schalter asset_index_wirklichkeit nur vorhandene Assets (ohne quelle_nicht_gefunden).
-    const nur = (await leseAssetIndexWirklichkeit(projekt)).aktiv;
-    const r = await getPool().query(projektAssetSql('SELECT id::text AS id FROM asset_files WHERE project = $1 AND file_path = $2 AND deleted_at IS NULL', nur), [projekt, pfad]);
+    // P22-T236/T271: nur vorhandene Assets (ohne quelle_nicht_gefunden), immer.
+    const r = await getPool().query(projektAssetSql('SELECT id::text AS id FROM asset_files WHERE project = $1 AND file_path = $2 AND deleted_at IS NULL'), [projekt, pfad]);
     return (r.rows[0] as { id: string } | undefined)?.id ?? null;
   },
 });

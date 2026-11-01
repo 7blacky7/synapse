@@ -117,8 +117,8 @@ export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyIns
         generischeFormate:generisch.aktiv,generisch_debug:{quelle:generisch.quelle,bis:generisch.bis,letzter_fehler:generisch.letzter_fehler},
         tombstone_zustellung:tombstone.aktiv&&!tombstone.letzter_fehler,tombstone_debug:{quelle:tombstone.quelle,letzter_fehler:tombstone.letzter_fehler}};
     }));
-    // P22-T236: Daemon meldet lokal entfernte Assets ohne Share-Bytes (legacy_local), auch bei Asset-Sync AUS. Nur mit
-    // Produkt-Schalter asset_index_wirklichkeit (sonst success:false funktion_aus); Share-Assets loescht der Transferweg.
+    // P22-T236/T271: Daemon meldet lokal entfernte Assets ohne Share-Bytes (legacy_local), auch bei Asset-Sync AUS; immer
+    // (Schalter asset_index_wirklichkeit entfernt). Share-Assets loescht der Transferweg.
     fastify.post<{Params:{projekt:string};Body:{pfade?:unknown}}>(base+'/quelle-fehlt',async(req,reply)=>run(reply,async()=>{
       await kontext(req,req.params.projekt);
       return meldeAssetQuellenFehlen(req.params.projekt,req.body?.pfade);

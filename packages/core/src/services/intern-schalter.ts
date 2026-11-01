@@ -46,8 +46,6 @@ export const INTERN_SCHALTER = {
   datei_vertrag: ['freigegeben'],
   // P22-T238: befristeter EIN/AUS-Override des generischen Asset-Transfers, Produktstandard AUS.
   asset_transfer_generisch: ['freigegeben'],
-  // P22-T236: befristeter EIN/AUS-Override 'Index = Wirklichkeit' fuer Projekt-Assets, Produktstandard AUS.
-  asset_index_wirklichkeit: ['freigegeben'],
   // P22-T194: befristete Cache-Telemetrie-Freigabe, Produktstandard AUS.
   cache_waechter: ['freigegeben'],
   // P22-T194: verwaltete Container-Mods, Produktstandard AUS, beide Override-Richtungen befristet.

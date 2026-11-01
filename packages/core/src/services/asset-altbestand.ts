@@ -10,14 +10,14 @@
  *   text_doppelt   Asset-Zeile ohne Share-Bytes fuer eine Textdatei, die zugleich im Code-Index steht (assetArt(pfad) null,
  *                  z. B. SVG: 'SVG sind ja auch Code-Dateien', thought 5eae0647) = Doppelfuehrung.
  *   Entfernen = DELETE asset_files (Objekte/Verweise per ON DELETE CASCADE); Bedingungen werden beim Loeschen erneut geprueft.
- * SCHALTER: asset_index_wirklichkeit (asset-transfer-generisch.ts). Vorschau immer; ausfuehren und Meldungen nur mit EIN.
- * DEBUG: Antwort mit schalter (quelle/bis/letzter_fehler), je_art, je_projekt, beispiele, entfernt.
+ * KEIN SCHALTER (P22-T271, frueher asset_index_wirklichkeit): Vorschau immer; ausfuehren nur mit project (Rolle prueft
+ *   intern-asset-altbestand.ts); Meldungen immer.
+ * DEBUG: Antwort mit je_art, je_projekt, beispiele, entfernt.
  */
 import * as path from 'node:path';
 import { getPool } from '../db/client.js';
 import { assetArt } from '../watcher/binary.js';
 import { markiereAssetQuelleFehlt, normalisiereAssetPfad } from './asset-intel-store.js';
-import { leseAssetIndexWirklichkeit, type AssetSchalterStand } from './asset-transfer-generisch.js';
 
 export const ASSET_QUELLE_FEHLT_MAX = 500;
 export const ASSET_ALTBESTAND_LIMIT_STANDARD = 1000;
@@ -25,12 +25,10 @@ export const ASSET_ALTBESTAND_LIMIT_MAX = 10_000;
 
 export type AssetAltbestandArt = 'quelle_fehlt' | 'text_doppelt';
 
-/** Lokal entfernte Assets ohne Share-Bytes als 'quelle_nicht_gefunden' markieren (nur mit Schalter EIN). */
-export async function meldeAssetQuellenFehlen(project: string, pfade: unknown, o: { schalter?: AssetSchalterStand } = {}): Promise<Record<string, unknown>> {
-  const schalter = o.schalter ?? await leseAssetIndexWirklichkeit(project);
-  if (!schalter.aktiv) return { success: false, error: { code: 'funktion_aus', message: 'Produkt-Schalter asset_index_wirklichkeit ist AUS.' }, schalter };
+/** Lokal entfernte Assets ohne Share-Bytes als 'quelle_nicht_gefunden' markieren (P22-T271: immer, ohne Schalter). */
+export async function meldeAssetQuellenFehlen(project: string, pfade: unknown): Promise<Record<string, unknown>> {
   if (!Array.isArray(pfade) || pfade.length === 0 || pfade.length > ASSET_QUELLE_FEHLT_MAX || pfade.some(p => typeof p !== 'string')) {
-    return { success: false, error: { code: 'eingang_ungueltig', message: 'pfade: 1 bis ' + ASSET_QUELLE_FEHLT_MAX + ' projekt-relative Pfade erwartet.' }, schalter };
+    return { success: false, error: { code: 'eingang_ungueltig', message: 'pfade: 1 bis ' + ASSET_QUELLE_FEHLT_MAX + ' projekt-relative Pfade erwartet.' } };
   }
   let markiert = 0, ohne_zeile = 0, ungueltig = 0, verweise_fehlt = 0;
   for (const roh of new Set(pfade as string[])) {
@@ -40,17 +38,17 @@ export async function meldeAssetQuellenFehlen(project: string, pfade: unknown, o
     if (r.asset_id === null) ohne_zeile++; else markiert++;
     verweise_fehlt += r.verweise_fehlt;
   }
-  return { success: true, markiert, ohne_zeile, ungueltig, verweise_fehlt, schalter };
+  return { success: true, markiert, ohne_zeile, ungueltig, verweise_fehlt };
 }
 
 /**
  * P22-T236 Lesewege ausserhalb von asset_intel (Medien-Suche in Qdrant): Pfade, deren Projekt-Asset NICHT vorhanden ist
  * (deleted_at gesetzt = Wiederherstellungsfenster, oder status quelle_nicht_gefunden). Pfade ohne Asset-Zeile bleiben
- * unberuehrt (der Medien-Index wird auch ohne Asset-Weg gefuellt). Nur mit Schalter asset_index_wirklichkeit EIN.
+ * unberuehrt (der Medien-Index wird auch ohne Asset-Weg gefuellt). Immer (P22-T271, kein Schalter).
  */
 export async function ausgeblendeteAssetPfade(project: string, pfade: readonly string[]): Promise<Set<string>> {
   const liste = [...new Set(pfade.filter(p => typeof p === 'string' && p))];
-  if (!liste.length || !(await leseAssetIndexWirklichkeit(project)).aktiv) return new Set();
+  if (!liste.length) return new Set();
   const r = await getPool().query<{ file_path: string }>(
     "SELECT file_path FROM asset_files WHERE project = $1 AND file_path = ANY($2::text[]) AND (deleted_at IS NOT NULL OR status = 'quelle_nicht_gefunden')",
     [project, liste],
@@ -104,20 +102,16 @@ async function sammle(project: string | undefined, limit: number): Promise<{ kan
   return { kandidaten: alle.slice(0, limit), gekappt: r.rows.length > limit };
 }
 
-/** Vorschau (Standard) oder ausfuehren; ausfuehren nur mit project und Schalter asset_index_wirklichkeit EIN. */
+/** Vorschau (Standard) oder ausfuehren; ausfuehren nur mit project (P22-T271: ohne Schalter). */
 export async function pruefeAssetAltbestand(o: { project?: string; ausfuehren?: boolean; limit?: number }): Promise<Record<string, unknown>> {
   const limit = Math.min(ASSET_ALTBESTAND_LIMIT_MAX, Math.max(1, Math.trunc(o.limit ?? ASSET_ALTBESTAND_LIMIT_STANDARD)));
-  const schalter = o.project ? await leseAssetIndexWirklichkeit(o.project) : null;
   if (o.ausfuehren && !o.project) return { success: false, error: 'project_fehlt', message: 'ausfuehren:true nur mit project (Vorschau geht ohne).' };
-  if (o.ausfuehren && !schalter?.aktiv) {
-    return { success: false, error: 'funktion_aus', message: 'Produkt-Schalter asset_index_wirklichkeit ist fuer ' + o.project + ' AUS; Vorschau ohne ausfuehren.', schalter };
-  }
   const { kandidaten, gekappt } = await sammle(o.project, limit);
   const je_art: Record<string, number> = { quelle_fehlt: 0, text_doppelt: 0 };
   const je_projekt: Record<string, number> = {};
   for (const k of kandidaten) { je_art[k.art]++; je_projekt[k.project] = (je_projekt[k.project] ?? 0) + 1; }
   const beispiele = kandidaten.slice(0, 20).map(k => ({ project: k.project, file_path: k.file_path, art: k.art }));
-  const basis = { modus: o.ausfuehren ? 'ausfuehren' : 'vorschau', project: o.project ?? null, kandidaten: kandidaten.length, gekappt, je_art, je_projekt, beispiele, schalter };
+  const basis = { modus: o.ausfuehren ? 'ausfuehren' : 'vorschau', project: o.project ?? null, kandidaten: kandidaten.length, gekappt, je_art, je_projekt, beispiele };
   if (!o.ausfuehren || kandidaten.length === 0) return { success: true, ...basis, entfernt: 0 };
   const r = await getPool().query<{ file_path: string }>(
     `DELETE FROM asset_files a WHERE a.project = $1 AND a.file_path = ANY($2::text[]) AND ${OHNE_SHARE} RETURNING a.file_path`,

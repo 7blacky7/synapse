@@ -4,7 +4,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {getPool} from '../db/client.js';
 import {standardRegistry} from '../asset-intel/registry.js';
 import {getAssetKonfiguration,loeseAssetProjektoptionen,assetFormatFreigegeben,generischesTransferFormat} from '../config/asset-konfig.js';
-import {leseAssetTransferGenerisch,leseAssetIndexWirklichkeit} from './asset-transfer-generisch.js';
+import {leseAssetTransferGenerisch} from './asset-transfer-generisch.js';
 import type {AssetKonfiguration} from '../config/asset-konfig.js';
 import {AssetSpeicher,normalisiereSpeicherPfad} from './asset-speicher.js';
 import type {AssetAdresse,AssetStaging,AssetOperation} from './asset-speicher.js';
@@ -78,9 +78,8 @@ export class AssetKonfliktKern {
   if(!Number.isSafeInteger(limit)||limit<1||limit>this.cfg.speicher.maxObjekteJeDatei||!Number.isSafeInteger(offset)||offset<0||o.asset_id!==undefined&&!positive(o.asset_id))
    return fail('eingang_ungueltig',400,'Ungültige Konfliktfilter.');
   const p=o.file_path?normalisiereSpeicherPfad(o.file_path):null;
-  // P22-T236: offene Konflikte nur fuer vorhandene Assets (Schalter asset_index_wirklichkeit); alle:true bleibt die volle Historie.
-  let nur=false;
-  if(o.alle!==true){try{nur=(await leseAssetIndexWirklichkeit(project)).aktiv;}catch{nur=false;}}
+  // P22-T236/T271: offene Konflikte nur fuer vorhandene Assets (immer, kein Schalter); alle:true bleibt die volle Historie.
+  const nur=o.alle!==true;
   const rows=(await this.db.query("SELECT c.*,a.file_path,count(*) OVER() AS total FROM asset_konflikte c JOIN asset_files a ON a.id=c.asset_id WHERE a.project=$1 AND ($2::bigint IS NULL OR c.asset_id=$2) AND ($3::text IS NULL OR a.file_path=$3) AND ($4::boolean OR c.status='offen') AND ($7::boolean IS NOT TRUE OR (a.deleted_at IS NULL AND a.status IS DISTINCT FROM 'quelle_nicht_gefunden')) ORDER BY c.id LIMIT $5 OFFSET $6",[project,o.asset_id??null,p,o.alle===true,limit,offset,nur])).rows;
   const total=Number(rows[0]?.total??0),konflikte=await Promise.all(rows.map(r=>this.pack(r)));
   return {konflikte,total,gekappt:offset+rows.length<total};
