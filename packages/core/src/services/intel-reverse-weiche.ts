@@ -20,6 +20,11 @@ export const REVERSE_INTEL_ZEUGE=Symbol.for('synapse.p18t109.reverseIntelZiel');
 /** code_intel-Aktion -> reverse-Aktion; statements/flow/entrypoints/variables usw. bewusst nicht (User 23.10.2026). */
 export const REVERSE_INTEL_CODE:Readonly<Record<string,string>>={tree:'tree',functions:'functions',symbols:'symbols',references:'references',search:'search',file:'file',calls:'calls'};
 export const REVERSE_INTEL_ASSET:Readonly<Record<string,string>>={tree:'assets_tree',inspect:'inspect'};
+/** P22-T274 B4: Begründung in der Antwort statt nur reverse_nicht_unterstuetzt. flow/statements/entrypoints/variables über
+ * REVERSE_BEREICH gehen nicht ohne größeren Umbau: der reverse-Dispatcher hat dafür keine Aktion (Rechte, Maskierung,
+ * Antwortbudget, Nachforderung fehlender Schichten). Bewusst nicht freigegeben, User-Entscheidung 23.10.2026. */
+const REVERSE_INTEL_CODE_GRUND='Bewusst nicht freigegeben (User-Entscheidung 23.10.2026). Der reverse-Dispatcher hat für Anweisungen und Kontrollfluss keine eigene Aktion: sie müssten wie file/search maskiert, im Antwortbudget gekappt und bei fehlender Schicht nachgefordert werden. Das ist ein eigener Umbau, kein Schalter.';
+const REVERSE_INTEL_CODE_ALTERNATIVEN=['calls (Aufrufkanten einer Funktion)','references','functions','file mit <Original>@S3/<Funktion>.c oder @S2/<Funktion>.asm'];
 const verlauf:Row[]=[];
 async function merke(e:Row):Promise<void>{
   const max=await leseReverseEinstellwerte({}).then(s=>reverseZahl(s,'diagnose_verlauf_speicher')).catch(()=>0);
@@ -71,8 +76,10 @@ export async function leiteReverseIntelUm(tool:'code_intel'|'asset_intel',args:R
   const herkunft:Row={bereich:'reverse',reverse_id:rid,tool,action,reverse_action:ziel??null};
   if(!ziel){
     await merke({...herkunft,ergebnis:'reverse_nicht_unterstuetzt'});
+    const grund=tool==='code_intel'?REVERSE_INTEL_CODE_GRUND:'Für Reverse-Einträge gibt es in asset_intel nur tree (assets_tree) und inspect.';
     return {success:false,action,project:rid,error:'reverse_nicht_unterstuetzt',fehlercode:'reverse_nicht_unterstuetzt',
-      message:tool+'(action:"'+action+'") gibt es für Reverse-Einträge nicht.',erlaubt:Object.keys(tabelle),herkunft};
+      message:tool+'(action:"'+action+'") gibt es für Reverse-Einträge nicht. '+grund,grund,
+      ...(tool==='code_intel'?{alternativen:REVERSE_INTEL_CODE_ALTERNATIVEN}:{}),erlaubt:Object.keys(tabelle),herkunft};
   }
   const wer=await aufrufer(typeof agentId==='string'&&agentId?agentId:typeof a.agent_id==='string'&&a.agent_id?a.agent_id:null);
   if(!wer.project||!wer.agent_id){

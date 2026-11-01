@@ -123,7 +123,7 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
   assets_tree:['reverse_id','path','depth','recursive','limit','format','asset_type'],
   inspect:['reverse_id','datei','file_path','objects_offset','objects_limit','object_type','references_limit'],
   ansicht:['reverse_id','datei','file_path','ansicht','offen_sekunden','einmalig'],
-  uebernehmen:['reverse_id','file_path','ziel_pfad','ueberschreiben'],
+  uebernehmen:['reverse_id','datei','file_path','ziel_pfad','ueberschreiben'],
 };
 export const REVERSE_NULL_FELDER = ['reverse_id','datei','format','arch','bits','schicht','schicht_angefragt','fehlercode','werkzeug','kaltstart_s','naechster_offset','eta'] as const;
 /** P21-T16: Aktionen, deren Antwort Inhalt aus dem Analyseziel traegt, mit Kandidatenfeldern. */
@@ -248,11 +248,26 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
   async function medien(db:Db,rid:string):Promise<Row[]> {
     return (await db.query('SELECT id::text AS id,position,bezeichnung,art,status,fehlercode,groesse,satz_sha256,vorschlag FROM reverse_medien WHERE eintrag_id=$1 ORDER BY position,id',[rid])).rows;
   }
-  async function entryDto(db:Db,e:Row):Promise<Row> {
+  /** P22-T274 R2: Schicht-Summen aller Einträge einer Seite in EINER Abfrage. Die alte Form COALESCE(d.eintrag_id,m.eintrag_id)=$1
+   * lief je Eintrag als Parallel Hash Join über alle reverse_schichten (kein Index) und scheiterte an 64 MB /dev/shm (SQLSTATE 53100).
+   * Jetzt zwei Zweige über die Teilindizes uq_reverse_schicht_aktuell (datei_id,schicht) bzw. uq_reverse_schicht_medium_aktuell
+   * (medium_id,schicht, nur datei_id IS NULL); gleiche Semantik, da datei_id per FK immer eine Datei trifft. Parallele Worker sind
+   * nur für diese Transaktion aus (set_config lokal), so braucht auch der große Eintrag kein DSM-Segment. */
+  async function schichtSummen(db:Db,ids:string[]):Promise<Map<string,Row[]>> {
+    const summen=new Map<string,Row[]>(ids.map(i=>[i,[]]));
+    if(!ids.length)return summen;
+    await db.query("SELECT set_config('max_parallel_workers_per_gather','0',true)");
+    const r=await db.query(`SELECT x.eintrag_id,x.schicht,count(*)::int AS gesamt,count(*) FILTER(WHERE x.status='fertig')::int AS fertig FROM (
+      SELECT d.eintrag_id,s.schicht,s.status FROM reverse_dateien d JOIN reverse_schichten s ON s.datei_id=d.id AND s.aktuell WHERE d.eintrag_id=ANY($1::text[])
+      UNION ALL
+      SELECT m.eintrag_id,s.schicht,s.status FROM reverse_medien m JOIN reverse_schichten s ON s.medium_id=m.id AND s.aktuell AND s.datei_id IS NULL WHERE m.eintrag_id=ANY($1::text[])
+    ) x GROUP BY x.eintrag_id,x.schicht ORDER BY x.eintrag_id,x.schicht`,[ids]);
+    for(const row of r.rows)summen.get(str(row.eintrag_id))?.push({schicht:row.schicht,gesamt:row.gesamt,fertig:row.fertig});
+    return summen;
+  }
+  async function entryDto(db:Db,e:Row,summen?:Map<string,Row[]>):Promise<Row> {
     const ms=await medien(db,str(e.id));
-    const layers=(await db.query(`SELECT s.schicht,count(*)::int AS gesamt,count(*) FILTER(WHERE s.status='fertig')::int AS fertig FROM reverse_schichten s
-      LEFT JOIN reverse_dateien d ON d.id=s.datei_id LEFT JOIN reverse_medien m ON m.id=s.medium_id
-      WHERE s.aktuell AND COALESCE(d.eintrag_id,m.eintrag_id)=$1 GROUP BY s.schicht ORDER BY s.schicht`,[e.id])).rows;
+    const layers=(summen??await schichtSummen(db,[str(e.id)])).get(str(e.id))??[];
     return {reverse_id:e.id,titel:maskiereMitKatalog(str(e.titel),'reverse').text,beschreibung:maskiereMitKatalog(str(e.beschreibung),'reverse').text,status:e.status,tags:e.tags,
       medien:ms.map(m=>({...m,bezeichnung:maskiereMitKatalog(str(m.bezeichnung),'reverse').text})),schicht_summen:layers,
       dateizahl:Number((await db.query('SELECT count(*)::int AS n FROM reverse_dateien WHERE eintrag_id=$1',[e.id])).rows[0].n),
@@ -280,7 +295,8 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     const total=Number((await db.query('SELECT count(*)::int AS n FROM reverse_eintraege'+where,vals)).rows[0].n);
     const rows=(await db.query('SELECT id,titel,beschreibung,status,tags FROM reverse_eintraege'+where+' ORDER BY id LIMIT $4 OFFSET $5',[...vals,limit,offset])).rows;
     const items:Row[]=[];const max=reverseZahl(ein,'antwort_bytes');
-    for(const e of rows){const r=await entryDto(db,e);if(Buffer.byteLength(JSON.stringify(items))+Buffer.byteLength(JSON.stringify(r))>max)break;items.push(r);}
+    const summen=await schichtSummen(db,rows.map(e=>str(e.id)));
+    for(const e of rows){const r=await entryDto(db,e,summen);if(Buffer.byteLength(JSON.stringify(items))+Buffer.byteLength(JSON.stringify(r))>max)break;items.push(r);}
     if(rows.length&&!items.length)fail('zu_gross');
     return {eintraege:items,total,gekappt:offset+items.length<total,naechster_offset:offset+items.length<total?offset+items.length:null};
   }
@@ -723,6 +739,14 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       const code=(e as {code?:string})?.code;
       if(code==='23505')return baueReverseAntwort(a,{},'ziel_belegt');
       if(code==='57014')return baueReverseAntwort(a,{},'zeitlimit');
+      // P22-T274 R3: 53100 (z. B. /dev/shm voll, DSM-Segment paralleler Abfragen) bzw. 53200 (out of memory) ist eine
+      // Ressourcengrenze der Datenbank, kein interner Fehler: speicherlimit + wiederholbar, Ursache weiter im Log/Fehlerlog.
+      if(code==='53100'||code==='53200'){
+        const m=String((e as Error)?.message??''),grund=code==='53100'?'pg_shared_memory':'pg_out_of_memory';
+        void loggeReverseFehler({eintrag_id:typeof a.reverse_id==='string'?a.reverse_id:null,komponente:'tool',name:String(a.action),grund,detail:m.slice(0,200),quelle:'reverse-tool'},pool);
+        console.error('[reverse-tool] Speichergrenze der Datenbank bei',String(a.action),':',code,m.slice(0,200));
+        return baueReverseAntwort(a,{wiederholbar:true,sqlstate:code},'speicherlimit',grund);
+      }
       // P18-T66/F3: unerwartete Ausnahme sichtbar machen (z. B. idempotency_conflict); als Detail nur kurze Kennungen.
       const m=String((e as Error)?.message??'');
       void loggeReverseFehler({eintrag_id:typeof a.reverse_id==='string'?a.reverse_id:null,komponente:'tool',name:String(a.action),

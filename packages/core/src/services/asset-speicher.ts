@@ -81,6 +81,8 @@ export class AssetSpeicherFehler extends Error {
   constructor(public readonly code: string, message: string) { super(message); this.name='AssetSpeicherFehler'; }
 }
 const fail = (code: string, message: string): never => { throw new AssetSpeicherFehler(code,message); };
+/** P22-T274 B7: Meldung bei belegter Bereichssperre (publish/direkt); reverse-uebernehmen erkennt daran die wiederholbare Sperre. */
+export const ASSET_BEREICHSSPERRE_MELDUNG = 'Eine andere Veröffentlichung hält die Bereichssperre.';
 const istCode = (e: unknown, code: string) => (e as NodeJS.ErrnoException)?.code === code;
 
 /** Mehrfachkodierung vollständig auflösen; keine Traversal-Normalisierung. */
@@ -346,7 +348,7 @@ export class AssetSpeicher {
         finally { await h.close(); if(!geschrieben) await fs.unlink(p.pfad).catch(()=>undefined); }
         await p.handle.sync();
       });
-    } catch(e) { if(istCode(e,'EEXIST')) return fail('konflikt','Eine andere Veröffentlichung hält die Bereichssperre.'); throw e; }
+    } catch(e) { if(istCode(e,'EEXIST')) return fail('konflikt',ASSET_BEREICHSSPERRE_MELDUNG); throw e; }
     return async()=>{
       const h=await this.open(k,key);
       let owner: string;

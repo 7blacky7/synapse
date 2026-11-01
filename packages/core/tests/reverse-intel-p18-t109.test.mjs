@@ -81,7 +81,9 @@ try{
  ok(f3?.success===true&&f3.results.length>=1,'code_intel search');
  const f4=await intel('code_intel',{action:'statements',project:rid});
  ok(f4?.success===false&&f4.error==='reverse_nicht_unterstuetzt'&&f4.erlaubt.includes('tree'),'statements -> reverse_nicht_unterstuetzt');
- ok((await intel('code_intel',{action:'flow',project:rid}))?.error==='reverse_nicht_unterstuetzt','flow -> reverse_nicht_unterstuetzt');
+ // P22-T274 B4: Ablehnung nennt Grund (User-Entscheidung) und Alternativen.
+ const flow=await intel('code_intel',{action:'flow',project:rid});
+ ok(flow?.error==='reverse_nicht_unterstuetzt'&&/23\.10\.2026/.test(String(flow.grund))&&String(flow.message).includes(String(flow.grund))&&flow.alternativen?.length>0,'flow -> reverse_nicht_unterstuetzt mit grund');
  ok(await intel('code_intel',{action:'functions',project:project})===null,'normales Projekt -> Bestand');
  ok(await intel('code_intel',{action:'functions',project:'rev-unbekannt'})===null,'unbekannte rev-ID -> Bestand');
  const a1=await core.fuehreAssetIntelAus({action:'graph',project:rid},{agentId:agent});

@@ -60,7 +60,27 @@ test('RV17: Revision, Herkunft, Manifest, Fake-Daemon und verweigerte Übernahme
   const chunks=[];for await(const b of download.stream)chunks.push(b);assert.deepEqual(Buffer.concat(chunks),bytes);
   assert.deepEqual(await readFile(join(cfg.speicher.root,project,'assets',input.ziel_pfad)),bytes);
   const occupied=await call('uebernehmen',input);assert.equal(occupied.fehlercode,'ziel_belegt');assert.equal(occupied.vorhandene_revision,'1');
-  const overwrite=await call('uebernehmen',{...input,ueberschreiben:true});assert.equal(overwrite.success,true,JSON.stringify(overwrite));assert.equal(overwrite.revision,'2');
+  // (angepasst P22-T274: seit P22-T252 ist gleicher Inhalt am Ziel ein Gleichstand ohne neue Revision; vorher interner_fehler.)
+  const overwrite=await call('uebernehmen',{...input,ueberschreiben:true});assert.equal(overwrite.success,true,JSON.stringify(overwrite));assert.equal(overwrite.revision,'1');assert.equal(overwrite.unveraendert,true);
+  // P22-T274 B1: datei ist Alias für file_path, auch bei verschachtelten PNG-Pfaden (vorher pfad_gefahr).
+  await db.query("INSERT INTO reverse_assets(eintrag_id,datei_id,pfad,sha256,groesse,storage_key,format,mime) VALUES($1,$2,'gfx/s3/boden-00000.png',$3,$4,$5,'png','image/png')",[rid,d,sha,bytes.length,key]);
+  const alias=await call('uebernehmen',{datei:'gfx/s3/boden-00000.png',ziel_pfad:'assets/s3/boden-00000.png'});
+  assert.equal(alias.success,true,JSON.stringify(alias));assert.equal(alias.revision,'1');assert.equal(alias.datei,'gfx/s3/boden-00000.png');assert.equal(alias.nicht_verwendet,undefined);
+  assert.equal((await call('uebernehmen',{file_path:'gfx/s3/boden-00000.png',ziel_pfad:'assets/s3/boden-file.png'})).success,true,'file_path gleich geprüft');
+  assert.equal((await call('uebernehmen',{datei:'gfx/s3/boden-00000.png',file_path:'derived.png',ziel_pfad:'x/y.png'})).fehler,'parameter_ungueltig');
+  assert.equal((await call('uebernehmen',{datei:'../boden.png',ziel_pfad:'x/y.png'})).fehlercode,'pfad_gefahr');
+  // P22-T274 B7: parallele Übernahmen in dasselbe Projekt teilen die Bereichssperre der Ablage; keine meldet ziel_belegt.
+  const parallel=await Promise.all(['par/a.png','par/b.png','par/c.png'].map(z=>call('uebernehmen',{file_path:'derived.png',ziel_pfad:z,ueberschreiben:false})));
+  for(const p of parallel){assert.equal(p.success,true,JSON.stringify(p));assert.equal(p.revision,'1');}
+  // Fremde Sperre (z. B. Daemon-Upload): wiederholbar melden statt ziel_belegt; wird sie frei, klappt der nächste Versuch.
+  const sperrOrdner=join(cfg.speicher.root,project,'.intern','locks'),sperre=join(sperrOrdner,'publish');
+  await mkdir(sperrOrdner,{recursive:true});await writeFile(sperre,'fremde-operation');
+  const gesperrt=await call('uebernehmen',{file_path:'derived.png',ziel_pfad:'par/d.png'});
+  assert.equal(gesperrt.fehlercode,'werkzeug_fehler',JSON.stringify(gesperrt));assert.equal(gesperrt.fehler,'veroeffentlichung_gesperrt');assert.equal(gesperrt.wiederholbar,true);
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM asset_files WHERE project=$1 AND file_path=$2',[project,'par/d.png'])).rows[0].n,0);
+  setTimeout(()=>{rm(sperre,{force:true}).catch(()=>undefined);},200);
+  const frei=await call('uebernehmen',{file_path:'derived.png',ziel_pfad:'par/d.png'});
+  assert.equal(frei.success,true,JSON.stringify(frei));assert(frei.versuche>=2,JSON.stringify(frei));
   for(const layer of ['S1','S2','S3'])assert.equal((await call('uebernehmen',{...input,file_path:'game.exe@'+layer+'/f.c'})).fehlercode,'keine_berechtigung');
   await db.query("INSERT INTO reverse_dateien(eintrag_id,medium_id,pfad,art) VALUES($1,$2,'game.exe','binaer')",[rid,m]);
   assert.equal((await call('uebernehmen',{...input,file_path:'game.exe',ziel_pfad:'game.exe'})).fehlercode,'keine_berechtigung');

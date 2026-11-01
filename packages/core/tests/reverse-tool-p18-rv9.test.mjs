@@ -106,6 +106,21 @@ try {
  await new Promise(r=>setTimeout(r,100));
  await pool.query("UPDATE reverse_schichten SET status='fertig',funktionen_fertig=10,beendet_at=NOW() WHERE datei_id=1");
  assert.equal(check(await pending).schicht,'S1','Long-Poll sieht Änderung');
+ // P22-T274 R2: neue Schicht-Summen (eine Abfrage je Seite, Teilindizes) liefern dasselbe wie die alte COALESCE-Abfrage.
+ await pool.query("INSERT INTO reverse_schichten(datei_id,medium_id,schicht,fingerabdruck,status,aktuell) VALUES(1,1,'S1','rv9-alt','fertig',false)");
+ await pool.query("INSERT INTO reverse_schichten(medium_id,schicht,fingerabdruck,status) VALUES(2,'E','rv9-e2','offen'),(3,'E','rv9-e3','fertig')");
+ const altSummen=async id=>(await pool.query(`SELECT s.schicht,count(*)::int AS gesamt,count(*) FILTER(WHERE s.status='fertig')::int AS fertig FROM reverse_schichten s
+   LEFT JOIN reverse_dateien d ON d.id=s.datei_id LEFT JOIN reverse_medien m ON m.id=s.medium_id
+   WHERE s.aktuell AND COALESCE(d.eintrag_id,m.eintrag_id)=$1 GROUP BY s.schicht ORDER BY s.schicht`,[id])).rows;
+ const neuEintrag=(await call('eintrag')).eintrag.schicht_summen;
+ const altEintrag=await altSummen(rid);assert.deepEqual(neuEintrag,altEintrag,'neu '+JSON.stringify(neuEintrag)+' alt '+JSON.stringify(altEintrag));assert.deepEqual(neuEintrag.find(x=>x.schicht==='E'),{schicht:'E',gesamt:1,fertig:0},'Medium-E-Schicht zählt');assert.deepEqual(neuEintrag.find(x=>x.schicht==='S1'),{schicht:'S1',gesamt:1,fertig:1},'nicht aktuelle Schicht zählt nicht');
+ const seite=await call('liste',{reverse_id:undefined,limit:5});
+ for(const id of [rid,second])assert.deepEqual(seite.eintraege.find(x=>x.reverse_id===id).schicht_summen,await altSummen(id),'liste '+id);
+ // P22-T274 R3: SQLSTATE 53100 (DSM/shm voll) -> speicherlimit statt interner_fehler.
+ const shmPool={async connect(){const c=await pool.connect();return new Proxy(c,{get(t,k){if(k==='query')return (sql,...r)=>typeof sql==='string'&&sql.includes('reverse_schichten')?Promise.reject(Object.assign(new Error('could not resize shared memory segment "/PostgreSQL.1" to 16777216 bytes: No space left on device'),{code:'53100'})):t.query(sql,...r);const v=t[k];return typeof v==='function'?v.bind(t):v;}});},
+  async query(...args){const c=await this.connect();try{return await c.query(...args);}finally{c.release();}}};
+ const shm=await mitLesePool(pool,()=>createReverseToolService({pool:shmPool}).ausfuehren({action:'liste',agent_id:agent,project}));
+ assert.equal(shm.fehlercode,'speicherlimit',JSON.stringify(shm));assert.equal(shm.fehler,'pg_shared_memory');assert.equal(shm.wiederholbar,true);
  const before=(await pool.query("SELECT count(*)::int AS n FROM tool_aktivitaet WHERE projekt=$1 AND zaehlt_als_aktivitaet",[project])).rows[0].n;
  await call('status',{datei:'cd1/game.exe'});
  assert.equal((await pool.query("SELECT count(*)::int AS n FROM tool_aktivitaet WHERE projekt=$1 AND zaehlt_als_aktivitaet",[project])).rows[0].n,before,'Statuspoll keine Aktivität');
