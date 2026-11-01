@@ -1,6 +1,7 @@
 export type Area =
   | 'overview'
   | 'main-agent'
+  | 'editor'
   | 'channels'
   | 'agents'
   | 'workspaces'

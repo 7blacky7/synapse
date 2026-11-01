@@ -15,7 +15,7 @@ import {
   leseHauptagentHeartbeat, setzeHauptagentHeartbeat, hauptagentIdentitaetsId, leseVerbrauchSchalter, setzeVerbrauchSchalter, leseAgentVerbrauch,
   bucheAgentVerbrauch, HAUPTAGENT_PROJEKT, HAUPTAGENT_AGENT_ID,
   leseRuntimeUeberwachung, setzeRuntimeUeberwachungSchalter, setzeRuntimeUeberwachungEinstellungen, markiereRuntimeAngehalten,
-  leseUiProduktSchalter, listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls, postToInbox, mitAgentAufrufKontext, leseAgentBezugModus,
+  mitUserHerkunft, leseNetzwerkKonfiguration, leseUiProduktSchalter, erstelleEditorAbbild, leseEditorAbbild, leseEditorAbbildDatei, erstelleEditorPruefplan, listeEditorPruefplaene, leseEditorPruefplan, mitCodeIntelSchatten, getFileContent, listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls, postToInbox, mitAgentAufrufKontext, leseAgentBezugModus,
   leseCliModelleSchalter, pruefeModellFuerRuntime, leseUserModellWahl, synapseModellId, CLI_MODELL_RUNTIMES, type CliModellRuntime,
   pruefeEffortFuerModell, leseEffortWahl, listModels, setzeCliKontextQuelle,
   leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent, rendereToolBild,
@@ -734,6 +734,84 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       sse(reply, 'fehler', { message: errorMessage(error) });
       reply.raw.end();
     }
+  });
+
+  // P22-T256: nur User-Session (Guard oben); Lesen friert Agentenpläne nicht ein.
+  const editorSchalter = (project:string) => leseUiProduktSchalter('editor_modul', project);
+  fastify.get<{Querystring:{project?:string}}>('/api/main-agent/editor/ereignisse', async (request,reply) => {
+    const project=request.query.project ?? '', s=await editorSchalter(project);
+    if(!project)return reply.code(400).send({success:false,error:'projekt_fehlt'});
+    if(!s.aktiv || s.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
+    const client=await getPool().connect();
+    try { await client.query('LISTEN synapse_editor_plan'); }
+    catch(e) {client.release();return reply.code(500).send({success:false,error:'ereignisse_nicht_verfuegbar'});}
+    reply.raw.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform',Connection:'keep-alive','X-Accel-Buffering':'no'});
+    reply.sent=true;let geschlossen=false;
+    const senden=(data:unknown)=>{if(!geschlossen)reply.raw.write('data: '+JSON.stringify(data)+'\n\n');};
+    const listener=(m:{channel:string;payload?:string})=>{if(m.channel!=='synapse_editor_plan')return;try{const e=JSON.parse(m.payload??'{}');if(e.project===project)senden(e);}catch{/* unbekannte Nachricht ignorieren */}};
+    client.on('notification',listener);
+    const takt=setInterval(()=>{if(!geschlossen)reply.raw.write(': takt\n\n');},15000);
+    request.raw.once('close',()=>{geschlossen=true;clearInterval(takt);client.removeListener('notification',listener);void client.query('UNLISTEN synapse_editor_plan').catch(()=>{}).finally(()=>client.release());});
+    senden({typ:'bereit',project});
+  });
+  fastify.post<{Body:{project?:unknown}}>('/api/main-agent/editor/abbild', async (request,reply) => {
+    const project=typeof request.body?.project==='string'?request.body.project.trim():'';
+    if(!project)return reply.code(400).send({success:false,error:'projekt_fehlt'});
+    const s=await editorSchalter(project); if(!s.aktiv || s.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
+    try { return {success:true,abbild:await erstelleEditorAbbild(project),debug:s}; }
+    catch(e) { return reply.code(500).send({success:false,error:'abbild_fehler',message:errorMessage(e)}); }
+  });
+  fastify.get<{Params:{id:string};Querystring:{project?:string}}>('/api/main-agent/editor/abbild/:id', async (request,reply) => {
+    const project=request.query.project ?? ''; const s=await editorSchalter(project);
+    if(!s.aktiv || s.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
+    const a=await leseEditorAbbild(project,request.params.id);
+    return a ? {success:true,abbild:a,debug:s} : reply.code(404).send({success:false,error:'abbild_unbekannt'});
+  });
+  fastify.get<{Params:{id:string};Querystring:{project?:string;path?:string}}>('/api/main-agent/editor/abbild/:id/datei', async (request,reply) => {
+    const project=request.query.project ?? '', path=request.query.path ?? ''; const s=await editorSchalter(project);
+    if(!s.aktiv || s.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
+    const datei=await leseEditorAbbildDatei(project,request.params.id,path);
+    return datei ? {success:true,datei} : reply.code(404).send({success:false,error:'datei_unbekannt'});
+  });
+  fastify.post<{Body:{project?:unknown;abbild_id?:unknown;file_path?:unknown;entwurf?:unknown}}>('/api/main-agent/editor/pruefplaene', async (request,reply) => {
+    const b=request.body ?? {}, project=typeof b.project==='string'?b.project.trim():'';
+    const s=await editorSchalter(project); if(!s.aktiv || s.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
+    if(!project || typeof b.abbild_id!=='string' || typeof b.file_path!=='string' || typeof b.entwurf!=='string')
+      return reply.code(400).send({success:false,error:'parameter_ungueltig'});
+    try { return {success:true,plan:await mitUserHerkunft('web-ui-editor',()=>erstelleEditorPruefplan(project,b.abbild_id as string,b.file_path as string,b.entwurf as string))}; }
+    catch(e) { return reply.code(400).send({success:false,error:errorMessage(e)}); }
+  });
+  fastify.get<{Querystring:{project?:string}}>('/api/main-agent/editor/pruefplaene', async (request,reply) => {
+    const project=request.query.project ?? ''; const s=await editorSchalter(project);
+    if(!s.aktiv || s.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
+    return {success:true,plaene:await listeEditorPruefplaene(project)};
+  });
+  fastify.get<{Params:{id:string};Querystring:{project?:string}}>('/api/main-agent/editor/pruefplaene/:id', async (request,reply) => {
+    const project=request.query.project ?? ''; const s=await editorSchalter(project);
+    if(!s.aktiv || s.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
+    const plan=await leseEditorPruefplan(project,request.params.id);
+    return plan ? {success:true,plan} : reply.code(404).send({success:false,error:'pruefplan_unbekannt'});
+  });
+  fastify.get<{Querystring:{project?:string}}>('/api/main-agent/editor/dateien', async (request,reply) => {
+    const project=request.query.project ?? ''; const s=await editorSchalter(project);
+    if(!s.aktiv || s.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
+    const r=await getPool().query<{file_path:string}>('SELECT file_path FROM code_files WHERE project=$1 AND deleted_at IS NULL AND ignored=false AND content IS NOT NULL ORDER BY file_path',[project]);
+    return {success:true,dateien:r.rows.map(x=>x.file_path),debug:s};
+  });
+  fastify.get<{Querystring:{project?:string;path?:string}}>('/api/main-agent/editor/plaene', async (request,reply) => {
+    const project=request.query.project ?? '', path=request.query.path ?? ''; const s=await editorSchalter(project);
+    if(!s.aktiv || s.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
+    if(!path)return reply.code(400).send({success:false,error:'pfad_fehlt'});
+    const r=await getPool().query(`SELECT id::text,owner_agent_id,status::text,created_at FROM file_batch_plans
+      WHERE project=$1 AND status='open' AND expected_hashes ? $2 ORDER BY id`,[project,path]);
+    const config=await leseNetzwerkKonfiguration(project);
+    return {success:true,plaene:r.rows,nachleuchten_sekunden:config.werte.plan_nachleuchten_sekunden,debug:{schalter:s,nachleuchten:config.werte.plan_nachleuchten_sekunden}};
+  });
+  fastify.get<{Querystring:{project?:string;path?:string;plan?:string}}>('/api/main-agent/editor/schatten', async (request,reply) => {
+    const project=request.query.project ?? '', path=request.query.path ?? '', plan=request.query.plan ?? ''; const s=await editorSchalter(project);
+    if(!s.aktiv || s.letzter_fehler)return reply.code(403).send({success:false,error:'funktion_aus',debug:s});
+    if(!path || !/^[0-9]+$/.test(plan))return reply.code(400).send({success:false,error:'parameter_ungueltig'});
+    return await mitCodeIntelSchatten('file',{project,file_path:path,schatten:plan,typen:false},async()=>({success:true,file:await getFileContent(project,path)}));
   });
 
   // P22-T164: Das bestehende Auth-Modell hat genau einen interaktiven User (TOTP Single-Row).

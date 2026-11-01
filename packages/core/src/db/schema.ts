@@ -3250,6 +3250,68 @@ ${AGENT_START_ORT_SCHEMA_SQL}
 ${WRAPPER_ENDE_SCHEMA_SQL}${ARTEFAKT_BEWERTUNG_SCHEMA_SQL}
 ${ARTEFAKT_BEWERTUNG_NOTIFY_SCHEMA_SQL}
 ${ARTEFAKT_VORLAGEN_SCHEMA_SQL}
+-- P22-T256: nur Metadaten, keine Dateiinhalte in NOTIFY.
+CREATE OR REPLACE FUNCTION editor_plan_benachrichtigen() RETURNS trigger AS $fn$
+BEGIN
+ IF TG_OP = 'DELETE' THEN
+  PERFORM pg_notify('synapse_editor_plan',json_build_object('project',OLD.project,'plan_id',OLD.id::text,'op',TG_OP)::text);
+ ELSE
+  PERFORM pg_notify('synapse_editor_plan',json_build_object('project',NEW.project,'plan_id',NEW.id::text,'op',TG_OP)::text);
+ END IF;
+ RETURN NULL;
+END;
+$fn$ LANGUAGE plpgsql;
+DO $block$
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='trg_editor_plan_benachrichtigen' AND tgrelid='file_batch_plans'::regclass) THEN
+  CREATE TRIGGER trg_editor_plan_benachrichtigen AFTER INSERT OR UPDATE OR DELETE ON file_batch_plans FOR EACH ROW EXECUTE FUNCTION editor_plan_benachrichtigen();
+ END IF;
+END;
+$block$;
+
+-- P22-T256: unveränderliches PG-Abbild für einen User-Editor, ohne Datei-/Agentenreservierung.
+CREATE TABLE IF NOT EXISTS editor_abbilder (
+  id UUID PRIMARY KEY,
+  project TEXT NOT NULL,
+  erstellt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_editor_abbilder_project ON editor_abbilder(project, erstellt_am DESC);
+CREATE TABLE IF NOT EXISTS editor_abbild_dateien (
+  abbild_id UUID NOT NULL REFERENCES editor_abbilder(id) ON DELETE CASCADE,
+  file_path TEXT NOT NULL,
+  inhalt TEXT NOT NULL,
+  basis_hash TEXT NOT NULL,
+  maskiert BOOLEAN NOT NULL DEFAULT FALSE,
+  PRIMARY KEY (abbild_id, file_path)
+);
+-- P22-T256: isolierte User-Prüfpläne; keine Datei-Reservation und kein Co-Edit-Gate.
+CREATE TABLE IF NOT EXISTS editor_pruefplaene (
+ id UUID PRIMARY KEY,
+ project TEXT NOT NULL,
+ abbild_id UUID NOT NULL,
+ file_path TEXT NOT NULL,
+ entwurf TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'wartet' CHECK(status IN ('wartet','zugeteilt','konflikt','freigegeben','abgelehnt')),
+ pruefer_identity_id TEXT REFERENCES agent_identitaeten(id),
+ pruefer_name TEXT,
+ pruefung TEXT,
+ files_plan_id BIGINT REFERENCES file_batch_plans(id),
+ erstellt_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ aktualisiert_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ FOREIGN KEY(abbild_id,file_path) REFERENCES editor_abbild_dateien(abbild_id,file_path)
+);
+ALTER TABLE editor_pruefplaene ADD COLUMN IF NOT EXISTS files_plan_id BIGINT REFERENCES file_batch_plans(id);
+CREATE INDEX IF NOT EXISTS idx_editor_pruefplaene_project ON editor_pruefplaene(project,erstellt_am DESC);
+DO $block$
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='trg_editor_pruefplan_benachrichtigen' AND tgrelid='editor_pruefplaene'::regclass) THEN
+  CREATE TRIGGER trg_editor_pruefplan_benachrichtigen AFTER INSERT OR UPDATE OR DELETE ON editor_pruefplaene FOR EACH ROW EXECUTE FUNCTION editor_plan_benachrichtigen();
+ END IF;
+END;
+$block$;
+
+
+
 -- P22-T164: Layout des authentifizierten Synapse-Users, pro Artefakt und Renderprojekt.
 CREATE TABLE IF NOT EXISTS user_live_artefakt_layout (
   user_key TEXT NOT NULL,

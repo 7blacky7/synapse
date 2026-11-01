@@ -6,6 +6,9 @@
  */
 
 export type { ConsolidatedTool } from './types.js';
+import { editorPruefplanTool } from './editor.js';
+export { editorPruefplanTool };
+ergaenzeAgentTokenParameter([editorPruefplanTool.definition]);
 import { anmerkungenTool } from './anmerkungen.js';
 export { anmerkungenTool };
 ergaenzeAgentTokenParameter([anmerkungenTool.definition]);

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 
 import GraphView from '../../components/GraphView';
+import { ProjektEditor } from '../ProjektEditor';
 import { ChannelFensterProvider } from '../../components/ChannelFenster';
 import { ChannelSuche } from '../../components/ChannelSuche';
 import { leseArbeitsbereichSchalter, type ArbeitsbereichSchalter } from '../../api/arbeitsbereich-schalter';
@@ -91,6 +92,8 @@ function Arbeitsraum({ project: initialProject, onLogout }: Props) {
   const [projects, setProjects] = useState<ProjectViewModel[]>([]);
   const [selectedProject, setSelectedProject] = useState(initialProject);
   const [arbeitsbereich, setArbeitsbereich] = useState<ArbeitsbereichSchalter | null>(null);
+  const [editorSchalter, setEditorSchalter] = useState<ArbeitsbereichSchalter | null>(null);
+  useEffect(() => { let aktiv=true; void leseArbeitsbereichSchalter(selectedProject,'editor_modul').then(s=>{if(aktiv)setEditorSchalter(s);}); return()=>{aktiv=false;}; },[selectedProject]);
   const [channelSuche, setChannelSuche] = useState<ArbeitsbereichSchalter | null>(null);
   useEffect(() => { let aktiv=true; const lesen=()=>void leseArbeitsbereichSchalter(selectedProject,'web_ui_channel_suche').then(s=>{if(aktiv)setChannelSuche(s);}); lesen(); const t=window.setInterval(lesen,60000); return()=>{aktiv=false;window.clearInterval(t);}; },[selectedProject]);
   useEffect(() => { const navigiere=(e:Event)=>{const d=(e as CustomEvent<{project:string;area:Area}>).detail;if(d?.project)setSelectedProject(d.project);if(d?.area)setArea(d.area);}; window.addEventListener('synapse:channel-navigation',navigiere);return()=>window.removeEventListener('synapse:channel-navigation',navigiere);},[]);
@@ -100,7 +103,8 @@ function Arbeitsraum({ project: initialProject, onLogout }: Props) {
     lesen(); const timer = window.setInterval(lesen, 60000);
     return () => { aktiv = false; window.clearInterval(timer); };
   }, [selectedProject]);
-  const nav = arbeitsbereich?.aktiv ? navigationArbeitsbereich : navigation;
+  const basisNav = arbeitsbereich?.aktiv ? navigationArbeitsbereich : navigation;
+  const nav = editorSchalter?.aktiv ? basisNav.map(g => g.label === 'Arbeitsbereich' ? {...g,items:[...g.items.slice(0, arbeitsbereich?.aktiv ? 1 : 2),{area:'editor' as const,label:'Editor',glyph:'▤'},...g.items.slice(arbeitsbereich?.aktiv ? 1 : 2)]} : g) : basisNav;
   // Jede Navigation schliesst die Schublade.
   useEffect(() => setMobileNavOffen(false), [area, selectedProject]);
   const [channels, setChannels] = useState<ChannelViewModel[]>([]);
@@ -233,6 +237,7 @@ function Arbeitsraum({ project: initialProject, onLogout }: Props) {
   const renderArea = () => {
     // P22-T253: Das bestehende Dashboard zeigt das Netzwerk UND die Artefakt-/Aktivitätsreiter.
     if (area === 'main-agent') return null;
+    if (area === 'editor' && editorSchalter?.aktiv) return <ProjektEditor project={selectedProject}/>;
     if (area === 'overview') {
       return (
         <OverviewView
