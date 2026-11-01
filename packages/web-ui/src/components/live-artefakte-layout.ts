@@ -6,3 +6,10 @@ export function verschiebe(v:Lage,dx:number,dy:number):Lage {
 export function skaliere(v:Lage,dw:number,dh:number):Lage {
   return {...v,breite:Math.max(10,Math.min(100-v.x,v.breite+dw)),hoehe:Math.max(100,v.hoehe+dh)};
 }
+/** P22-T259: Anzeige des Titels - HTML-Entitaeten aus gespeicherten Titeln (z. B. '&amp;') werden als Zeichen gezeigt; leer = 'Artefakt'. Nur Anzeige, Daten bleiben. */
+export function anzeigeTitel(t:string|null|undefined):string {
+  const s=(t ?? '').replace(/&(amp|lt|gt|quot|#39|apos);/g,(_,n:string)=>({amp:'&',lt:'<',gt:'>',quot:'"','#39':"'",apos:"'"} as Record<string,string>)[n]).trim();
+  return s || 'Artefakt';
+}
+/** P22-T259: kurze ID im Kachelkopf (die volle ID steht im Tooltip). */
+export const kurzeId=(id:string)=>id.length>8 ? id.slice(0,8) : id;

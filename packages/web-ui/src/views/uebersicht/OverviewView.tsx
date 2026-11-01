@@ -40,7 +40,7 @@ export function OverviewView({
   const [liveStand, setLiveStand] = useState<ArbeitsbereichSchalter>({aktiv:false,quelle:'standard',fehler:null});
   const [liveOffen, setLiveOffen] = useState(false);
   useEffect(() => { let lebt=true; void leseArbeitsbereichSchalter('synapse','web_ui_live_artefakte').then(s=>{if(lebt)setLiveStand(s);}); return()=>{lebt=false;}; }, []);
-  const liveKnopf = liveStand.aktiv && <button type="button" title={'Quelle: '+liveStand.quelle+(liveStand.fehler?' · '+liveStand.fehler:'')} aria-pressed={liveOffen} onClick={()=>setLiveOffen(v=>!v)}>{liveOffen?'Übersicht':'Live-Artefakte'}</button>;
+  const liveKnopf = liveStand.aktiv && <button type="button" title={'Quelle: '+liveStand.quelle+(liveStand.fehler?' · '+liveStand.fehler:'')} aria-pressed={liveOffen} className="live-umschalter" onClick={()=>setLiveOffen(v=>!v)}><span aria-hidden="true">{liveOffen?'←':'◫'}</span>{liveOffen?'Übersicht':'Live-Artefakte'}</button>;
   useEffect(() => {
     let ende = false;
     leseUebersichtSchalter(schalterProjekt)

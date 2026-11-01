@@ -1,2 +1,92 @@
-/* P22-T164: frei positionierbare Live-Vorschauen; Kopf zieht, Ecke skaliert. */
-.live-board{padding:1rem}.live-board>header,.live-kachel>header{display:flex;justify-content:space-between;align-items:center;gap:.5rem}.live-board-flaeche{position:relative;min-height:400px}.live-kachel{position:absolute;display:flex;flex-direction:column;overflow:hidden;background:var(--surface,#172033);border:1px solid var(--border,#64748b);border-radius:8px;box-sizing:border-box}.live-kachel>header{padding:.5rem;cursor:move;touch-action:none;background:var(--surface-raised,#263449)}.live-kachel>header small{display:block;overflow-wrap:anywhere}.live-kachel-inhalt{overflow:auto;flex:1;padding:.5rem}.live-kachel-steuerung{display:flex;gap:.2rem}.live-kachel-groesse{position:absolute;right:0;bottom:0;cursor:nwse-resize;touch-action:none;padding:.3rem}
+/*
+ * P22-T164 Live-Artefakte (Funktion) / P22-T259 Gestaltung (User 01.11.2026: "total haesslich", Designvorgaben nicht eingehalten).
+ * Designvorgaben: memory webui-design-standard (Skill frontend-design), user-design-praeferenzen (Orange als Akzent, hell UND dunkel),
+ * design-decision-tactical-hud-dashboard (1px-Hairlines, 0-3px Ecken, Mono-Labels, blinkender Cursor, wenig Glow) und der Stil der
+ * Nachbaransichten (Top-Artefakte, Projektnetzwerk-Dashboard: Syne-Titel, IBM Plex Mono 9px uppercase, Chips, Akzentkante).
+ * Farben NUR aus den Theme-Variablen (--accent, --panel, --strong, --soft, --bg, --text, --muted, --faint, --border, --border2,
+ * --success, --danger, --accent-contrast) - damit gelten hell und dunkel automatisch. Keine festen Farbwerte.
+ * Nachtrag User (Canvas, 01.11.2026): "mehr Windows 95 Style ... eher sowas wie Canvas ... ohne diesen haesslichen Rahmen":
+ * Punkt-Leinwand wie Figma/Miro, Artefakte schweben rahmenlos; Auswahlkante, Griffleiste, Feinsteuerung und Groessengriff
+ * erscheinen erst beim Zeigen bzw. Fokus (Touch: immer).
+ */
+.live-board{display:flex;flex-direction:column;gap:14px;padding:18px 26px 32px;color:var(--text)}
+.live-board-kopf{display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:16px 24px;padding-bottom:14px;border-bottom:1px solid var(--border)}
+.live-board-titel{min-width:0}
+.live-board-auge{display:block;color:var(--accent);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.16em;text-transform:uppercase}
+.live-board-titel h2{margin:6px 0 4px;color:var(--text);font:700 26px/1.05 "Syne",sans-serif;letter-spacing:-.015em}
+.live-board-titel p{margin:0;max-width:62ch;color:var(--muted);font-size:11px;line-height:1.5}
+.live-board-werkzeuge{display:flex;align-items:center;flex-wrap:wrap;gap:12px}
+.live-board-status,.live-board-zahl{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
+.live-board-status i{width:7px;height:7px;border-radius:50%;background:var(--muted)}
+.live-board-status.bereit{color:var(--success)}
+.live-board-status.bereit i{background:var(--success);animation:live-puls 1.8s ease-in-out infinite}
+.live-board-status.laedt{color:var(--accent)}
+.live-board-status.laedt i{background:var(--accent);animation:live-puls .9s ease-in-out infinite}
+.live-board-status.fehler{color:var(--danger)}
+.live-board-status.fehler i{background:var(--danger)}
+.live-board-zahl{padding-left:12px;border-left:1px solid var(--border)}
+.live-board-zahl b{color:var(--text);font-size:12px;font-weight:700;letter-spacing:0}
+
+/* Knoepfe im Stil der Top-Artefakte-Umschalter: Hairline, Mono, Orange beim Zeigen; aktiver Umschalter gefuellt. */
+.live-knopf,.live-umschalter{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--border);border-radius:0;background:transparent;color:var(--muted);padding:7px 12px;font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:border-color .15s ease,color .15s ease,background-color .15s ease}
+.live-knopf span,.live-umschalter span{font-size:12px;line-height:1;letter-spacing:0}
+.live-knopf:hover,.live-umschalter:hover{border-color:var(--accent);color:var(--accent)}
+.live-knopf:focus-visible,.live-umschalter:focus-visible,.live-kachel-oeffnen:focus-visible,.live-kachel-steuerung button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.live-umschalter[aria-pressed="true"]{border-color:var(--accent);background:var(--accent);color:var(--accent-contrast)}
+.standard-page[data-live-artefakte]>.uebersicht-kopf-aktion{display:flex;justify-content:flex-start;padding:16px 26px 0}
+
+.live-board-hinweis{margin:0;padding:9px 12px;border:1px solid var(--border);border-left:2px solid var(--accent);background:var(--soft);color:var(--muted);font:500 11px "IBM Plex Mono",monospace}
+.live-board-hinweis.fehler{border-left-color:var(--danger);color:var(--danger)}
+.live-board-hinweis.laedt::after,.live-kachel-inhalt>p.laedt::after{content:'\258D';margin-left:4px;color:var(--accent);animation:live-cursor 1s steps(2,start) infinite}
+
+/* Leinwand: Punktraster wie Figma/Miro (Hinweis auf frei positionierbare Artefakte), kein Rahmen. */
+.live-board-flaeche{position:relative;min-height:400px;background-image:radial-gradient(circle,color-mix(in srgb,var(--muted) 34%,transparent) 1px,transparent 1.4px);background-size:24px 24px;background-position:-12px -12px}
+
+/* Artefakt: rahmenlos, schwebt auf der Leinwand. Beim Zeigen nur eine feine orange Auswahlkante (wie eine Auswahl in Figma),
+   beim Ziehen zusaetzlich ein weicher Akzentschatten. */
+.live-kachel{position:absolute;display:flex;flex-direction:column;box-sizing:border-box;border-radius:3px;outline:1px solid transparent;outline-offset:3px;transition:outline-color .15s ease,box-shadow .2s ease}
+.live-kachel:hover,.live-kachel:focus-within{outline-color:color-mix(in srgb,var(--accent) 70%,transparent)}
+.live-kachel[data-zieht]{z-index:5;outline-color:var(--accent);box-shadow:0 26px 54px -30px color-mix(in srgb,var(--accent) 60%,transparent)}
+
+/* Schwebende Leiste oben im Artefakt: links Griff + Titel (zum Ziehen), rechts Feinsteuerung und Oeffnen. Nur beim Zeigen/Fokus. */
+.live-kachel-kopf{position:absolute;inset:8px 8px auto;z-index:4;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;pointer-events:none;opacity:0;transform:translateY(-4px);transition:opacity .15s ease,transform .15s ease}
+.live-kachel:hover .live-kachel-kopf,.live-kachel:focus-within .live-kachel-kopf,.live-kachel[data-zieht] .live-kachel-kopf{opacity:1;transform:none}
+.live-kachel-griffleiste,.live-kachel-aktionen{display:flex;align-items:center;gap:8px;min-width:0;padding:5px 8px;border:1px solid var(--border);border-radius:2px;background:color-mix(in srgb,var(--panel) 90%,transparent);backdrop-filter:blur(8px);box-shadow:0 10px 24px -18px color-mix(in srgb,var(--text) 60%,transparent);pointer-events:auto}
+.live-kachel-griffleiste{flex:0 1 auto;max-width:62%;cursor:grab;touch-action:none;user-select:none}
+.live-kachel[data-zieht="zug"] .live-kachel-griffleiste{cursor:grabbing;border-color:var(--accent)}
+.live-kachel-aktionen{flex:none;padding:3px}
+.live-kachel-griff{flex:none;width:8px;height:16px;background-image:radial-gradient(circle,var(--accent) 1px,transparent 1.3px);background-size:4px 4px}
+.live-kachel-titel{min-width:0}
+.live-kachel-titel strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:12px;font-weight:600}
+.live-kachel-titel small{display:flex;align-items:center;gap:8px;min-width:0;margin-top:3px;color:var(--faint);font:700 8px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase}
+.live-kachel-projekt{flex:none;padding:1px 6px;border:1px solid color-mix(in srgb,var(--accent) 55%,transparent);color:var(--accent)}
+.live-kachel-id{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;letter-spacing:.02em;text-transform:none}
+
+/* Feinsteuerung nur fuer Tastatur/Barrierefreiheit (Lead 01.11.: Pfeile nicht sichtbar im Overlay): visuell verborgen, aber
+   fokussierbar und mit aria-label; erst wenn ein Knopf den Tastaturfokus hat, erscheint die Gruppe in der Leiste. */
+.live-kachel-steuerung{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;display:inline-flex;border:1px solid var(--border)}
+.live-kachel-steuerung:focus-within{position:static;width:auto;height:auto;overflow:visible;clip-path:none}
+.live-kachel-steuerung button{display:grid;place-items:center;width:22px;height:22px;border:0;border-radius:0;background:transparent;color:var(--muted);font:600 11px "IBM Plex Mono",monospace;cursor:pointer}
+.live-kachel-steuerung button+button{border-left:1px solid var(--border)}
+.live-kachel-steuerung button.live-kachel-mass{border-left-color:var(--accent)}
+.live-kachel-steuerung button:hover{background:var(--accent-soft);color:var(--accent)}
+.live-kachel-oeffnen{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--accent);border-radius:0;background:transparent;color:var(--accent);padding:5px 9px;font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:background-color .15s ease,color .15s ease}
+.live-kachel-oeffnen span{font-size:11px;letter-spacing:0}
+.live-kachel-oeffnen:hover{background:var(--accent);color:var(--accent-contrast)}
+
+/* Inhalt ohne Rahmen und ohne eigenen Hintergrund: das Artefakt selbst ist die Flaeche. */
+.live-kachel-inhalt{flex:1;min-height:0;overflow:auto;border-radius:3px;background:transparent}
+.live-kachel-inhalt>p{margin:0;padding:12px;color:var(--muted);font:500 11px "IBM Plex Mono",monospace}
+.live-kachel-inhalt>p[role="alert"]{padding:8px 10px;border-left:2px solid var(--danger);color:var(--danger)}
+
+/* Groessengriff: zwei Hairlines in der Ecke, Orange beim Zeigen. */
+.live-kachel-groesse{position:absolute;right:-6px;bottom:-6px;z-index:4;width:22px;height:22px;cursor:nwse-resize;touch-action:none;opacity:0;transition:opacity .15s ease}
+.live-kachel:hover .live-kachel-groesse,.live-kachel:focus-within .live-kachel-groesse,.live-kachel[data-zieht] .live-kachel-groesse{opacity:1}
+.live-kachel-groesse::before{content:'';position:absolute;right:4px;bottom:4px;width:10px;height:10px;background:linear-gradient(135deg,transparent 46%,var(--faint) 46% 54%,transparent 54% 70%,var(--faint) 70% 78%,transparent 78%)}
+.live-kachel:hover .live-kachel-groesse::before,.live-kachel[data-zieht="groesse"] .live-kachel-groesse::before{background:linear-gradient(135deg,transparent 46%,var(--accent) 46% 54%,transparent 54% 70%,var(--accent) 70% 78%,transparent 78%)}
+
+@keyframes live-puls{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes live-cursor{to{visibility:hidden}}
+@media (hover:none){.live-kachel-kopf,.live-kachel-groesse{opacity:1;transform:none}}
+@media (max-width:760px){.live-board{padding:14px 14px 24px}.live-board-titel h2{font-size:22px}.live-board-werkzeuge{width:100%}}
+@media (prefers-reduced-motion:reduce){.live-board *,.live-board *::before,.live-board *::after{animation:none!important;transition:none!important}}
