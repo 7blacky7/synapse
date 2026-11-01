@@ -57,7 +57,7 @@ function Fenster({ziel, onClose}: {ziel: Ziel; onClose: () => void}) {
   const onOpen=(area:Area)=>window.dispatchEvent(new CustomEvent('synapse:channel-navigation',{detail:{project,area}}));
   return <section className={'channel-eigenfenster'+(minimiert?' minimiert':'')} style={{left:position.x,top:position.y}} aria-label={'Channel '+channel} role="dialog">
     <header className="channel-eigenfenster-kopf" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}>
-      <strong>#{channel} · {project}</strong><span><button type="button" onClick={()=>setMinimiert(v=>!v)}>{minimiert?'Öffnen':'Minimieren'}</button><button type="button" onClick={onClose} aria-label="Channel schließen">×</button></span>
+      <span className="channel-eigenfenster-titel"><i className="channel-eigenfenster-griff" aria-hidden="true"/><strong><b>#</b>{channel}</strong><small className="channel-eigenfenster-projekt">{project}</small></span><span className="channel-eigenfenster-aktionen"><button type="button" className="channel-eigenfenster-knopf" onClick={()=>setMinimiert(v=>!v)}>{minimiert?'Öffnen':'Minimieren'}</button><button type="button" className="channel-eigenfenster-knopf schliessen" onClick={onClose} aria-label="Channel schließen">×</button></span>
     </header>
     {!minimiert && <ChannelsView fensterModus project={project} channels={channels} selectedChannel={channel} messages={messages} members={members} membersError={membersError} loading={loading} error={error} onSelectChannel={()=>{}} onReload={()=>void refresh()} onSend={send} onOpen={onOpen} onUntenGesehen={id=>void gelesen(id)} onAeltere={mehr?()=>void aeltere():undefined}/>}
   </section>;

@@ -1,14 +1,65 @@
-/* P22-T254: verschiebbares, in der Größe steuerbares Channel-Fenster. */
-.channel-eigenfenster{position:fixed;z-index:350;width:min(880px,calc(100vw - 20px));height:min(80vh,900px);resize:both;overflow:hidden;display:flex;flex-direction:column;background:var(--panel,#18181b);color:var(--text,#eee);border:1px solid var(--accent,#f97316);border-radius:12px;box-shadow:0 18px 48px #0008}
-.channel-eigenfenster.minimiert{height:auto;resize:none}
-.channel-eigenfenster-kopf{display:flex;justify-content:space-between;gap:1rem;padding:.6rem 1rem;cursor:move;touch-action:none;background:var(--panel,#18181b)}
-.channel-eigenfenster-kopf button{cursor:pointer;margin-left:.5rem}
-.channel-eigenfenster .channel-page{height:100%;min-height:0;overflow:auto;padding:0}
-.channel-eigenfenster .channel-layout{display:block;height:100%}
+/*
+ * P22-T254 Channel-Fenster und Channel-Suche (Funktion) / P22-T260 Gestaltung.
+ * Designvorgaben: memory webui-design-standard (Skill frontend-design), user-design-praeferenzen (Orange als Akzent, hell UND dunkel),
+ * design-decision-tactical-hud-dashboard (1px-Hairlines, 0-3px Ecken, Mono-Labels, wenig Glow) und dieselbe Tokensprache wie die
+ * Live-Artefakte (P22-T259, live-artefakte.css): Farben NUR aus den Theme-Variablen (--accent, --accent-soft, --accent-contrast,
+ * --panel, --strong, --soft, --bg, --text, --muted, --faint, --border, --border2, --danger), keine festen Farbwerte, keine Fallbacks.
+ * Orange nur als Akzent: aktive Kante, Fokus, Zeigen, ungelesen. Schatten nur ueber color-mix.
+ */
+
+/* Fenster: Hairline-Rahmen, 3px-Ecken, weicher Schatten. Aktiv (Fokus im Fenster bzw. beim Ziehen) laeuft oben eine orange Kante ein. */
+.channel-eigenfenster{position:fixed;z-index:350;width:min(880px,calc(100vw - 20px));height:min(80vh,900px);min-width:320px;min-height:42px;resize:both;overflow:hidden;display:flex;flex-direction:column;box-sizing:border-box;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:3px;box-shadow:0 30px 70px -34px color-mix(in srgb,var(--text) 55%,transparent),0 2px 8px -4px color-mix(in srgb,var(--text) 22%,transparent);transition:border-color .15s ease,box-shadow .2s ease}
+.channel-eigenfenster::before{content:'';position:absolute;inset:0 0 auto;z-index:2;height:2px;background:var(--accent);transform:scaleX(0);transform-origin:left;transition:transform .22s ease;pointer-events:none}
+.channel-eigenfenster:focus-within::before,.channel-eigenfenster:has(.channel-eigenfenster-kopf:active)::before{transform:scaleX(1)}
+.channel-eigenfenster:has(.channel-eigenfenster-kopf:active){border-color:color-mix(in srgb,var(--accent) 60%,var(--border));box-shadow:0 34px 80px -34px color-mix(in srgb,var(--accent) 45%,transparent),0 2px 8px -4px color-mix(in srgb,var(--text) 22%,transparent)}
+.channel-eigenfenster.minimiert{height:auto;min-height:0;resize:none}
+
+/* Kopf: Griff + Titel links (Ziehflaeche), Mono-Knoepfe rechts. */
+.channel-eigenfenster-kopf{flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:40px;padding:0 6px 0 10px;box-sizing:border-box;background:var(--strong);border-bottom:1px solid var(--border);cursor:grab;touch-action:none;user-select:none}
+.channel-eigenfenster-kopf:active{cursor:grabbing}
+.channel-eigenfenster.minimiert .channel-eigenfenster-kopf{border-bottom-color:transparent}
+.channel-eigenfenster-titel{display:flex;align-items:center;gap:8px;min-width:0}
+.channel-eigenfenster-griff{flex:none;width:8px;height:16px;background-image:radial-gradient(circle,var(--faint) 1px,transparent 1.3px);background-size:4px 4px}
+.channel-eigenfenster-kopf:hover .channel-eigenfenster-griff,.channel-eigenfenster:focus-within .channel-eigenfenster-griff{background-image:radial-gradient(circle,var(--accent) 1px,transparent 1.3px)}
+.channel-eigenfenster-titel strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font:700 14px/1.2 "Syne",sans-serif;letter-spacing:-.01em}
+.channel-eigenfenster-titel strong b{margin-right:2px;color:var(--accent);font:700 13px "IBM Plex Mono",monospace}
+.channel-eigenfenster-projekt{flex:none;padding:1px 6px;border:1px solid color-mix(in srgb,var(--accent) 55%,transparent);color:var(--accent);font:700 8px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase}
+.channel-eigenfenster-aktionen{flex:none;display:inline-flex;align-items:center;gap:4px}
+.channel-eigenfenster-knopf{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;margin:0;padding:0 10px;border:1px solid var(--border);border-radius:0;background:transparent;color:var(--muted);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:border-color .15s ease,color .15s ease,background-color .15s ease}
+.channel-eigenfenster-knopf:hover{border-color:var(--accent);color:var(--accent)}
+.channel-eigenfenster-knopf.schliessen{width:26px;padding:0;font:500 15px/1 "IBM Plex Mono",monospace;letter-spacing:0}
+.channel-eigenfenster-knopf.schliessen:hover{border-color:var(--danger);background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)}
+.channel-eigenfenster-knopf:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Inhalt: der Channel fuellt den Rest des Fensters ohne eigenen Rand (der Fensterrahmen ist die Kante). */
+.channel-eigenfenster>.standard-page.channel-page{flex:1 1 auto;height:auto;min-height:0;overflow:auto;padding:0}
+.channel-eigenfenster .channel-layout{display:block;height:100%;border:0}
 .channel-eigenfenster .channel-project-stage{height:100%}
-.channel-suche{padding:8px;gap:8px;z-index:400}
-.channel-suche input{width:100%;box-sizing:border-box;padding:.6rem;background:var(--panel);color:var(--text);border:1px solid var(--accent)}
-.channel-suche-liste{overflow:auto;min-height:0;display:flex;flex-direction:column}
-.channel-suche-liste button{display:grid;grid-template-columns:1fr auto;text-align:left;gap:4px;padding:.6rem;border:0;background:transparent;color:var(--text);cursor:pointer}
-.channel-suche-liste button:hover,.channel-suche-liste button:focus{background:var(--accent-soft)}
-.channel-suche-liste small{grid-column:1/-1}
+.channel-eigenfenster .channel-messages>button:first-child{display:flex;align-items:center;justify-content:center;gap:6px;margin:0 auto 14px;padding:6px 12px;border:1px solid var(--border);border-radius:0;background:transparent;color:var(--muted);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:border-color .15s ease,color .15s ease}
+.channel-eigenfenster .channel-messages>button:first-child:hover{border-color:var(--accent);color:var(--accent)}
+.channel-eigenfenster .channel-messages>button:first-child:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Channel-Suche: liegt zusaetzlich auf .seitenleiste-projektsuche (Orange-Vollrahmen dort) und ueberschreibt ihn mit der Hairline.
+   Die Trefferliste sitzt in .control-sidebar nav und wuerde deren Knopf-Raster (22px-Spalte, eingeklappt font-size:0) erben:
+   darum alle Treffer-Regeln unter .seitenleiste-projektsuche.channel-suche und das Raster explizit gesetzt. */
+.seitenleiste-projektsuche.channel-suche{z-index:400;gap:0;padding:0;overflow:hidden;border:1px solid var(--border);border-radius:3px;background:var(--panel);box-shadow:0 26px 60px -30px color-mix(in srgb,var(--text) 55%,transparent),0 2px 8px -4px color-mix(in srgb,var(--text) 20%,transparent)}
+.seitenleiste-projektsuche.channel-suche::before{content:'';position:absolute;inset:0 0 auto;z-index:1;height:2px;background:var(--accent);pointer-events:none}
+.channel-suche input{flex:none;width:100%;box-sizing:border-box;margin:0;padding:13px 12px 11px;border:0;border-bottom:1px solid var(--border);border-radius:0;background:var(--strong);color:var(--text);font-family:inherit;font-size:13px;font-weight:500;line-height:1.2;outline:0;transition:box-shadow .15s ease}
+.channel-suche input::placeholder{color:var(--faint);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.12em;text-transform:uppercase}
+.channel-suche input:focus-visible{box-shadow:inset 0 -2px 0 var(--accent)}
+.channel-suche>p,.channel-suche-liste>p{margin:0;padding:10px 12px;color:var(--muted);font:500 10px/1.5 "IBM Plex Mono",monospace}
+.channel-suche>p[role="alert"]{border-left:2px solid var(--danger);color:var(--danger)}
+.seitenleiste-projektsuche.channel-suche .channel-suche-liste{flex:1 1 auto;overflow:auto;min-height:0;display:flex;flex-direction:column;padding:4px 0;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+.seitenleiste-projektsuche.channel-suche .channel-suche-liste button{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;justify-items:stretch;place-content:normal;flex:none;gap:3px 10px;width:100%;min-height:0;box-sizing:border-box;margin:0;font-size:12px;padding:9px 12px 9px 10px;border:0;border-left:2px solid transparent;border-bottom:1px solid var(--border2);border-radius:0;background:transparent;color:var(--text);text-align:left;cursor:pointer;transition:background-color .12s ease,border-color .12s ease}
+.seitenleiste-projektsuche.channel-suche .channel-suche-liste button:last-child{border-bottom:0}
+.seitenleiste-projektsuche.channel-suche .channel-suche-liste button:hover{border-left-color:var(--accent);background:var(--strong)}
+.seitenleiste-projektsuche.channel-suche .channel-suche-liste button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-left-color:var(--accent);background:var(--accent-soft)}
+.seitenleiste-projektsuche.channel-suche .channel-suche-liste strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:600}
+.seitenleiste-projektsuche.channel-suche .channel-suche-liste button:hover strong,.seitenleiste-projektsuche.channel-suche .channel-suche-liste button:focus-visible strong{color:var(--accent)}
+.seitenleiste-projektsuche.channel-suche .channel-suche-liste b{display:inline-block;justify-self:end;min-width:0;height:auto;line-height:1.4;padding:2px 6px;background:var(--accent);color:var(--accent-contrast);font:700 8px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
+.seitenleiste-projektsuche.channel-suche .channel-suche-liste small{grid-column:1/-1;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;color:var(--faint);font:500 9px/1.45 "IBM Plex Mono",monospace;letter-spacing:.02em}
+.seitenleiste-projektsuche.channel-suche .channel-suche-liste small:empty{display:none}
+
+@media (max-width:760px){.channel-eigenfenster{min-width:0;width:calc(100vw - 16px)}.channel-eigenfenster-projekt{display:none}}
+@media (hover:none){.channel-eigenfenster-knopf{height:32px}.channel-eigenfenster-knopf.schliessen{width:32px}.seitenleiste-projektsuche.channel-suche .channel-suche-liste button{padding-block:12px}}
+@media (prefers-reduced-motion:reduce){.channel-eigenfenster,.channel-eigenfenster *,.channel-eigenfenster::before,.channel-suche,.channel-suche *{animation:none!important;transition:none!important}}

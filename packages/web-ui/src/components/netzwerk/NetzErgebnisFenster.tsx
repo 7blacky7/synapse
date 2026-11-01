@@ -15,7 +15,7 @@ export function NetzErgebnisFenster({project,id,onClose}:{project:string;id:stri
   const down=(e:PointerEvent<HTMLElement>)=>{if((e.target as HTMLElement).closest('button'))return;zug.current={id:e.pointerId,x:e.clientX,y:e.clientY,px:pos.x,py:pos.y};e.currentTarget.setPointerCapture(e.pointerId);};
   const move=(e:PointerEvent<HTMLElement>)=>{const z=zug.current;if(z?.id===e.pointerId)setPos({x:Math.max(0,Math.min(window.innerWidth-100,z.px+e.clientX-z.x)),y:Math.max(0,Math.min(window.innerHeight-60,z.py+e.clientY-z.y))});};
   return createPortal(<section role="dialog" aria-label={'Ergebnis '+id} className="nw-detail-fenster" style={{left:pos.x,top:pos.y}}>
-    <header onPointerDown={down} onPointerMove={move} onPointerUp={()=>{zug.current=null;}} onPointerCancel={()=>{zug.current=null;}}><strong>Ergebnis #{id} · {project}</strong><button onClick={onClose} aria-label="Ergebnis schließen">×</button></header>
+    <header onPointerDown={down} onPointerMove={move} onPointerUp={()=>{zug.current=null;}} onPointerCancel={()=>{zug.current=null;}}><span className="nw-detail-titel"><i className="nw-detail-griff" aria-hidden="true"/><small>Ergebnis</small><strong>#{id}</strong><em>{project}</em></span><button type="button" onClick={onClose} aria-label="Ergebnis schließen">×</button></header>
     <div className="nw-detail-inhalt">{fehler ? <p role="alert">{fehler}</p> : !detail ? <p>Lade Ergebnis …</p> : <><small>{detail.quelle}</small>{detail.hinweis && <p role="status">{detail.hinweis}</p>}<Wert wert={detail.wert}/></>}</div>
   </section>,document.querySelector('.synapse-control') ?? document.body);
 }
