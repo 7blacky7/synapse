@@ -1,0 +1,14 @@
+/*
+ * P22-T259 (team-lead 01.11.2026): Knopf „Neu zeichnen“ im Kopf des Artefakt-Blocks (ArtefaktLiveBlock.tsx) war ein grauer
+ * Browser-Standardknopf. Jetzt dezent in der Tokensprache der Live-Artefakte (live-artefakte.css): 1px-Hairline, 0er-Ecken,
+ * IBM Plex Mono 8px uppercase, Orange nur beim Zeigen bzw. Fokus. Farben nur aus Theme-Variablen. Funktion unveraendert.
+ */
+.artefakt-live-neu{margin-left:auto;display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border:1px solid var(--border);border-radius:0;background:transparent;color:var(--muted);font:700 8px/1.2 "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;cursor:pointer;transition:border-color .15s ease,color .15s ease,background-color .15s ease}
+.artefakt-live-neu::before{content:'\21BB';display:inline-block;font-size:10px;line-height:1;letter-spacing:0}
+.artefakt-live-neu:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.artefakt-live-neu:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.artefakt-live-neu:disabled{cursor:progress;border-color:color-mix(in srgb,var(--accent) 45%,var(--border));color:var(--accent)}
+.artefakt-live-neu:disabled::before{animation:artefakt-live-dreht 1s linear infinite}
+@keyframes artefakt-live-dreht{to{transform:rotate(360deg)}}
+@media (hover:none){.artefakt-live-neu{padding:6px 10px}}
+@media (prefers-reduced-motion:reduce){.artefakt-live-neu,.artefakt-live-neu::before{animation:none!important;transition:none!important}}

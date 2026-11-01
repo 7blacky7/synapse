@@ -76,6 +76,11 @@
 
 /* Inhalt ohne Rahmen und ohne eigenen Hintergrund: das Artefakt selbst ist die Flaeche. */
 .live-kachel-inhalt{flex:1;min-height:0;overflow:auto;border-radius:3px;background:transparent}
+/* Nachbesserung (Befund d153b15b, team-lead 01.11.): Artefakte rendern im Shadow-DOM wie eine eigene Seite mit Browser-Standard
+   (schwarzer Text, transparenter Grund). Ohne eigenen Hintergrund waeren sie im dunklen Theme unlesbar (z. B. 79d427a8). Darum bekommt
+   die Rendering-Flaeche die Standard-Seitenflaeche des Browsers (Systemfarbe Canvas/CanvasText im hellen Schema), also genau die
+   Flaeche, fuer die das Artefakt geschrieben ist. Artefakte mit eigenem Hintergrund malen darueber; ihr Inhalt bleibt unveraendert. */
+.live-kachel-inhalt .agent-rendering-shadow{color-scheme:light;background:Canvas;color:CanvasText;border-radius:3px}
 .live-kachel-inhalt>p{margin:0;padding:12px;color:var(--muted);font:500 11px "IBM Plex Mono",monospace}
 .live-kachel-inhalt>p[role="alert"]{padding:8px 10px;border-left:2px solid var(--danger);color:var(--danger)}
 
@@ -87,6 +92,8 @@
 
 @keyframes live-puls{0%,100%{opacity:1}50%{opacity:.35}}
 @keyframes live-cursor{to{visibility:hidden}}
-@media (hover:none){.live-kachel-kopf,.live-kachel-groesse{opacity:1;transform:none}}
+/* Touch (hover:none, Befund d153b15b): kein Zeigen moeglich, die Leiste waere dauerhaft sichtbar und verdeckte den oberen Inhalt.
+   Darum sitzt sie dort als eigene Zeile UEBER dem Inhalt (im Fluss der Kachel statt schwebend), der Inhalt bleibt frei. */
+@media (hover:none){.live-kachel-kopf{position:static;flex:none;margin:0 0 6px;opacity:1;transform:none}.live-kachel-griffleiste,.live-kachel-aktionen{background:var(--panel);backdrop-filter:none}.live-kachel-groesse{opacity:1}}
 @media (max-width:760px){.live-board{padding:14px 14px 24px}.live-board-titel h2{font-size:22px}.live-board-werkzeuge{width:100%}}
 @media (prefers-reduced-motion:reduce){.live-board *,.live-board *::before,.live-board *::after{animation:none!important;transition:none!important}}

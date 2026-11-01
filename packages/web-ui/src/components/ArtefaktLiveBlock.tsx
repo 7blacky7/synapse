@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import AgentRenderingSurface from '../kios/AgentRenderingSurface';
 import SkriptRahmen from '../kios/SkriptRahmen';
 import { abonniereArtefaktLive, zeichneArtefaktNeu } from '../api/agent-runtime';
+import '../artefakt-live-block.css';
 
 /**
  * P22-T154: ein Artefakt-Block mit Vorlage (Koordinator-Fenster, Persoenliche Artefakte). Fertiges HTML (ohne Vorlage) wird
@@ -69,7 +70,7 @@ export function ArtefaktLiveBlock({ id, html, revision, modus, project, vorlage,
       <span>{modus === 'live' ? (live === 'bereit' ? '● live' : live === 'verbindet' ? '○ live verbindet …' : '○ Stand (live aus)') : 'Stand'}</span>
       {project && <span>· {project}</span>}
       {stand.gerendertAm && <span>· {zeitText(stand.gerendertAm)}</span>}
-      <button type="button" onClick={() => void neuZeichnen()} disabled={busy} style={{ marginLeft: 'auto' }}>{busy ? 'zeichnet …' : 'Neu zeichnen'}</button>
+      <button type="button" className="artefakt-live-neu" onClick={() => void neuZeichnen()} disabled={busy}>{busy ? 'zeichnet …' : 'Neu zeichnen'}</button>
       {fehler && <small style={{ flexBasis: '100%', color: 'var(--danger, #b00)' }}>{fehler}</small>}
     </div>}
     {/* P22-T166: Skript-Artefakt in den Top-Artefakten -> Skript-Rahmen (neuer Stand geht als Ereignis an das Skript, kein Neuladen). */}

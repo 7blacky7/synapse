@@ -48,6 +48,19 @@ ok(/radial-gradient\(circle,color-mix\(in srgb,var\(--muted\)/.test(ohneKommenta
 ok(/\.live-kachel-steuerung\{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset\(50%\)/.test(ohneKommentar) && /\.live-kachel-steuerung:focus-within\{position:static/.test(ohneKommentar),
   'P22-T259 Canvas live-artefakte.css: Pfeilknoepfe nur fuer Tastatur/Barrierefreiheit (verborgen, beim Fokus sichtbar)');
 
+// Nachbesserung Befund d153b15b (team-lead 01.11.): Touch-Leiste ueber statt auf dem Inhalt; lesbare Flaeche fuer Artefakte ohne Hintergrund.
+const touch = (ohneKommentar.match(/@media \(hover:none\)\{(.*)\}\s*$/m) ?? ['', ''])[1];
+ok(/\.live-kachel-kopf\{position:static;flex:none/.test(touch) && /opacity:1/.test(touch), 'P22-T259 d153b15b live-artefakte.css: bei hover:none sitzt die Leiste als eigene Zeile ueber dem Inhalt (nicht schwebend darauf)', touch);
+ok(/\.live-kachel-inhalt \.agent-rendering-shadow\{color-scheme:light;background:Canvas;color:CanvasText/.test(ohneKommentar), 'P22-T259 d153b15b live-artefakte.css: Artefakt-Flaeche mit Browser-Standardgrund (lesbar im dunklen Theme)');
+
+// team-lead 01.11.: Knopf „Neu zeichnen“ (ArtefaktLiveBlock.tsx) in der Tokensprache statt Browser-Standard; Funktion unveraendert.
+const neuCss = lies('packages/web-ui/src/artefakt-live-block.css').replace(/\/\*[\s\S]*?\*\//g, '');
+const blockTsx = lies('packages/web-ui/src/components/ArtefaktLiveBlock.tsx');
+ok((neuCss.match(/#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/g) ?? []).length === 0 && /\.artefakt-live-neu\{[^}]*border:1px solid var\(--border\)[^}]*border-radius:0[^}]*"IBM Plex Mono"[^}]*text-transform:uppercase/.test(neuCss)
+  && /\.artefakt-live-neu:focus-visible\{outline:2px solid var\(--accent\)/.test(neuCss) && /prefers-reduced-motion:reduce/.test(neuCss), 'P22-T259 artefakt-live-block.css: Neu-zeichnen als Hairline-Knopf mit Mono-Label, nur Tokens, Fokus, reduced-motion', neuCss);
+ok(/import '\.\.\/artefakt-live-block\.css'/.test(blockTsx) && /<button type="button" className="artefakt-live-neu" onClick=\{\(\) => void neuZeichnen\(\)\} disabled=\{busy\}>\{busy \? 'zeichnet …' : 'Neu zeichnen'\}<\/button>/.test(blockTsx),
+  'P22-T259 ArtefaktLiveBlock.tsx: Knopf mit Klasse statt Inline-Stil, Funktion (neuZeichnen, disabled, Beschriftung) unveraendert');
+
 // ---------------------------------------------------------------- B TSX (Funktion unveraendert, neue Struktur)
 const tsx = lies('packages/web-ui/src/components/LiveArtefakte.tsx');
 ok(/'\/api\/main-agent\/live-artefakte'\+q/.test(tsx) && /nach_id=/.test(tsx) && /nach_projekt=/.test(tsx) && /while\(cursor && lebt\)/.test(tsx), 'P22-T164/T259 LiveArtefakte.tsx: paginierter Katalog (Keyset) unveraendert');
