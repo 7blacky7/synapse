@@ -1,0 +1,203 @@
+/*
+ * P22-T256 Editor (Funktion, codex-rea4) / P22-T262 Gestaltung (claude-linde).
+ * Designvorgaben: memory webui-design-standard (Skill frontend-design), user-design-praeferenzen (Orange als Akzent, hell UND dunkel),
+ * design-decision-tactical-hud-dashboard (1px-Hairlines, 0-3px Ecken, Mono-Labels, blinkender Cursor, wenig Glow); Tokensprache wie
+ * P22-T259 (live-artefakte.css): Syne-Titel, IBM Plex Mono 9px uppercase fuer Labels, Akzentkante, gefuellter aktiver Umschalter.
+ * Bedienung wie VS Code: Explorer links, Reiter + Pfadzeile + Code mit Zeilennummern in der Mitte, Inspektor rechts (Live-Plaene mit
+ * Nachleuchten und Pins | Pruefplaene), Drei-Wege-Vergleich als unteres Panel, Statusleiste unten (Freeze = oranges Segment).
+ * Farben NUR aus den Theme-Variablen (--accent, --accent-soft, --accent-contrast, --panel, --strong, --soft, --bg, --text, --muted,
+ * --faint, --border, --border2, --success, --danger) - damit gelten hell und dunkel automatisch. Keine festen Farbwerte.
+ */
+.projekt-editor{display:flex;flex-direction:column;gap:14px;min-width:0;padding:18px 26px 24px;color:var(--text)}
+
+/* Kopf wie Live-Artefakte: Auge, Syne-Titel mit Projekt-Chip, Werkzeuge rechts. */
+.ed-kopf{display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:16px 24px;padding-bottom:14px;border-bottom:1px solid var(--border)}
+.ed-titel{min-width:0}
+.ed-auge{display:block;color:var(--accent);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.16em;text-transform:uppercase}
+.ed-titel h2{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;margin:6px 0 4px;color:var(--text);font:700 26px/1.05 "Syne",sans-serif;letter-spacing:-.015em}
+.ed-titel h2 small{padding:2px 7px;border:1px solid color-mix(in srgb,var(--accent) 55%,transparent);color:var(--accent);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase}
+.ed-titel p{margin:0;max-width:72ch;color:var(--muted);font-size:11px;line-height:1.5}
+.ed-werkzeuge{display:flex;align-items:center;flex-wrap:wrap;gap:10px}
+.ed-gruppe{display:inline-flex;align-items:center;flex-wrap:wrap;gap:8px;padding:0 10px;border-left:1px solid var(--border);border-right:1px solid var(--border)}
+
+/* Knoepfe: Hairline, Mono, Orange beim Zeigen; aktiver Umschalter gefuellt (wie .live-umschalter). */
+.ed-knopf,.ed-umschalter{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--border);border-radius:0;background:transparent;color:var(--muted);padding:7px 12px;font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;cursor:pointer;transition:border-color .15s ease,color .15s ease,background-color .15s ease}
+.ed-knopf span,.ed-umschalter span{font-size:12px;line-height:1;letter-spacing:0}
+.ed-knopf:hover:not(:disabled),.ed-umschalter:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.ed-umschalter[aria-pressed="true"],.ed-umschalter[data-an]{border-color:var(--accent);background:var(--accent);color:var(--accent-contrast)}
+.ed-umschalter[aria-pressed="true"]:hover:not(:disabled),.ed-umschalter[data-an]:hover:not(:disabled){color:var(--accent-contrast);background:color-mix(in srgb,var(--accent) 86%,var(--text))}
+.ed-knopf.primaer{border-color:var(--accent);color:var(--accent)}
+.ed-knopf.primaer:hover:not(:disabled){background:var(--accent);color:var(--accent-contrast)}
+.ed-knopf:disabled,.ed-umschalter:disabled{opacity:.42;cursor:not-allowed}
+.ed-knopf.breit{justify-content:center;width:100%}
+.ed-mini{flex:none;border:1px solid var(--border);border-radius:0;background:transparent;color:var(--muted);padding:3px 7px;font:700 8px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:border-color .15s ease,color .15s ease}
+.ed-mini:hover{border-color:var(--accent);color:var(--accent)}
+.ed-abbild{display:inline-flex;align-items:center;gap:6px;color:var(--faint);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase}
+.ed-abbild select{border:1px solid var(--border);border-radius:0;background:var(--panel);color:var(--text);padding:6px 8px;font:500 10px "IBM Plex Mono",monospace;letter-spacing:.02em;text-transform:none;cursor:pointer}
+.ed-abbild select:hover{border-color:var(--accent)}
+.projekt-editor :is(button,select,input):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.projekt-editor :is(.ed-baum button,.ed-reiter button,.ed-seiten button,.ed-plan,.ed-pruefung):focus-visible{outline-offset:-2px}
+
+/* Hinweise wie .live-board-hinweis, schliessbar. */
+.ed-hinweis{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0;padding:9px 12px;border:1px solid var(--border);border-left:2px solid var(--accent);background:var(--soft);color:var(--muted);font:500 11px/1.5 "IBM Plex Mono",monospace;overflow-wrap:anywhere}
+.ed-hinweis.fehler{border-left-color:var(--danger);color:var(--danger)}
+.ed-hinweis button{flex:none;padding:0 2px;border:0;background:transparent;color:inherit;font:500 14px/1 "IBM Plex Mono",monospace;cursor:pointer}
+.ed-hinweis button:hover{color:var(--text)}
+
+/* Werkbank: ein Fenster mit Hairline-Rahmen, drei Spalten und Statusleiste - wie die VS-Code-Arbeitsflaeche. */
+.ed-werkbank{display:grid;grid-template-columns:minmax(210px,260px) minmax(0,1fr) minmax(250px,320px);grid-template-rows:minmax(0,1fr) auto;grid-template-areas:"explorer mitte inspektor" "status status status";height:clamp(520px,calc(100vh - 240px),1600px);border:1px solid var(--border);border-radius:2px;background:var(--panel);overflow:hidden}
+.ed-explorer{grid-area:explorer;display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid var(--border);background:var(--soft)}
+.ed-mitte{grid-area:mitte;display:flex;flex-direction:column;min-width:0;min-height:0}
+.ed-inspektor{grid-area:inspektor;display:flex;flex-direction:column;min-width:0;min-height:0;border-left:1px solid var(--border);background:var(--soft)}
+
+/* Explorer */
+.ed-leiste{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 8px;color:var(--muted);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.16em;text-transform:uppercase}
+.ed-leiste b{color:var(--text);font-size:11px;letter-spacing:0}
+.ed-filter{margin:0 10px 8px;padding:6px 8px;border:1px solid var(--border);border-radius:0;background:var(--panel);color:var(--text);font:500 11px "IBM Plex Mono",monospace}
+.ed-filter::placeholder{color:var(--faint)}
+.projekt-editor .ed-filter:focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.ed-baum,.ed-baum ul{margin:0;padding:0;list-style:none}
+.ed-baum{flex:1;min-height:0;overflow:auto;padding-bottom:12px;scrollbar-width:thin}
+.ed-baum button{display:flex;align-items:center;gap:6px;width:100%;min-width:0;padding:3px 10px 3px calc(12px + var(--tiefe,0) * 12px);border:0;border-radius:0;background:transparent;color:var(--muted);font:500 12px/1.5 "IBM Plex Mono",monospace;text-align:left;white-space:nowrap;cursor:pointer}
+.ed-baum button:hover{background:color-mix(in srgb,var(--text) 6%,transparent);color:var(--text)}
+.ed-baum-name{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.ed-baum-ordner{font-weight:600}
+.ed-baum .ed-baum-ordner{color:var(--text)}
+.ed-baum-pfeil{display:inline-block;flex:none;width:10px;color:var(--faint);text-align:center;transition:transform .12s ease,color .12s ease}
+.ed-baum-ordner[aria-expanded="true"] .ed-baum-pfeil{transform:rotate(90deg);color:var(--accent)}
+.ed-baum .ed-baum-datei{padding-left:calc(28px + var(--tiefe,0) * 12px)}
+.ed-baum .ed-baum-datei.aktiv{background:var(--accent-soft);color:var(--text);box-shadow:inset 2px 0 var(--accent)}
+.ed-baum-datei small{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--faint);font-size:10px}
+.ed-entwurf-punkt{flex:none;width:6px;height:6px;margin-left:auto;border-radius:50%;background:var(--accent)}
+
+/* Reiter: aktiver Reiter mit oranger Oberkante, geaenderter Reiter zeigt einen Punkt statt des Schliessen-Kreuzes (wie VS Code). */
+.ed-reiter{display:flex;flex:none;min-height:34px;overflow-x:auto;overflow-y:hidden;border-bottom:1px solid var(--border);background:var(--soft);scrollbar-width:thin}
+.ed-reiter:empty::before{content:'Keine Datei offen';align-self:center;padding:0 12px;color:var(--faint);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase}
+.ed-reiter-eintrag{position:relative;display:flex;align-items:center;flex:none;max-width:220px;border-right:1px solid var(--border2);color:var(--muted)}
+.ed-reiter-eintrag.aktiv{background:var(--panel);color:var(--text);box-shadow:inset 0 2px var(--accent)}
+.ed-reiter-eintrag.aktiv::after{content:'';position:absolute;inset:auto 0 -1px;height:1px;background:var(--panel)}
+.ed-reiter-eintrag>button[role="tab"]{align-self:stretch;min-width:0;padding:0 4px 0 12px;border:0;border-radius:0;background:transparent;color:inherit;font:500 11px "IBM Plex Mono",monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.ed-reiter-zu{display:grid;place-items:center;flex:none;width:22px;height:22px;margin-right:5px;border:0;border-radius:2px;background:transparent;color:var(--faint);font:500 13px/1 "IBM Plex Mono",monospace;cursor:pointer;opacity:0;transition:opacity .12s ease}
+.ed-reiter-eintrag:hover .ed-reiter-zu,.ed-reiter-eintrag.aktiv .ed-reiter-zu,.ed-reiter-eintrag.geaendert .ed-reiter-zu,.ed-reiter-zu:focus-visible{opacity:1}
+.ed-reiter-zu:hover{background:color-mix(in srgb,var(--text) 8%,transparent);color:var(--text)}
+.ed-reiter-eintrag.geaendert .ed-reiter-zu span{font-size:0}
+.ed-reiter-eintrag.geaendert .ed-reiter-zu span::before{content:'';display:block;width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.ed-reiter-eintrag.geaendert:hover .ed-reiter-zu span,.ed-reiter-eintrag.geaendert .ed-reiter-zu:focus-visible span{font-size:13px}
+.ed-reiter-eintrag.geaendert:hover .ed-reiter-zu span::before,.ed-reiter-eintrag.geaendert .ed-reiter-zu:focus-visible span::before{display:none}
+
+/* Pfadzeile (Brotkrumen) mit Modus-Chip: bearbeitbar nur im Freeze. */
+.ed-pfadzeile{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;min-width:0;padding:6px 14px;border-bottom:1px solid var(--border2);color:var(--faint);font:500 10px "IBM Plex Mono",monospace}
+.ed-brotkrumen{display:flex;min-width:0;overflow:hidden;white-space:nowrap}
+.ed-brotkrumen span+span::before{content:'›';margin:0 6px;color:var(--faint)}
+.ed-brotkrumen .ende{color:var(--text)}
+.ed-modus{flex:none;padding:2px 7px;border:1px solid var(--border);color:var(--muted);font:700 8px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
+.ed-modus.bearbeitbar{border-color:var(--accent);color:var(--accent)}
+
+/* Code: Zeilennummern + Textflaeche mit gleicher Schrift und Zeilenhoehe; bearbeitbar = orange Kante an den Nummern. */
+.ed-code{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr);flex:1;min-height:0;background:var(--panel);transition:box-shadow .15s ease}
+.ed-code:focus-within{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 45%,transparent)}
+.ed-zeilen{min-width:3.5ch;margin:0;padding:12px 10px 72px 14px;overflow:hidden;border-right:1px solid var(--border2);color:var(--faint);font:400 12px/1.65 "IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;text-align:right;user-select:none}
+.ed-code[data-bearbeitbar] .ed-zeilen{box-shadow:inset -2px 0 var(--accent)}
+.ed-code textarea{display:block;width:100%;height:100%;min-height:0;margin:0;padding:12px 16px 48px;border:0;border-radius:0;resize:none;background:transparent;color:var(--text);font:400 12px/1.65 "IBM Plex Mono",monospace;white-space:pre;overflow:auto;tab-size:2;caret-color:var(--accent)}
+.ed-code textarea:focus,.ed-code textarea:focus-visible{outline:none}
+.ed-code textarea[readonly]{cursor:default}
+.ed-code textarea::selection{background:color-mix(in srgb,var(--accent) 28%,transparent)}
+
+/* Leerzustand: Punkt-Leinwand wie Live-Artefakte. */
+.ed-leer{display:flex;flex:1;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;background-image:radial-gradient(circle,color-mix(in srgb,var(--muted) 26%,transparent) 1px,transparent 1.4px);background-size:24px 24px;background-position:-12px -12px}
+.ed-leer strong{color:var(--faint);font:700 28px/1 "Syne",sans-serif;letter-spacing:-.015em}
+.ed-leer p{margin:0;max-width:46ch;color:var(--muted);font:500 11px/1.7 "IBM Plex Mono",monospace}
+.projekt-editor kbd{display:inline-block;padding:0 5px;border:1px solid var(--border);border-bottom-width:2px;border-radius:2px;background:var(--panel);color:var(--text);font:600 10px/1.5 "IBM Plex Mono",monospace}
+
+/* Drei-Wege-Vergleich als unteres Panel; markiert neue/geaenderte (Orange) und entfernte (Danger) Zeilen. */
+.ed-vergleich{display:flex;flex-direction:column;flex:none;min-height:180px;max-height:46%;border-top:1px solid var(--border);background:var(--soft)}
+.ed-vergleich.konflikt{border-top:2px solid var(--danger)}
+.ed-vergleich>header{display:flex;align-items:center;gap:12px;padding:8px 12px;border-bottom:1px solid var(--border2)}
+.ed-vergleich>header .ed-auge{flex:none}
+.ed-vergleich>header strong{flex:1;min-width:0;font-size:12px;font-weight:600}
+.ed-vergleich.konflikt>header strong{color:var(--danger)}
+.ed-vergleich-raster{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));flex:1;min-height:0}
+.ed-vergleich-spalte{display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid var(--border2)}
+.ed-vergleich-spalte:last-child{border-right:0}
+.ed-vergleich-spalte h4{margin:0;padding:6px 10px;border-bottom:1px solid var(--border2);color:var(--muted);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.12em;text-transform:uppercase}
+.ed-vergleich-spalte[data-art="entwurf"] h4{color:var(--accent)}
+.ed-vergleich-spalte pre{flex:1;min-height:0;margin:0;padding:6px 0;overflow:auto;background:var(--panel);color:var(--text);font:400 11px/1.6 "IBM Plex Mono",monospace;white-space:pre}
+.ed-vergleich-spalte pre>span{display:block;width:max-content;min-width:100%;padding-right:10px}
+.ed-vergleich-spalte pre i{display:inline-block;width:4ch;margin-right:10px;color:var(--faint);font-style:normal;text-align:right;user-select:none}
+.ed-vergleich-spalte .anders{background:var(--accent-soft);box-shadow:inset 2px 0 var(--accent)}
+.ed-vergleich-spalte .weg{background:color-mix(in srgb,var(--danger) 12%,transparent);box-shadow:inset 2px 0 var(--danger)}
+.ed-vergleich-fehlt{margin:0;padding:12px;color:var(--danger);font:500 11px "IBM Plex Mono",monospace}
+
+/* Inspektor: zwei Seiten (Live-Plaene | Meine Pruefplaene) mit Zaehlern. */
+.ed-seiten{display:flex;flex:none;border-bottom:1px solid var(--border)}
+.ed-seiten button{display:inline-flex;align-items:center;justify-content:center;gap:6px;flex:1;padding:10px 8px 8px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--muted);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.12em;text-transform:uppercase;cursor:pointer;transition:color .15s ease,border-color .15s ease}
+.ed-seiten button:hover{color:var(--text)}
+.ed-seiten button[aria-selected="true"]{border-bottom-color:var(--accent);color:var(--text)}
+.ed-seiten b{padding:0 5px;border:1px solid var(--border);color:var(--text);font-size:9px;letter-spacing:0}
+.ed-seiten button[aria-selected="true"] b{border-color:var(--accent);color:var(--accent)}
+.ed-seite{display:flex;flex:1;flex-direction:column;gap:14px;min-height:0;padding:12px;overflow:auto;scrollbar-width:thin}
+.ed-abschnitt{display:flex;flex-direction:column;gap:6px}
+.ed-abschnitt h3{display:flex;align-items:center;gap:7px;min-width:0;margin:0 0 2px;color:var(--muted);font:700 9px "IBM Plex Mono",monospace;letter-spacing:.14em;text-transform:uppercase;overflow-wrap:anywhere}
+.ed-abschnitt h3 .ed-mini{margin-left:auto}
+.ed-live-punkt{flex:none;width:7px;height:7px;border-radius:50%;background:var(--success);animation:ed-puls 1.8s ease-in-out infinite}
+.ed-leer-text{margin:0;color:var(--faint);font:500 11px/1.55 "IBM Plex Mono",monospace}
+.ed-explorer .ed-leer-text{padding:4px 12px}
+
+/* Plan- und Pruefplan-Eintraege: Karte mit Akzentkante links, Chip rechts. */
+.ed-plan,.ed-pruefung{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:3px 8px;width:100%;padding:8px 10px;border:1px solid var(--border);border-left:2px solid var(--border);border-radius:0;background:var(--panel);color:var(--text);font:inherit;text-align:left}
+button.ed-plan,.ed-pruefung{cursor:pointer;transition:border-color .15s ease,background-color .15s ease}
+button.ed-plan:hover,.ed-pruefung:hover{border-color:var(--accent)}
+.ed-plan.offen{border-left-color:var(--accent)}
+.ed-plan[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft)}
+.ed-plan-wer{min-width:0;overflow:hidden;color:var(--text);font-size:12px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.ed-plan-id{grid-column:1 / -1;min-width:0;overflow:hidden;color:var(--faint);font:500 10px "IBM Plex Mono",monospace;text-overflow:ellipsis;white-space:nowrap}
+.ed-chip{justify-self:end;padding:1px 6px;border:1px solid var(--border);color:var(--muted);font:700 8px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
+.ed-plan.offen .ed-chip{border-color:color-mix(in srgb,var(--accent) 55%,transparent);color:var(--accent)}
+/* Nachleuchten: abgeschlossene Plaene gluehen kurz orange nach und beruhigen sich (Dauer der Anzeige bestimmt der Server-Einstellwert). */
+.ed-plan.nachklang{border-left-color:var(--border2);opacity:.78;animation:ed-nachleuchten 9s ease-out}
+.ed-pruefung{border-left-color:var(--accent)}
+.ed-pruefung small{grid-column:1 / -1;color:var(--faint);font:500 10px/1.5 "IBM Plex Mono",monospace;overflow-wrap:anywhere}
+.ed-pruefung[data-status*="konflikt"],.ed-pruefung[data-status*="abgelehnt"]{border-left-color:var(--danger)}
+.ed-pruefung[data-status*="konflikt"] .ed-chip,.ed-pruefung[data-status*="abgelehnt"] .ed-chip{border-color:var(--danger);color:var(--danger)}
+.ed-pruefung:is([data-status*="frei"],[data-status*="bestaetigt"],[data-status*="committ"]){border-left-color:var(--success)}
+.ed-pruefung:is([data-status*="frei"],[data-status*="bestaetigt"],[data-status*="committ"]) .ed-chip{border-color:var(--success);color:var(--success)}
+
+/* Schatten (Inhalt des offenen Plans) mit blinkendem Schreibcursor; Pins bleiben stehen. */
+.ed-schatten{max-height:300px;margin:0;padding:8px 10px;overflow:auto;border:1px solid var(--border2);background:var(--panel);color:var(--text);font:400 11px/1.55 "IBM Plex Mono",monospace;white-space:pre;tab-size:2}
+.ed-schatten.schreibt::after{content:'\258D';color:var(--accent);animation:ed-cursor 1s steps(2,start) infinite}
+.ed-pin{border:1px solid var(--border);border-left:2px solid var(--accent);background:var(--panel)}
+.ed-pin header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;border-bottom:1px solid var(--border2)}
+.ed-pin header strong{min-width:0;overflow:hidden;font:600 10px "IBM Plex Mono",monospace;text-overflow:ellipsis;white-space:nowrap}
+.ed-pin .ed-schatten{max-height:220px;border:0}
+
+/* Statusleiste: Freeze als oranges Segment (wie der farbige Modus in VS Code). */
+.ed-status{grid-area:status;display:flex;align-items:stretch;min-width:0;min-height:24px;overflow:hidden;border-top:1px solid var(--border);background:var(--strong);color:var(--muted);font:700 9px/24px "IBM Plex Mono",monospace;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
+.ed-status>span{padding:0 10px;border-right:1px solid var(--border2)}
+.ed-status-modus{color:var(--text)}
+.ed-status-modus.freeze{background:var(--accent);color:var(--accent-contrast)}
+.ed-status-modus.geloest{box-shadow:inset 0 -2px var(--accent)}
+.ed-status>.ed-status-rest{display:flex;gap:14px;min-width:0;margin-left:auto;border-right:0;border-left:1px solid var(--border2)}
+.ed-status-rest b{color:var(--accent)}
+
+.projekt-editor .laedt::after{content:'\258D';margin-left:4px;color:var(--accent);animation:ed-cursor 1s steps(2,start) infinite}
+@keyframes ed-puls{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes ed-cursor{to{visibility:hidden}}
+@keyframes ed-nachleuchten{from{border-left-color:var(--accent);background:var(--accent-soft);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 40%,transparent);opacity:1}to{border-left-color:var(--border2);background:var(--panel);box-shadow:none;opacity:.78}}
+
+@media (max-width:1180px){
+ .ed-werkbank{grid-template-columns:minmax(190px,230px) minmax(0,1fr);grid-template-rows:clamp(480px,calc(100vh - 260px),1200px) auto auto;grid-template-areas:"explorer mitte" "inspektor inspektor" "status status";height:auto}
+ .ed-inspektor{max-height:380px;border-top:1px solid var(--border);border-left:0}
+}
+@media (max-width:760px){
+ .projekt-editor{padding:14px 14px 20px}
+ .ed-titel h2{font-size:22px}
+ .ed-werkzeuge{width:100%}
+ .ed-gruppe{padding:0;border:0}
+ .ed-werkbank{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(420px,70vh) auto auto;grid-template-areas:"explorer" "mitte" "inspektor" "status"}
+ .ed-explorer{max-height:240px;border-right:0;border-bottom:1px solid var(--border)}
+ .ed-vergleich{max-height:60%}
+ .ed-vergleich-raster{grid-template-columns:minmax(0,1fr);overflow:auto}
+ .ed-vergleich-spalte{border-right:0;border-bottom:1px solid var(--border2)}
+ .ed-status>.ed-status-rest{display:none}
+}
+@media (prefers-reduced-motion:reduce){.projekt-editor *,.projekt-editor *::before,.projekt-editor *::after{animation:none!important;transition:none!important}}
