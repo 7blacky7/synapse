@@ -10,6 +10,7 @@ import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
 import { aktuelleUserHerkunft } from './user-herkunft.js';
 import type { W1bAkteur, AusweisAkteur } from './agent-profil-vertrag.js';
 import { rolleFuerAgent } from './agent-rollen.js';
+import { istKoordinatorVerwaltungAusgenommen } from './koordinator-projektverwaltung.js';
 
 export type ProfilDb = Pick<PoolClient, 'query'>;
 
@@ -43,6 +44,22 @@ export async function mainVerwaltetProjekt(akteur: AusweisAkteur, project: strin
 }
 
 /**
+ * P22-T277: ein Koordinator (persoenlicher Ausweis, Heimat != <project>) verwaltet <project> NUR, wenn die Ausweis-Grenze den Aufruf
+ * freigegeben hat (Aufrufkontext koordinator_verwaltung === project; Positivliste + Schalter koordinator_projektverwaltung in
+ * agent-token-tools.ts), <project> nicht ausgenommen ist (synapse, Hauptagent-Bereich) und PG ihn als aktiven Koordinator seiner
+ * Heimat kennt. Sonst null.
+ */
+export async function koordinatorVerwaltetProjekt(akteur: AusweisAkteur, project: string | null, db?: ProfilDb): Promise<{ wer: string; actor_identity_id: string } | null> {
+  if (!project || akteur.art !== 'identitaet') return null;
+  const p = akteur.principal;
+  if (p.rolle !== 'koordinator' || p.project === project || istKoordinatorVerwaltungAusgenommen(project)
+    || aktuellerAgentAufruf()?.koordinator_verwaltung !== project) return null;
+  const r = await (db ?? getPool()).query(
+    "SELECT 1 FROM agent_identitaeten WHERE id=$1 AND project=$2 AND status='aktiv' AND rolle='koordinator'", [p.identity_id, p.project]);
+  return r.rows[0] ? { wer: p.identity_id, actor_identity_id: p.identity_id } : null;
+}
+
+/**
  * User, oder aktiver bestaetigter Koordinator DESSELBEN Projekts (Rolle wird in PG gegengeprueft,
  * nicht aus dem Principal geglaubt). nurUser: globale Kataloge.
  */
@@ -64,6 +81,9 @@ export async function pruefeProfilVerwalter(
   if (akteur.art !== 'identitaet') throw new ProfilVerwaltungFehler('recht_fehlt');
   const main = await mainVerwaltetProjekt(akteur, project, opt.db);
   if (main) return main;
+  // P22-T277: Koordinator eines anderen Projekts ueber koordinator_projektverwaltung (nur mit Kontext der Ausweis-Grenze).
+  const koord = await koordinatorVerwaltetProjekt(akteur, project, opt.db);
+  if (koord) return koord;
   const p = akteur.principal;
   if (p.project !== project || p.rolle !== 'koordinator') throw new ProfilVerwaltungFehler('recht_fehlt');
   const r = await (opt.db ?? getPool()).query(

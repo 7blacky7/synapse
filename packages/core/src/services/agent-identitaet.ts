@@ -21,6 +21,7 @@ import { ausweisTokenAktiv } from './agent-profil-schalter.js';
 import { erstnutzungFristMs } from './agent-ausweis-fristen.js';
 import { leseAgentBezugModus, aktuellerAgentAufruf, type AgentBezugStand } from './agent-bezug.js';
 import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
+import { istKoordinatorVerwaltungAusgenommen } from './koordinator-projektverwaltung.js';
 import { beginneIdentitaetsSitzung } from './agent-identitaet-sitzungen.js';
 import { selbstKonflikte, type Selbstangaben } from './agent-selbstfelder.js';
 
@@ -171,6 +172,12 @@ async function berechtigung(c: PoolClient, project: string, p?: AgentIdentitaetP
       const m = await c.query("SELECT 1 FROM agent_identitaeten WHERE id=$1 AND project=$2 AND rolle='main' AND status='aktiv' FOR SHARE",
         [p.identity_id, HAUPTAGENT_PROJEKT]);
       if (m.rows[0]) return { wer: p.identity_id, verwaltung: true, daemon: false };
+    }
+    // P22-T277: Koordinator eines anderen Projekts verwaltet <project> nur mit Freigabe der Ausweis-Grenze (koordinator_verwaltung).
+    if (aktuellerAgentAufruf()?.koordinator_verwaltung === project && !istKoordinatorVerwaltungAusgenommen(project)) {
+      const k = await c.query("SELECT 1 FROM agent_identitaeten WHERE id=$1 AND project<>$2 AND project<>$3 AND rolle='koordinator' AND status='aktiv' FOR SHARE",
+        [p.identity_id, project, HAUPTAGENT_PROJEKT]);
+      if (k.rows[0]) return { wer: p.identity_id, verwaltung: true, daemon: false };
     }
     throw new AgentIdentitaetFehler('principal_ungueltig');
   }

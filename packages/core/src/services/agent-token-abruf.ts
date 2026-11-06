@@ -21,7 +21,7 @@ import {
 import { leseAusweisKern } from './agent-profil-schalter.js';
 import { holeAusweis, schreibeIdentitaetAudit } from './agent-identitaet.js';
 import {
-  ProfilVerwaltungFehler, mainVerwaltetProjekt, pflichtText, pruefeProfilVerwalter, profilTransaktion, type ProfilDb,
+  ProfilVerwaltungFehler, mainVerwaltetProjekt, koordinatorVerwaltetProjekt, pflichtText, pruefeProfilVerwalter, profilTransaktion, type ProfilDb,
 } from './agent-profil-verwalter.js';
 import { rolleFuerAgent } from './agent-rollen.js';
 
@@ -68,6 +68,9 @@ export async function pruefeAusweisAkteur(akteur: AusweisAkteur, project: string
   // P22-T79: Agenten-Verwaltung des Main (nur mit Freigabe der Ausweis-Grenze, siehe mainVerwaltetProjekt).
   const main = await mainVerwaltetProjekt(akteur, project, db);
   if (main) return { wer: main.wer, actor: main.actor_identity_id };
+  // P22-T277: Koordinator eines anderen Projekts (nur mit Kontext koordinator_verwaltung der Ausweis-Grenze).
+  const koord = await koordinatorVerwaltetProjekt(akteur, project, db);
+  if (koord) return { wer: koord.wer, actor: koord.actor_identity_id };
   if (akteur.art === 'daemon' || !darfAusweisVerwalten(akteur, project)) throw new ProfilVerwaltungFehler('recht_fehlt');
   const v = await pruefeProfilVerwalter(akteur, project, { db });
   return { wer: v.wer, actor: v.actor_identity_id };

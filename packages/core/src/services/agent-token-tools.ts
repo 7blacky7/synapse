@@ -60,6 +60,11 @@ import {
   mainVerwaltungErlaubt, mainVerwaltungAktiv,
 } from './hauptagent-sonderstellung.js';
 import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
+// P22-T277: Projektverwaltung durch Koordinatoren in fremden Projekten (Positivliste, Schalter koordinator_projektverwaltung).
+import {
+  koordinatorVerwaltungErlaubt, istKoordinatorVerwaltungAusgenommen, koordinatorVerwaltungAktiv, koordinatorIdentitaetDesAusweises,
+  pruefeKoordinatorVerwaltungsArgs, herkunftsVermerk, KOORDINATOR_PROJEKTVERWALTUNG_FUNKTION, BERECHTIGUNG_WEG_FELD,
+} from './koordinator-projektverwaltung.js';
 // P22-T86: chat(get) mit Ausweis nur eigene Nachrichten (Produkt-Schalter chat_get_eigene, Standard EIN).
 import { leseChatGetEigeneSchalter, chatGetEigeneAntwort } from './chat-ausweis-lesen.js';
 export const AGENT_TOKEN_PARAMETER = {
@@ -338,6 +343,8 @@ export async function mitAgentToolAufruf<T>(
     if (kontext.angabe_hinweis) ergebnis = haengeAusweisHinweiseAn(ergebnis, kontext.angabe_hinweis, 'ausweis_hinweis');
     // P22-T79: Lenkhinweis des Main (interner Bereich ohne Projektdaten).
     if (kontext.main_hinweis) ergebnis = haengeAusweisHinweiseAn(ergebnis, kontext.main_hinweis, MAIN_HINWEIS_FELD);
+    // P22-T277 (Debug): die Berechtigung kam ueber koordinator_projektverwaltung.
+    if (kontext.berechtigung_weg) ergebnis = haengeAusweisHinweiseAn(ergebnis, kontext.berechtigung_weg, BERECHTIGUNG_WEG_FELD);
     // P22-T44: Visum-/Einwanderungsanzeige (einmal je Lauf und bei Aenderung) an die fertige Antwort beider Transporte.
     return kontext.ausweis_hinweise?.length ? haengeAusweisHinweiseAn(ergebnis, kontext.ausweis_hinweise) : ergebnis;
   });
@@ -362,6 +369,8 @@ export interface AgentToolKontext {
   angabe_hinweis?: string;
   /** P22-T79: Lenkhinweis des Main im internen Bereich (Feld main_hinweis). */
   main_hinweis?: string;
+  /** P22-T277: Debugfeld berechtigung_weg (Wert koordinator_projektverwaltung), wenn der Aufruf ueber diesen Weg kam. */
+  berechtigung_weg?: string;
   /**
    * P22-T155: nur bei Abweisung ohne geprueften Principal (z. B. unbekannter_parameter vor der Ausweispruefung): Absender
    * lesend aus dem mitgegebenen Ausweis, ausschliesslich fuer das Audit (logToolCall absender). Keine Rechte, kein Lauf.
@@ -527,8 +536,13 @@ async function bereiteAgentToolAufrufVorKern(
   // main_lesezugriff, Standard EIN); Zugang dort immer nur Visum.
   const mainLesend = !!heimatDesAusweises && heimatDesAusweises === HAUPTAGENT_PROJEKT && heimatDesAusweises !== projektHinweis
     && (await leseMainSchalter(MAIN_LESEZUGRIFF_FUNKTION)).aktiv && !!(await mainIdentitaetDesAusweises(token));
+  // P22-T277: ein Koordinator mit persoenlichem Ausweis verwaltet jedes Projekt B (ausser synapse/Hauptagent-Bereich) - nur die
+  // Positivliste, Schalter koordinator_projektverwaltung (global, Standard AUS), unabhaengig von mehrprojekt, ohne Visum-Umweg.
+  const koordVerwaltung = !mainLesend && !!heimatDesAusweises && !!projektHinweis && heimatDesAusweises !== projektHinweis
+    && koordinatorVerwaltungErlaubt(tool, aktionRoh) && !istKoordinatorVerwaltungAusgenommen(projektHinweis)
+    && await koordinatorVerwaltungAktiv() && !!(await koordinatorIdentitaetDesAusweises(token));
   const fremdProjekt = heimatDesAusweises && heimatDesAusweises !== projektHinweis
-    && (mainLesend || (await leseMehrprojektSchalter(heimatDesAusweises)).aktiv) ? projektHinweis : null;
+    && (mainLesend || koordVerwaltung || (await leseMehrprojektSchalter(heimatDesAusweises)).aktiv) ? projektHinweis : null;
   // P22-T79 (Befund d93b8a2e): Agenten-Verwaltung des Main in B (Positivliste, Schalter main_agentenverwaltung, Standard AUS).
   const mainVerwaltung = mainLesend && mainVerwaltungErlaubt(tool, aktionRoh) && await mainVerwaltungAktiv();
   // P22-T43 (B2): Anzeige aus der WIRKSAMEN Quelle; freigegeben unveraendert = ausweisTokenAktiv (Kern ODER Altschalter).
@@ -703,7 +717,7 @@ async function bereiteAgentToolAufrufVorKern(
     if (fremdProjekt) {
       // P22-T44: Eintrag/Zugang in B (frei | visum | arbeitsfreigabe). Danach arbeitet der Agent in B im Legacy-Namensraum von B
       // (wie Legacy heute); der Profilzuschnitt seiner Heimat-Identitaet gilt weiter (Gate unten mit p).
-      if (mainLesend) {
+      if (mainLesend || koordVerwaltung) {
         const projekte = await sichtbareUserProjekte();
         if (!projekte.includes(fremdProjekt)) {
           basis.antwort = mainProjektUnbekannt(fremdProjekt, projekte);
@@ -712,7 +726,7 @@ async function bereiteAgentToolAufrufVorKern(
       }
       try {
         fremd = await sichereFremdprojektZugang({ identity_id: p.identitaet.id, heimat: p.project, project: fremdProjekt, lauf_id: p.lauf_id,
-          nur_lesen: mainLesend });
+          nur_lesen: mainLesend || koordVerwaltung });
       } catch {
         basis.antwort = { success: false, error: 'fremdprojekt_nicht_pruefbar', project: fremdProjekt,
           message: `Der Zugang zum Projekt "${fremdProjekt}" konnte nicht geprueft werden; nichts wurde ausgefuehrt.` };
@@ -721,13 +735,15 @@ async function bereiteAgentToolAufrufVorKern(
       const k = aktuellerAgentAufruf();
       if (k) {
         // P22-T79: bei Agenten-Verwaltung bleibt der Principal die Main-Identitaet (die Fachdienste pruefen sie mit main_verwaltung).
-        k.principal = mainVerwaltung ? agentPrincipalAusAnmeldung(p) : { art: 'legacy', project: fremdProjekt, agent_id: p.agent_id };
+        // P22-T277: ebenso bei der Projektverwaltung durch einen fremden Koordinator (die Fachdienste pruefen koordinator_verwaltung).
+        k.principal = mainVerwaltung || koordVerwaltung ? agentPrincipalAusAnmeldung(p) : { art: 'legacy', project: fremdProjekt, agent_id: p.agent_id };
         k.fremdprojekt = { project: fremdProjekt, heimat: p.project, zugang: fremd.zugang, identity_id: p.identitaet.id };
         k.main_verwaltung = mainVerwaltung ? fremdProjekt : null;
+        k.koordinator_verwaltung = koordVerwaltung ? fremdProjekt : null;
       }
       // Pflichtregeln von B einmal je Lauf: Onboarding-Nachweis des Namens in B vergessen -> das Bestands-Onboarding liefert sie.
       // P22-T79: nicht fuer den Main (er arbeitet in B nicht).
-      if (fremd.regeln_neu && !mainLesend) await vergissOnboarding(fremdProjekt, p.agent_id).catch(() => 0);
+      if (fremd.regeln_neu && !mainLesend && !koordVerwaltung) await vergissOnboarding(fremdProjekt, p.agent_id).catch(() => 0);
     } else {
       setzeAufrufPrincipal(p);
     }
@@ -800,7 +816,26 @@ async function bereiteAgentToolAufrufVorKern(
       bindeVerschachtelteActorFelder(tool, action, args, p.agent_id, erlaubteParameter);
     }
     // P22-T44: Visum = nur lesende Aktionen + Channels; Schreiben braucht die Arbeitsfreigabe durch den Koordinator von B.
-    if (fremd?.zugang === 'visum' && !visumErlaubt(tool, action) && !(mainLesend && mainKommunikationErlaubt(tool, action)) && !mainVerwaltung) {
+    // P22-T277: Pflichtangaben und Projektgrenze vor dem Handler, Herkunftsvermerk im grund, Audit-Zeile in B, Debugfeld.
+    if (koordVerwaltung && fremd) {
+      basis.berechtigung_weg = KOORDINATOR_PROJEKTVERWALTUNG_FUNKTION;
+      const abweisung = pruefeKoordinatorVerwaltungsArgs(tool, action, args);
+      if (abweisung) {
+        basis.antwort = abweisung;
+        return basis;
+      }
+      if (typeof args.grund === 'string' && args.grund.trim()) {
+        args.grund = args.grund.trim() + ' ' + herkunftsVermerk({ agent_id: p.agent_id, identity_id: p.identitaet.id, heimat: p.project, ziel: fremd.project, tool, action });
+      }
+      await logToolCall({
+        project: fremd.project, agentId: p.agent_id, source: 'koordinator-projektverwaltung', tool, action: action ?? '',
+        argsPreview: JSON.stringify({ heimat: p.project, ziel_project: fremd.project, identity_id: p.identitaet.id,
+          grund: typeof args.grund === 'string' ? args.grund : typeof args.anlass === 'string' ? args.anlass : null,
+          user_auftrag: typeof args.user_auftrag === 'string' ? args.user_auftrag : null }),
+        ok: true,
+      }).catch(() => undefined);
+    }
+    if (fremd?.zugang === 'visum' && !visumErlaubt(tool, action) && !(mainLesend && mainKommunikationErlaubt(tool, action)) && !mainVerwaltung && !koordVerwaltung) {
       // P22-T79: der Main bekommt keine Arbeitsfreigabe, nur den Hinweis auf den Koordinator.
       basis.antwort = mainLesend ? mainNurLesenAblehnung(tool, action, fremd.project) : visumAblehnung(tool, action, fremd.project, fremd.heimat, fremd.identity_id, fremd.visum_bis);
       return basis;

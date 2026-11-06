@@ -33,6 +33,9 @@ export interface AgentAufrufKontext {
   fremdprojekt?: { project: string; heimat: string; zugang: 'frei' | 'visum' | 'arbeitsfreigabe'; identity_id: string } | null;
   /** P22-T79: Agenten-Verwaltung des Main im Projekt <wert> (nur Positivliste, Schalter main_agentenverwaltung); principal bleibt der Main. */
   main_verwaltung?: string | null;
+  /** P22-T277: Projektverwaltung durch einen Koordinator eines anderen Projekts in <wert> (nur Positivliste, Schalter
+   * koordinator_projektverwaltung); principal bleibt dessen Heimat-Identitaet. */
+  koordinator_verwaltung?: string | null;
 }
 const aufrufe = new AsyncLocalStorage<AgentAufrufKontext>();
 export function istAgentBezugModus(v: unknown): v is AgentBezugModus {
