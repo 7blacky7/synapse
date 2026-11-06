@@ -1214,7 +1214,7 @@ export {
 export type { EntfernungKandidat, EntfernungAusnahme, EntfernungErmittlung, EntfernungSchalter, EntfernungSchwelle, ArchivVerweis } from './services/agent-entfernung.js';
 export { AGENT_ENTFERNUNG_SCHEMA_SQL, AGENT_UMBENENNUNG_SCHEMA_SQL } from './db/agent-entfernung-schema.js';
 // P27-T11: Altbestand in Warteschlangen ausblenden (admin warteschlangen_aufraeumen).
-export { WARTESCHLANGEN_ALTBESTAND_SCHEMA_SQL } from './db/warteschlangen-altbestand-schema.js';
+export { WARTESCHLANGEN_ALTBESTAND_SCHEMA_SQL, WARTESCHLANGEN_ALTBESTAND_COEDIT_SCHEMA_SQL } from './db/warteschlangen-altbestand-schema.js';
 export { WS_ALTBESTAND_FUNKTION, WS_ALTBESTAND_ADMIN_ACTIONS, WS_ALTBESTAND_ADMIN_PARAMETER, istWsAltbestandAdminAction, fuehreWsAltbestandAdminAus, ermittleWsAltbestand, leseWsAltbestandStatus, inboxNichtAusgeblendet } from './services/warteschlangen-altbestand.js';
 // P22-T173: Identitaet umbenennen (Ausweis bleibt), fruehere Namen als Aliase.
 export { AGENT_UMBENENNUNG_FUNKTION, AGENT_NAME_MUSTER, pruefeNeuenAgentNamen, benenneIdentitaetUm } from './services/agent-umbenennung.js';

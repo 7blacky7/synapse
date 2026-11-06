@@ -31,6 +31,7 @@ import { getPool } from '../db/client.js';
 import { emitEventOnce } from './events.js';
 import { embeddeThoughtNach } from './thoughts.js';
 import { opZumNeuPlanen, totWaitSql, type FileBatchOp } from './file-batch.js';
+import { schliesseWaitUndLeerenTraeger } from './coedit-wait-schliessen.js';
 
 export const WAITS_ACTIONS = ['waits_tot'] as const;
 export type WaitsAction = (typeof WAITS_ACTIONS)[number];
@@ -316,21 +317,13 @@ export async function toteWaitsSichernUndSchliessen(filter: {
         }, client);
         eventId = ev?.id ?? null;
       }
-      // 4. erst jetzt schliessen
-      await client.query(
-        `UPDATE file_batch_waits SET status = 'closed', updated_at = NOW() WHERE wait_token = $1::uuid`,
-        [wait.wait_token],
-      );
-      const traeger = await client.query(
-        `UPDATE file_batch_plans c
-            SET status = 'cancelled', reason = CONCAT_WS(' ', c.reason, $2::text)
-          WHERE c.id = $1::bigint AND c.status = 'open' AND jsonb_array_length(c.ops) = 0
-            AND NOT EXISTS (
-              SELECT 1 FROM file_batch_waits w LEFT JOIN file_batch_plans t ON t.id = w.primary_plan_id
-               WHERE w.source_plan_id = c.id AND w.status <> 'closed'
-                 AND (w.primary_plan_id IS NULL OR t.status = 'open'))`,
-        [wait.traeger_plan_id, `[Traegerplan geschlossen durch intern waits_tot, Wait ${wait.wait_token} gesichert in thought ${thoughtId}]`],
-      );
+      // 4. erst jetzt schliessen - P27-T10: gemeinsamer Schliessweg (coedit-wait-schliessen.ts), auch fuer admin
+      //    warteschlangen_aufraeumen coedit_waits: Wait closed, dadurch leerer Traeger cancelled.
+      const schluss = await schliesseWaitUndLeerenTraeger(client, {
+        wait_token: wait.wait_token,
+        traeger_plan_id: wait.traeger_plan_id,
+        vermerk: `[Traegerplan geschlossen durch intern waits_tot, Wait ${wait.wait_token} gesichert in thought ${thoughtId}]`,
+      });
       await client.query('COMMIT');
       void embeddeThoughtNach(wait.project, thoughtId).catch(() => {
         /* Nachzug (embed-backlog) holt es nach: embedded_at bleibt NULL */
@@ -341,7 +334,7 @@ export async function toteWaitsSichernUndSchliessen(filter: {
         thought_id: thoughtId,
         event_id: eventId,
         traeger_plan_id: wait.traeger_plan_id,
-        traeger_verworfen: (traeger.rowCount ?? 0) > 0,
+        traeger_verworfen: schluss.traeger_verworfen,
         ops: wait.ops.length,
       });
     } catch (error) {

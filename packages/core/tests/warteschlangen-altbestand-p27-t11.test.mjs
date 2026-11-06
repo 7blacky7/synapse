@@ -25,8 +25,8 @@ await raw.query('CREATE SCHEMA ' + schema);
 for (const t of ['specialist_inbox', 'agent_zustellungen', 'agent_identitaeten', 'wrapper_status', 'agent_profil_schalter', 'intern_schalter', 'work_jobs']) {
   await raw.query('CREATE TABLE ' + schema + '.' + t + ' (LIKE public.' + t + ' INCLUDING ALL)');
 }
-const { WARTESCHLANGEN_ALTBESTAND_SCHEMA_SQL } = await import('../dist/db/warteschlangen-altbestand-schema.js');
-await raw.query(WARTESCHLANGEN_ALTBESTAND_SCHEMA_SQL);
+const { WARTESCHLANGEN_ALTBESTAND_SCHEMA_SQL, WARTESCHLANGEN_ALTBESTAND_COEDIT_SCHEMA_SQL } = await import('../dist/db/warteschlangen-altbestand-schema.js');
+await raw.query(WARTESCHLANGEN_ALTBESTAND_SCHEMA_SQL); await raw.query(WARTESCHLANGEN_ALTBESTAND_COEDIT_SCHEMA_SQL); // P27-T10: Schema 180
 const W = await import('../dist/services/warteschlangen-altbestand.js');
 const S = await import('../dist/services/agent-profil-schalter.js');
 const A = await import('../dist/services/agent-profil-admin.js');

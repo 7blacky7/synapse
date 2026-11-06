@@ -67,7 +67,7 @@ import { VERLAUF_STUECKE_SCHEMA_SQL } from './verlauf-stuecke-schema.js';
 import { CHAT_ZITATE_SCHEMA_SQL } from './chat-zitate-schema.js';
 import { AGENT_AKTUELLE_TASK_SCHEMA_SQL } from './agent-aktuelle-task-schema.js';
 import { AGENT_NAMENS_ALIAS_SCHEMA_SQL } from './agent-namens-alias-schema.js';
-import { WARTESCHLANGEN_ALTBESTAND_SCHEMA_SQL } from './warteschlangen-altbestand-schema.js';
+import { WARTESCHLANGEN_ALTBESTAND_SCHEMA_SQL, WARTESCHLANGEN_ALTBESTAND_COEDIT_SCHEMA_SQL } from './warteschlangen-altbestand-schema.js';
 import { API_AGENT_SCHLUESSEL_SCHEMA_SQL } from './api-agent-schluessel-schema.js';
 // P22-T179: Freigabe kostenpflichtiger API-Agenten je Identitaet (Schema 161).
 import { API_AGENT_FREIGABEN_SCHEMA_SQL } from './api-agent-freigaben-schema.js';
@@ -3340,6 +3340,7 @@ ${CHAT_ZITATE_SCHEMA_SQL}
 ${AGENT_AKTUELLE_TASK_SCHEMA_SQL}
 ${AGENT_NAMENS_ALIAS_SCHEMA_SQL}
 ${WARTESCHLANGEN_ALTBESTAND_SCHEMA_SQL}
+${WARTESCHLANGEN_ALTBESTAND_COEDIT_SCHEMA_SQL}
 ${API_AGENT_SCHLUESSEL_SCHEMA_SQL}
 ${API_AGENT_FREIGABEN_SCHEMA_SQL}
 ${SPEICHER_AEHNLICHKEIT_SCHEMA_SQL}
