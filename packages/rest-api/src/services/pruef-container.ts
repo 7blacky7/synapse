@@ -246,6 +246,8 @@ interface Offen {
   resolve: (wert: unknown) => void;
   reject: (e: Error) => void;
   timer: NodeJS.Timeout | null;
+  /** P16-T26 B1: Pflege-Nachricht (keine Pruefung) - ihre Antwort setzt den Timeout-Zaehler der Pruefauftraege NICHT zurueck. */
+  pflege?: boolean;
 }
 
 type Antwort = { id?: number | null; ok?: boolean; meldungen?: SyntaxMeldung[]; fehler?: string; info?: PruefContainerInfo; bereit?: boolean; ms?: number; vorgewaermt?: Record<string, unknown>; rustcheck?: BuildLaufErgebnis; build?: BuildLaufErgebnis; kotlinc?: BuildLaufErgebnis; javac?: BuildLaufErgebnis; gobuild?: BuildLaufErgebnis; pyright?: BuildLaufErgebnis; cbuild?: BuildLaufErgebnis; cppbuild?: BuildLaufErgebnis; dartbuild?: BuildLaufErgebnis; csharpbuild?: BuildLaufErgebnis; typen?: TypPruefung; pflege?: Record<string, unknown> };
@@ -639,7 +641,9 @@ export class PruefContainer {
     if (!o) return;
     this.offen.delete(msg.id);
     if (o.timer) clearTimeout(o.timer);
-    if (msg.ok) { this.timeoutsInFolge = 0; o.resolve(msg); }
+    // P16-T26 B1: nur eine echte Pruefantwort beendet die Timeout-Folge. Die Pflege (nach dem Start und im Takt) antwortet auch dann,
+    // wenn ein Pruefer haengt, und hebelte sonst die Reissleine MAX_TIMEOUTS_IN_FOLGE aus (Docker-Systemtest T8, t242 rot).
+    if (msg.ok) { if (!o.pflege) this.timeoutsInFolge = 0; o.resolve(msg); }
     else {
       this.merkeFehler(`Auftrag abgelehnt: ${msg.fehler ?? 'unbekannter Fehler'}`);
       o.reject(new Error(`Pruef-Container: ${msg.fehler ?? 'unbekannter Fehler'}`));
@@ -652,7 +656,7 @@ export class PruefContainer {
     if (!stream) return Promise.reject(new PruefContainerNichtVerfuegbar('keine Verbindung'));
     const id = this.naechsteId++;
     return new Promise((resolve, reject) => {
-      const o: Offen = { resolve, reject, timer: null };
+      const o: Offen = { resolve, reject, timer: null, ...(nachricht.pflege !== undefined ? { pflege: true } : {}) };
       if (limitMs > 0) {
         o.timer = setTimeout(() => {
           if (!this.offen.delete(id)) return;

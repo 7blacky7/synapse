@@ -366,3 +366,35 @@ test('P16-T26 C/D pruef-container.ts pflegen: Leerlaufwerte hin, Stand in zustan
   kalt.schicke = async () => { throw new Error('darf nicht senden'); };
   assert.equal(await kalt.pflegen(), null);
 });
+
+// P16-T26 B1 (Gesamtbericht t242, thought 268f113f): Docker-T8 "3 Timeouts in Folge -> Container gestoppt" war rot, weil die
+// ok-Antwort der Pflege nach dem Start timeoutsInFolge auf 0 setzte. Ohne Docker: Attrappen-Stream, Antworten von Hand.
+test('P16-T26 B1 Pflege-Antwort setzt den Timeout-Zaehler nicht zurueck; dritter Timeout stoppt; echte Pruefantwort setzt zurueck', async () => {
+  const pc = new PruefContainer({}, pruefContainerConfigAusEnv());
+  const geschrieben = [];
+  const gestoppt = [];
+  pc.zustandName = 'bereit';
+  pc.stream = { write: (z) => { geschrieben.push(JSON.parse(z)); return true; } };
+  pc.stoppen = async (grund) => { gestoppt.push(grund); };
+  const pruefung = () => pc.schicke({ sprache: 'rust', inhalt: '', pfad: 'a.rs' }, 20, { sprache: 'rust', pfad: 'a.rs' }).then(() => 'ok', (e) => e.name || 'fehler');
+  await pruefung();
+  await pruefung();
+  assert.equal(pc.timeoutsInFolge, 2, dbg('P16-T26 B1 zwei Pruef-Timeouts gezaehlt', 2, pc.timeoutsInFolge));
+  const pflege = pc.pflegen();
+  await new Promise((r) => setImmediate(r));
+  const nachricht = geschrieben.find((n) => n.pflege !== undefined);
+  assert.ok(nachricht, dbg('P16-T26 B1 Pflege-Nachricht geschrieben', 'pflege', geschrieben));
+  pc.antwort(JSON.stringify({ id: nachricht.id, ok: true, pflege: { einstellungen: {} } }));
+  assert.ok(await pflege, 'P16-T26 B1 Pflege beantwortet');
+  assert.equal(pc.timeoutsInFolge, 2, dbg('P16-T26 B1 Pflege-Antwort laesst die Timeout-Folge stehen', 2, pc.timeoutsInFolge));
+  await pruefung();
+  assert.deepEqual(gestoppt, ['3 Timeouts in Folge'], dbg('P16-T26 B1 dritter Timeout in Folge stoppt den Container (T8)', ['3 Timeouts in Folge'], gestoppt));
+  assert.equal(pc.timeoutsInFolge, 0);
+  // Gegenprobe: eine echte Pruefantwort beendet die Folge wie bisher.
+  await pruefung();
+  assert.equal(pc.timeoutsInFolge, 1);
+  const echt = pc.schicke({ sprache: 'rust', inhalt: 'fn main(){}', pfad: 'b.rs' }, 1000, { sprache: 'rust', pfad: 'b.rs' });
+  pc.antwort(JSON.stringify({ id: geschrieben[geschrieben.length - 1].id, ok: true, meldungen: [], ms: 1 }));
+  await echt;
+  assert.equal(pc.timeoutsInFolge, 0, 'P16-T26 B1 echte Pruefantwort setzt die Timeout-Folge zurueck');
+});
