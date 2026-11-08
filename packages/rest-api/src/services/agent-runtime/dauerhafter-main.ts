@@ -126,9 +126,12 @@ export async function dauerhafterMainTurn(
   try {
     emit({ event: 'runtime', data: { hauptagent: { weg: 'dauerhaft', identity_id: session.identityId, schritt: 'start_pruefen' } } });
     // P22-T278 P2-1: nach dem Rueckfall erst den Modellwechsel-Auftrag abwarten (er startet den Main mit dem Rueckfallmodell).
-    if (info.rueckfall) {
-      emit({ event: 'runtime', data: { hauptagent: { weg: 'dauerhaft', schritt: 'rueckfall_wechsel_abwarten', modell: info.rueckfall.modell } } });
-      await warteAufRueckfallWechsel(session.identityId);
+    // P22-T279 Punkt 2: IMMER abwarten, solange ein Rueckfall-Wechsel (erstellt_von RUECKFALL_AUFTRAG_VON) offen ist - auch wenn ein
+    // Hintergrund-Turn des Main den Rueckfall ausgeloest hat und diese Chatnachricht nichts davon weiss (sonst Start parallel zum Daemon).
+    if (info.rueckfall) emit({ event: 'runtime', data: { hauptagent: { weg: 'dauerhaft', schritt: 'rueckfall_wechsel_abwarten', modell: info.rueckfall.modell } } });
+    const rueckfallWarten = await warteAufRueckfallWechsel(session.identityId);
+    if (!info.rueckfall && rueckfallWarten.gewartet_ms > 0) {
+      emit({ event: 'runtime', data: { hauptagent: { weg: 'dauerhaft', schritt: 'rueckfall_wechsel_abgewartet', gewartet_ms: rueckfallWarten.gewartet_ms } } });
     }
     // P22-T62: Start noetig -> Standard aus core (Schalter hauptagent_cli_modelle EIN: User-Wahl der Runtime bzw. kleinstes
     // Modell der CLI-Liste; AUS: das uebergebene Treiber-Modell). Ein konfiguriertes Profil-Modell geht in stelleMainLaufSicher vor.
@@ -140,8 +143,16 @@ export async function dauerhafterMainTurn(
         // P22-T278 P2-1: Main laeuft nach dem Wechsel-Auftrag noch nicht -> mit dem Rueckfallmodell starten, nie mit dem API-Alias.
         startModell = info.rueckfall.modell;
         modellExplizit = true;
+      } else if (info.rueckfall) {
+        // P22-T279 Punkt 3: Rueckfall ohne verfuegbares Kettenmodell -> klarer Fehler statt Start mit dem API-Modell als Vorgabe.
+        throw new MainLaufFehler('rueckfall_ohne_modell', { runtime, grund: 'Tageslimit erreicht, aber kein Modell der Rueckfall-Kette ist verfuegbar (Einstellungen > API-Agenten > Rueckfall bei Tageslimit).' });
       } else {
-        const w = await standardModellFuerRuntime(runtime, async () => modell);
+        // P22-T279 Punkt 3: ein API-Alias ist nie Vorgabe fuer den CLI-Start (Schalter hauptagent_cli_modelle AUS = Altstandard).
+        const apiAlias = !!(await apiProviderFuerModell(modell).catch(() => null));
+        const w = await standardModellFuerRuntime(runtime, async () => {
+          if (apiAlias) throw new MainLaufFehler('rueckfall_ohne_modell', { runtime, modell, grund: 'API-Modell ist keine Vorgabe fuer den CLI-Start; CLI-Modell im Modell-Chip waehlen.' });
+          return modell;
+        });
         if (!w.modell) throw new MainLaufFehler('standardmodell_unbestimmt', { runtime, grund: w.grund });
         startModell = w.modell;
         modellExplizit = w.quelle === 'user_wahl';

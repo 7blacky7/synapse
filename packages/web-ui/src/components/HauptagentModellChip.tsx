@@ -7,7 +7,7 @@ import { useLaufHerkunft } from './LaufHerkunftMarke';
 import { findeLaufHerkunft } from './lauf-herkunft-logik';
 import { oeffneAusweisVerwaltung } from '../ausweis-deeplink';
 import {
-  API_BASIS, API_GRUPPEN, AUTO_AUFTRAG, AUTO_GRUND, anbieterName, fehlerText, laufZeile, neuerStartSchluessel, preisEtikett, preisTitel, sperrGrund,
+  API_BASIS, API_GRUPPEN, AUTO_AUFTRAG, AUTO_GRUND, anbieterName, fehlerText, kurzGrund, laufZeile, neuerStartSchluessel, preisEtikett, preisTitel, sperrCode, sperrGrund,
   type ApiAuswahlStand, type ApiLauf, type ApiModell,
 } from './api-laufwahl-logik';
 import '../hauptagent-modell-chip.css';
@@ -337,12 +337,13 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige, identity
           return <div key={g.anbieter} className="gruppe api">
             <strong>{g.titel}</strong>
             {liste.map((m) => {
-              const grund = sperrGrund(api, m);
+              const code = sperrCode(api, m);
+              const grund = code ? kurzGrund(code) : null;
               const aktiv = !!apiAktuell && apiAktuell.modell === m.alias && apiAktuell.anbieter === m.anbieter;
               const gewaehltHier = apiZiel?.alias === m.alias;
               return <div key={m.alias} className={'modell-zeile' + (aktiv ? ' aktiv' : '')}>
                 <button type="button" role="menuitem" className={aktiv ? 'aktiv' : ''} disabled={busy || aktiv || !!grund}
-                  title={preisTitel(m) + (grund ? ' · nicht startbar: ' + grund : '')} onClick={() => setApiZiel(gewaehltHier ? null : m)}>
+                  title={preisTitel(m) + (code ? ' · nicht startbar: ' + fehlerText(code) : '')} onClick={() => setApiZiel(gewaehltHier ? null : m)}>
                   <span>{m.alias}</span><code>{preisEtikett(m)}</code>
                   <em>{[aktiv ? 'läuft' : '', grund ?? ''].filter(Boolean).join(' · ')}</em>
                 </button>

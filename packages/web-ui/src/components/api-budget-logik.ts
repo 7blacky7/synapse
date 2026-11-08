@@ -17,6 +17,13 @@ export const API_KEY_ORT = '~/.config/synapse/secrets.env';
 const ZEITRAUM_TEXT: Record<string, string> = { tag: 'Tag', woche: 'Woche', monat: 'Monat' };
 
 export const usd = (x: number | null | undefined): string => (typeof x === 'number' && Number.isFinite(x) ? x.toFixed(4) + ' USD' : '–');
+/** P22-T279 Punkt 7: Zeitpunkte einheitlich in Europe/Berlin; Unlesbares bleibt unverändert. */
+const zeitBerlin = (iso: string | null | undefined): string => {
+  if (!iso) return '–';
+  if (!iso.includes('T')) return iso; // reines Kalenderdatum (z. B. Budgetbeginn) ohne Uhrzeit
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', dateStyle: 'short', timeStyle: 'short' });
+};
 
 /** Formular aus dem Serverstand; ohne Budget der Vorschlag, beschraenkt auf Modelle, die die Registry kennt. */
 export function budgetFormular(budget: ApiBudgetStand, verfuegbar: string[]): ApiBudgetFormular {
@@ -31,7 +38,7 @@ export function budgetFormular(budget: ApiBudgetStand, verfuegbar: string[]): Ap
 /** Eine Zeile: Grenze je Zeitraum, gebucht, offen, verfallen (nur wenn > 0), Rest. */
 export function budgetZeile(b: ApiBudgetStand): string {
   if (!b.gesetzt) return b.hinweis ?? 'Kein Budget gesetzt: keine kostenpflichtigen Aufrufe.';
-  return 'Grenze ' + usd(b.grenze_usd) + ' je ' + (ZEITRAUM_TEXT[b.zeitraum ?? ''] ?? b.zeitraum) + ' (seit ' + (b.beginn ?? '–') + ')'
+  return 'Grenze ' + usd(b.grenze_usd) + ' je ' + (ZEITRAUM_TEXT[b.zeitraum ?? ''] ?? b.zeitraum) + ' (seit ' + zeitBerlin(b.beginn) + ')'
     + ' · gebucht ' + usd(b.gebucht_usd) + ' · offen ' + usd(b.offen_usd) + (b.verfallen_usd > 0 ? ' · verfallen ' + usd(b.verfallen_usd) : '')
     + ' · Rest ' + usd(b.rest_usd) + (b.erschoepft ? ' · ERSCHÖPFT' : '');
 }

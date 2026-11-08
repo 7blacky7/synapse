@@ -28,7 +28,7 @@ const ROLLE_TEXT: Record<string, string> = { subagent: 'Arbeitsagent', koordinat
 export const rolleText = (rolle: string): string => ROLLE_TEXT[rolle] ?? rolle;
 
 const usd = (n: number): string => n.toFixed(4) + ' USD';
-const zeit = (iso: string): string => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('de-DE'); };
+const zeit = (iso: string): string => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('de-DE', { timeZone: 'Europe/Berlin' }); };
 
 /** Eine Zeile je Freigabe: Modelle, eigene Grenze, Verbrauch, Rest, Heartbeat, wer/wann. */
 export function freigabeZeile(f: ApiFreigabeZeile): string {

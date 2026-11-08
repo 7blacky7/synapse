@@ -41,18 +41,28 @@ export const neuerStartSchluessel = (): string => Array.from(crypto.getRandomVal
 const KURZGRUND: Record<string, string> = {
   funktion_aus: 'Funktion api aus', api_lauf_aus: 'API-Lauf aus', budget_fehlt: 'kein Budget', budget_erschoepft: 'Budget erschöpft',
   api_freigabe_fehlt: 'keine Freigabe', agent_budget_erschoepft: 'Limit erreicht', api_laufplaetze_belegt: 'Laufplätze belegt',
+  preis_fehlt: 'kein Preis', nicht_im_budget: 'nicht im Budget', deepseek_aus: 'DeepSeek aus', api_zugang_fehlt: 'kein Key', zugang_unbekannt: 'Zugang unbekannt',
 };
 
-/** Kurzer Grund, warum ein API-Modell nicht startbar ist; null = startbar (der Server prüft beim Start erneut). */
-export function sperrGrund(s: ApiAuswahlStand, m: ApiModell): string | null {
+/** Code, warum ein API-Modell nicht startbar ist; null = startbar (der Server prüft beim Start erneut). Klartext: kurzGrund/fehlerText. */
+export function sperrCode(s: ApiAuswahlStand, m: ApiModell): string | null {
   const b = (s.blocker ?? [])[0];
-  if (b) return KURZGRUND[b] ?? b;
-  if (m.eingabe == null || m.ausgabe == null || m.eingabe <= 0 || m.ausgabe <= 0) return 'kein Preis';
-  if (!s.budget?.erlaubte_modelle.includes(m.alias)) return 'nicht im Budget';
-  if (s.identity && s.identity.rolle !== 'main' && !s.freigabe?.modelle.includes(m.alias)) return 'keine Freigabe';
-  if (m.anbieter === 'deepseek-api' && !s.anbieter?.['deepseek-api']?.schalter_aktiv) return 'DeepSeek aus';
-  if (!s.anbieter?.[m.anbieter]?.vorhanden) return 'kein Key';
+  if (b) return b;
+  if (m.eingabe == null || m.ausgabe == null || m.eingabe <= 0 || m.ausgabe <= 0) return 'preis_fehlt';
+  if (!s.budget?.erlaubte_modelle.includes(m.alias)) return 'nicht_im_budget';
+  if (s.identity && s.identity.rolle !== 'main' && !s.freigabe?.modelle.includes(m.alias)) return 'api_freigabe_fehlt';
+  if (m.anbieter === 'deepseek-api' && !s.anbieter?.['deepseek-api']?.schalter_aktiv) return 'deepseek_aus';
+  // P22-T279 Punkt 6: ohne Anbieter-Stand ist der Zugang unbekannt, nicht „fehlt“.
+  const z = s.anbieter?.[m.anbieter];
+  if (!z) return 'zugang_unbekannt';
+  if (!z.vorhanden) return 'api_zugang_fehlt';
   return null;
+}
+export const kurzGrund = (code: string): string => KURZGRUND[code] ?? code;
+/** Kurzer Grund für die Zeile im Chip; null = startbar. */
+export function sperrGrund(s: ApiAuswahlStand, m: ApiModell): string | null {
+  const code = sperrCode(s, m);
+  return code ? kurzGrund(code) : null;
 }
 
 const zahl = (n: number): string => n.toLocaleString('de-DE', { maximumFractionDigits: 2 });
@@ -76,9 +86,14 @@ export const laufZeile = (l: ApiLauf): string => l.status + ' · Sitzung ' + usd
   + (l.offene_eingaenge ? ' · ' + l.offene_eingaenge + ' offen' : '');
 
 const HINWEIS: Record<string, string> = {
-  budget_fehlt: 'Kein API-Budget gesetzt.', budget_erschoepft: 'Das globale API-Budget ist erreicht.',
-  api_freigabe_fehlt: 'Für diesen Agenten fehlt eine API-Freigabe.', agent_budget_erschoepft: 'Das eigene API-Limit ist erreicht.',
-  funktion_aus: 'Funktion api ist AUS (Einstellungen › API-Agenten).', api_lauf_aus: 'Die API-Laufverwaltung ist AUS.',
+  budget_fehlt: 'Kein API-Budget gesetzt (Einstellungen › API-Agenten › Budget).', budget_erschoepft: 'Das globale API-Budget ist erreicht.',
+  api_freigabe_fehlt: 'Für diesen Agenten fehlt eine API-Freigabe (Einstellungen › API-Agenten › Freigaben je Agent).', agent_budget_erschoepft: 'Das eigene API-Limit ist erreicht.',
+  // P22-T279 Punkt 8: jeder Blocker nennt den Schalter bzw. den Ort zum Beheben.
+  funktion_aus: 'Funktion api ist AUS (Schalter hauptagent_api; für Agenten zusätzlich api_agenten im Projekt) – Einstellungen › API-Agenten.',
+  api_lauf_aus: 'Die API-Laufverwaltung ist AUS (Schalter api_agenten_lauf_intern).',
+  preis_fehlt: 'Für dieses Modell fehlt ein Preis in der Modell-Registry.',
+  nicht_im_budget: 'Das Modell ist im globalen Budget nicht erlaubt (Einstellungen › API-Agenten › Budget).',
+  zugang_unbekannt: 'Der Zugang dieses Anbieters ist unbekannt (Stand nicht lesbar).',
   api_laufplaetze_belegt: 'Alle API-Laufplätze sind belegt.', deepseek_aus: 'DeepSeek ist AUS (Schalter api_deepseek_direkt).',
   api_zugang_fehlt: 'Für diesen Anbieter ist kein API-Key hinterlegt.', api_zugang_ungueltig: 'Der Anbieter lehnt den API-Key ab (HTTP 401/403).',
   anbieter_guthaben_fehlt: 'Beim Anbieter fehlt Guthaben (HTTP 402).',
