@@ -104,6 +104,8 @@ try{
   persona_neue_version:()=>({persona_vorlage_id:VORLAGE,persona_inhalt:{stil:'y'},user_auftrag:'User: Test T34 Matrix'}),
   persona_zuweisen:()=>({ziel_identity_id:'t34-z',persona_vorlage_id:VORLAGE,persona_version:1,user_auftrag:'User: Test T34 Matrix'}),
   persona_entfernen:()=>({ziel_identity_id:'t34-z',grund:'Test T34 Matrix'}),
+  // P22-T312: Generator (Vorschau; ohne angemeldeten Anbieterweg Fachfehler generator_nicht_verfuegbar bzw. Kostentraeger fehlt, nie recht_fehlt fuer Verwalter).
+  persona_generieren:()=>({persona_beschreibung:'Test T34 Matrix Persona',persona_vorschau:true,user_auftrag:'User: Test T34 Matrix'}),
   agent_vorbereiten:()=>({agent_name:'t34-neu-'+u(),grund:'Test T34 Matrix'}),
   token_abrufen:()=>({ziel_identity_id:'t34-z',anlass:'Test T34 Matrix'}),
   token_loeschen:()=>({ziel_identity_id:'t34-z',grund:'Test T34 Matrix'}),
@@ -159,9 +161,15 @@ try{
   reverse_einstellungen:()=>({modus:'status'}),
   // P22-T80 Aufraeumen, P22-T82 Container-Kontingent (status), P22-T87 Anmeldungen, P22-T107 Koordinator-Heartbeat (status).
   agenten_aufraeumen:()=>({aufraeumen_modus:'status'}),
+  // P27-T11 (Batch 31306, nachgetragen P22-T319): Vorschau lesen wie agenten_aufraeumen (User, Koordinator inkl. Legacy; Subagent nie).
+  warteschlangen_aufraeumen:()=>({aufraeumen_modus:'vorschau'}),
   container_kontingent:()=>({kontingent_modus:'status'}),
   anmeldungen:()=>({}),
   koordinator_heartbeat:()=>({modus:'status'}),
+  // P10-T90 (nachgetragen P22-T319): Zwangs-Pins status (User, Koordinator inkl. Legacy, Main; zwangs-pin.ts fuehreZwangsPinAdminAus).
+  zwangs_pins:()=>({modus:'status'}),
+  // P22-T288 W6 (Batch 33150, nachgetragen P22-T319): Nachzug-Vorschau fuer eine Identitaet (pruefeProfilVerwalter des Zielprojekts).
+  verlauf_nachzug_api:()=>({ziel_identity_id:'t34-z'}),
  };
  const NUR_USER=new Set(['web_ui_koordinator_token','hauptagent_status','hauptagent_auftrag','hauptagent_auftraege','hauptagent_auftrag_abbrechen',
   'api_status','api_schalter','api_budget','api_einstellungen','api_kosten','api_freigabe']);

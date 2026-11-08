@@ -89,7 +89,10 @@ const W1B_AKTIONEN=[
  'reverse_einstellungen',
  'profil_schalter_status','profil_schalter_setzen','profil_uebersicht','schattenprofil_liste','schattenprofil_korrigieren','schattenprofil_bestaetigen','schattenprofil_ablehnen',
  'typ_liste','typ_anlegen','typ_aendern','typ_revision_lesen','profil_aendern','profil_historie','profil_rollback','persona_liste','persona_versionen','persona_anlegen','persona_neue_version',
- 'persona_zuweisen','persona_entfernen','agent_vorbereiten','token_abrufen','token_loeschen','web_ui_koordinator_token','task_bindung_lesen','task_bindung_festlegen','task_bindung_aendern','task_bindung_entblocken',
+ 'persona_zuweisen','persona_entfernen',
+ // P22-T312: Persona-Generator (direkt nach den Persona-Aktionen)
+ 'persona_generieren',
+ 'agent_vorbereiten','token_abrufen','token_loeschen','web_ui_koordinator_token','task_bindung_lesen','task_bindung_festlegen','task_bindung_aendern','task_bindung_entblocken',
  // P22-T45: additive Ausweis-Fristen (Kernaktion, im Schema vor den Hauptagent-Aktionen)
  'ausweis_fristen',
  // P22-T44: additive Aktionen Ausweis fuer mehrere Projekte
@@ -109,13 +112,21 @@ const W1B_AKTIONEN=[
  // P22-T58: additive Aktion der Runtime-Ueberwachung
  'runtime_ueberwachung',
  // P22-T80: alte Agenten archivieren; P22-T82: Kontingent Spezialisten im Container; P22-T87: Anmelde-Uebersicht
- 'agenten_aufraeumen','container_kontingent','anmeldungen',
+ 'agenten_aufraeumen',
+ // P27-T11 (Batch 31306, nachgetragen P22-T319): Altbestand in Warteschlangen ausblenden, direkt nach agenten_aufraeumen
+ 'warteschlangen_aufraeumen',
+ 'container_kontingent','anmeldungen',
  // P22-T107: Heartbeat der Koordinatoren
  'koordinator_heartbeat',
  // P10-T90: Zwangs-Pins
- 'zwangs_pins'];
+ 'zwangs_pins',
+ // P22-T288 W6 (Batch 33150, nachgetragen P22-T319): einmaliger Nachzug api_agent_verlauf -> hauptagent_verlauf
+ 'verlauf_nachzug_api'];
 const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','zustand','erwartete_revision','ziel_revision','korrektur','profil_patch','typ_id','typ_schluessel','typ_inhalt',
- 'typ_revision','profil_scope','persona_name','persona_inhalt','persona_vorlage_id','persona_version','user_auftrag','user_zustimmung','anlass','agent_name','rolle','startart','bindung_task_id','bindung_art','bindung_identity_ids',
+ 'typ_revision','profil_scope','persona_name','persona_inhalt','persona_vorlage_id','persona_version',
+ // P22-T312: Persona-Generator und Option beim Erstellen (direkt nach persona_version)
+ 'persona_beschreibung','persona_aufgabe','persona_vorschau','persona_zuweisen','persona_an','persona_kostentraeger_id',
+ 'user_auftrag','user_zustimmung','anlass','agent_name','rolle','startart','bindung_task_id','bindung_art','bindung_identity_ids',
  // P22-T45: Ausweis-Fristen-Parameter (im Schema vor den Hauptagent-Parametern)
  'schatten_stunden','erstnutzung_minuten','visum_minuten','arbeitsfreigabe_stunden','anmeldung_plaene_minuten','files_plan_stunden','shell_hinweis_minuten',
  // P22-T199: additiver Fristwert coedit_aktiv_sekunden (Co-Edit Ready-Gate, Schalter coedit_ohne_gate AUS).
@@ -126,6 +137,8 @@ const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','z
  'ziel_ebene',
  // P22-T93: additive Netzwerkparameter zwischen Fristen und Hex.
  'netzwerk_modus','netzwerk_werte',
+ // P22-T288 W6 (Batch 33150, nachgetragen P22-T319): verlauf_nachzug_api, direkt nach den Netzwerkparametern
+ 'nachzug_ausfuehren',
  // P21-T3/T13: Hex-Einstellungen (im Schema vor den Hauptagent-Parametern)
  'hex_werte','hex_namen',
  // P22-T243 (t224 #31): Parameter der Shell-Ausgabe-Grenzen direkt nach Hex (SHELL_AUSGABE_ADMIN_PARAMETER)
@@ -148,15 +161,19 @@ const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','z
  'ueberwachung_modus','ueberwachung_werte','ueberwachung_namen',
  // P22-T80: agenten_aufraeumen (+ mit_entfernten fuer profil_uebersicht)
  'aufraeumen_modus','aufraeumen_tage','aufraeumen_art','aufraeumen_ids','aufraeumen_bestaetigung','aufraeumen_lauf_id','mit_entfernten','aufraeumen_alle',
+ // P27-T11 warteschlangen_aufraeumen (Batch 31306) und P27-T10 Ausnahmen fuer specialist_inbox; nachgetragen P22-T319
+ 'warteschlange','aufraeumen_ausnahmen_einschliessen',
  // P22-T82: container_kontingent
  'kontingent_modus','container_agenten_max',
  // P22-T87: anmeldungen
  'anmeldung_agent','anmeldung_seit','anmeldung_limit','anmeldung_nur_letzte','anmeldung_weg','anmeldung_debug',
  // P10-T90: zwangs_pins
- 'pin_stamm','pin_memory','pin_kurzfassung'];
+ 'pin_stamm','pin_memory','pin_kurzfassung',
+ // P23-T10 (admin-katalog-suche.ts ADMIN_SUCHE_PARAMETER, Version 200789; nachgetragen P22-T319): Katalogsuche statt Komplettlisten
+ 'query','nur_aktiv','nur_abweichend','fehlend_gegenueber_projekt','voll','limit','offset'];
 // P21-T1: nur die additive reverse.struktur-Deklaration aus dem Altvertrag nehmen; RV9 prueft den vollen neuen Schema-Hash.
 const projiziere=t=>t.name==='reverse'?{...t,inputSchema:{...t.inputSchema,properties:{...t.inputSchema.properties,action:{...t.inputSchema.properties.action,enum:t.inputSchema.properties.action.enum.filter(a=>a!=='struktur')}}}}:t.name!=='admin'?t:{...t,inputSchema:{...t.inputSchema,properties:Object.fromEntries(Object.entries(t.inputSchema.properties)
- .filter(([k])=>!W1B_PARAMETER.includes(k)).map(([k,v])=>[k,k==='action'?{...v,enum:v.enum.filter(a=>!W1B_AKTIONEN.includes(a))}:v]))}};
+ .filter(([k])=>!W1B_PARAMETER.includes(k)).map(([k,v])=>[k,k==='action'&&Array.isArray(v.enum)?{...v,enum:v.enum.filter(a=>!W1B_AKTIONEN.includes(a))}:v]))}};
 
 async function transports(){
  const fastify=(await load('packages/rest-api/node_modules/fastify/fastify.js')).default;
@@ -602,10 +619,16 @@ try{
    const T=await transports();
    for(const t of [T.rest,T.stdio]){
     const adminDef=(await t.list()).find(x=>x.name==='admin');
-    const actions=adminDef.inputSchema.properties.action.enum;
-    check(W1B_AKTIONEN.every(a=>actions.includes(a))&&['kontextprofil_liste','kontextprofil_setzen','kontextprofil_entfernen','jev_status'].every(a=>actions.includes(a)),'admin-Enum: neue Aktionen additiv, bestehende erhalten '+t.name);
-    check(W1B_PARAMETER.every(p=>gleich(adminDef.inputSchema.properties[p],C.W1B_ADMIN_PARAMETER[p])),'Parameter aus der gemeinsamen Core-Definition '+t.name);
-    check(gleich(projiziere(adminDef).inputSchema.properties.action.enum,actions.filter(a=>!W1B_AKTIONEN.includes(a))),'Projektion entfernt genau die additiven Namen '+t.name);
+    // P22-T319: P23-T10 (admin-katalog-suche.ts ohneGrosseEnums, ADMIN_ENUM_MAX 12) liefert grosse enums (action, profil_funktion ...)
+    // bewusst als freie Strings aus; der Server prueft die Aktion und nennt aehnliche. Geprueft wird der Vertrag, nicht die alte Enum.
+    const actionDef=adminDef.inputSchema.properties.action;
+    check(actionDef?.type==='string'&&!Array.isArray(actionDef.enum),'P22-T319 admin action ohne grosse Enum (P23-T10-Vertrag) '+t.name);
+    check(W1B_AKTIONEN.every(a=>C.W1B_ADMIN_ACTIONS.includes(a)),'admin-Aktionen additiv im Core-Katalog, bestehende erhalten '+t.name);
+    const KS=await load('packages/core/dist/services/admin-katalog-suche.js');
+    const erwartet=KS.ohneGrosseEnums(C.W1B_ADMIN_PARAMETER);
+    const abweichend=W1B_PARAMETER.filter(p=>!gleich(adminDef.inputSchema.properties[p],erwartet[p]));
+    check(abweichend.length===0,'Parameter aus der gemeinsamen Core-Definition (ohne grosse Enums, P23-T10) '+t.name+(abweichend.length?' abweichend: '+abweichend.join(','):''));
+    check(Object.keys(projiziere(adminDef).inputSchema.properties).every(k=>!W1B_PARAMETER.includes(k)),'Projektion entfernt genau die additiven Parameter '+t.name);
    }
    const ak={action:'token_abrufen',project:P,ziel_identity_id:sid,anlass:'MCP-Test'};
    for(const t of [T.rest,T.stdio]){
