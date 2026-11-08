@@ -5,7 +5,7 @@ import { useAusweisFenster } from './AusweisFenster';
 // P22-T289: Schalter web_ui_agentfenster_alle EIN -> Agentenfenster (Knopf „Ausweis“ im Kopf oeffnet dieses Ausweis-Fenster).
 import { useAgentFensterOeffnen } from './AgentFenster';
 import { agentTon, teamSchluessel } from '../views/projekt/agententeam-logik';
-import { AUSWEIS_ERSTELLEN, sortiereTeamSuche } from '../views/projekt/agententeam-suche-logik';
+import { AUSWEIS_ERSTELLEN, istKoordinator, sortiereTeamSuche } from '../views/projekt/agententeam-suche-logik';
 // Grundstil des Suchfelds (position:fixed, Spalte) liegt in seitenleiste-projekt.css (P22-T230); sonst nur ueber die Projektkarte geladen.
 import '../seitenleiste-projekt.css';
 import '../channel-fenster-p22-t254.css';
@@ -56,7 +56,7 @@ export function AgentenTeamSuche({ project, eingeklappt, label = 'Agententeam', 
         <button type="button" className="agententeam-suche-erstellen" onClick={() => { host?.oeffne({ project, modus: 'anlegen' }); setOffen(false); }}>
           <strong><i aria-hidden="true">+</i>{AUSWEIS_ERSTELLEN}</strong><small>Neuer Agent mit Ausweis für {project}</small></button>
         {liste.map((a) => <button type="button" key={teamSchluessel(a)} data-ton={agentTon(a)} onClick={() => { if (agentFenster) agentFenster({ project, name: a.agentId || a.name, anzeige: a.name, identityId: a.identityId, rolle: a.rolle, status: a.status, herkunft: a.herkunft, team: a, quelle: 'agententeam' }); else host?.oeffne({ project, modus: 'anzeigen', agent: a }); setOffen(false); }}>
-          <strong><i className={'agententeam-suche-ton ' + agentTon(a)} aria-hidden="true" />{a.name}</strong>{a.busy && <b>arbeitet</b>}
+          <strong><i className={'agententeam-suche-ton ' + agentTon(a)} aria-hidden="true" />{a.name}</strong>{istKoordinator(a) && <b>Koordinator</b>}{a.busy && <b>arbeitet</b>}
           <small>{[a.rolle, a.typ, a.status, a.art === 'wrapper' ? 'Wrapper' : 'Ausweis'].filter(Boolean).join(' · ')}</small></button>)}
         {!liste.length && !fehler && <p>{!geladen ? 'lädt …' : agents.length ? 'Keine Agenten gefunden.' : 'Für dieses Projekt sind keine Agenten registriert.'}</p>}
       </div>

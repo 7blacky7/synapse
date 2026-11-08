@@ -16,11 +16,15 @@ export const AUSWEIS_ERSTELLEN = 'Ausweis erstellen';
 const rang = (a: ProjectTeamAgentViewModel): number =>
   a.busy ? 0 : a.status === 'running' || a.status === 'angemeldet' ? 1 : a.status === 'idle' ? 2 : 3;
 
+/** P22-T289: Koordinator laut Ausweis-Rolle (Marke in der Liste, oben angeheftet). */
+export const istKoordinator = (a: ProjectTeamAgentViewModel): boolean => /koordinator/i.test(a.rolle ?? '');
+
 export function sortiereTeamSuche(agents: ProjectTeamAgentViewModel[], suche: string): ProjectTeamAgentViewModel[] {
   const q = suche.trim().toLocaleLowerCase();
   return agents
     .filter((a) => !q || [a.name, a.agentId, a.rolle, a.typ, a.model, a.currentTask].filter(Boolean).join(' ').toLocaleLowerCase().includes(q))
-    .sort((a, b) => rang(a) - rang(b) || a.name.localeCompare(b.name, 'de'));
+    // P22-T289 (User t239 „Koordinator aus dem Agententeam rausgenommen“): er stand nur alphabetisch weit unten. Koordinatoren zuerst.
+    .sort((a, b) => Number(istKoordinator(b)) - Number(istKoordinator(a)) || rang(a) - rang(b) || a.name.localeCompare(b.name, 'de'));
 }
 
 export type FeldSchluessel = 'modell' | 'effort' | 'kontext_stufe' | 'briefing' | 'arbeitsweise' | 'regeln' | 'skills';

@@ -344,7 +344,7 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
         <div className="message-feed" ref={feedRef} onScroll={beimScrollen}>
           {aeltereDa && <div className="verlauf-leiste"><button type="button" onClick={() => void ladeAeltere()} disabled={laedtAeltere}>{laedtAeltere ? 'Lädt …' : '↑ Ältere Beiträge anzeigen'}</button></div>}
           {!aeltereDa && nachrichten.length > 0 && <div className="verlauf-leiste"><span>Anfang des Verlaufs</span></div>}
-          {!nachrichten.length && !offen.length && <div className="verlauf-leiste"><span>{hinweis || 'Noch kein Verlauf. Schreib dem Agenten.'}</span></div>}
+          {!nachrichten.length && !offen.length && <div className="verlauf-leiste"><span>{hinweis || 'Für ' + name + ' ist bisher kein Verlauf gespeichert. Neue Nachrichten und Antworten erscheinen hier.'}</span></div>}
           {nachrichten.map((roh) => {
             // P22-T168: Zitat-Block der Nachricht als Kaertchen, der Text ohne Block; Markierung + Rechtsklick = Zitat 'Ausschnitt'.
             const teile = zerlegeZitatBlock(roh.text);

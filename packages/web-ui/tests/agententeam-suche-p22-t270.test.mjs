@@ -30,7 +30,8 @@ const L = 'P22-T270 agententeam-suche-logik.ts';
 const a = (name, extra = {}) => ({ name, agentId: name, model: '', status: 'offline', contextPercent: 0, tokensIn: 0, tokensOut: 0, channels: [], currentTask: '', busy: false, provider: '', lastActivity: '', source: 'api', ...extra });
 const team = [a('zeta'), a('beta', { status: 'angemeldet' }), a('alpha', { busy: true, status: 'running' }), a('gamma', { rolle: 'koordinator', status: 'idle' })];
 ok(AUSWEIS_ERSTELLEN === 'Ausweis erstellen', L + ': Text des ersten Eintrags');
-ok(kurz(sortiereTeamSuche(team, '').map((x) => x.name)) === kurz(['alpha', 'beta', 'gamma', 'zeta']), L + ' sortiereTeamSuche: arbeitend, angemeldet, idle, Rest; dann Name', sortiereTeamSuche(team, '').map((x) => x.name));
+// P22-T289: Koordinatoren zuerst (gamma), danach arbeitend, angemeldet, idle, Rest; dann Name.
+ok(kurz(sortiereTeamSuche(team, '').map((x) => x.name)) === kurz(['gamma', 'alpha', 'beta', 'zeta']), L + ' sortiereTeamSuche: Koordinator zuerst, dann arbeitend, angemeldet, idle, Rest; dann Name', sortiereTeamSuche(team, '').map((x) => x.name));
 ok(kurz(sortiereTeamSuche(team, 'KOORD').map((x) => x.name)) === kurz(['gamma']), L + ' sortiereTeamSuche: findet Rolle ohne Gross-/Kleinschreibung');
 ok(team.map((x) => x.name).join() === 'zeta,beta,alpha,gamma', L + ' sortiereTeamSuche: Eingabe unveraendert');
 const w = { modell: 'opus', effort: '', kontextStufe: 'kompakt', briefing: 'Alt', arbeitsweise: '', regeln: ['r1', 'r2'], skills: [], channels: ['a'], erlaubteModelle: [], erlaubteRuntimes: [] };

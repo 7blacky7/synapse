@@ -114,7 +114,7 @@ function PlattformAgentChatIdentitaet({ identityId, name, pollMs, sendeGesperrt 
   return (
     <section className="plattform-agent-chat" aria-label={'Chat mit ' + name}>
       <div className="plattform-agent-chat-verlauf">
-        {!eintraege.length && !offen.length && <p className="plattform-agent-chat-leer">{hinweis || 'Noch kein Verlauf. Schreib dem Agenten.'}</p>}
+        {!eintraege.length && !offen.length && <p className="plattform-agent-chat-leer">{hinweis || 'Für ' + name + ' ist bisher kein Verlauf gespeichert. Neue Nachrichten und Antworten erscheinen hier.'}</p>}
         {eintraege.map((e) => (
           <article key={e.id} className={'plattform-agent-chat-msg ' + (e.rolle === 'user' || e.richtung === 'ein' ? 'ein' : 'aus')}>
             <small>{e.rolle === 'agent' || e.richtung === 'aus' ? name : (e.absender?.agent_id || 'Du')} · {new Date(e.erstellt_am).toLocaleTimeString('de-DE')}{e.status === 'laeuft' ? ' · antwortet …' : ''}</small>
