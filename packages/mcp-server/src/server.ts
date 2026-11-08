@@ -7,7 +7,7 @@ import { SERVER_INSTANCE_ID } from './server-instanz.js';
 import { mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools, gateToolListe } from '@synapse/core';
 // P22-T56: tools/list je Verbindung (stdio: Ausweis in SYNAPSE_AGENT_TOKEN oder gemeinsame CLI-Verbindung).
 import { entscheideToolListeVerbindung, toolListeMeta } from '@synapse/core';
-import { haengeAusloeserTextHinweiseAn, initialisiereAssetKonfliktHinweise, initialisiereW1bAnmeldungHinweise, initialisiereLogStromHinweise } from '@synapse/core';
+import { haengeAusloeserTextHinweiseAn, initialisiereAssetKonfliktHinweise, initialisiereW1bAnmeldungHinweise, initialisiereLogStromHinweise, initialisiereZwangsPinHinweise } from '@synapse/core';
 // P23-T5: Fall-Skill-Hinweis bei Fehlbedienung (Tabelle Fehlercode -> Fall-Skill, je Weg Ausweis/Legacy).
 import { haengeFallSkillHinweisAn, haengeFallSkillTextHinweisAn, type FallSkillOptionen } from '@synapse/core';
 // P22-T13 Paket C: Hinweisentscheidung vor First-Use-Marke und gemeinsame Agentenprojektion (wie REST).
@@ -118,6 +118,8 @@ export function createServer(): Server {
   initialisiereAssetKonfliktHinweise();
   initialisiereW1bAnmeldungHinweise();
   initialisiereLogStromHinweise();
+  // P10-T90: Zwangs-Pin-Hinweise ueber die Hinweisquellen-Registry (wie REST).
+  initialisiereZwangsPinHinweise();
   const server = new Server(
     {
       name: 'synapse-mcp',

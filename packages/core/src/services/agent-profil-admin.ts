@@ -36,6 +36,8 @@ import { WS_ALTBESTAND_ADMIN_ACTIONS, WS_ALTBESTAND_ADMIN_PARAMETER, istWsAltbes
 import { CONTAINER_ADMIN_ACTIONS, CONTAINER_ADMIN_PARAMETER, istContainerAdminAction, fuehreContainerAdminAus } from './agent-container.js';
 import { KOORDINATOR_HEARTBEAT_ADMIN_ACTIONS, istKoordinatorHeartbeatAdminAction, fuehreKoordinatorHeartbeatAdminAus } from './koordinator-heartbeat.js';
 import { AGENT_ANMELDUNGEN_ADMIN_ACTIONS, AGENT_ANMELDUNGEN_ADMIN_PARAMETER, istAgentAnmeldungenAdminAction, fuehreAgentAnmeldungenAdminAus } from './agent-anmeldungen.js';
+// P10-T90: Zwangs-Pins verwalten (admin zwangs_pins; status/setzen/entfernen, eigener Rechtepfad in zwangs-pin.ts).
+import { ZWANGS_PIN_ADMIN_ACTIONS, ZWANGS_PIN_ADMIN_PARAMETER, istZwangsPinAdminAction, fuehreZwangsPinAdminAus } from './zwangs-pin.js';
 import { RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, RUNTIME_UEBERWACHUNG_ADMIN_PARAMETER, istRuntimeUeberwachungAdminAction, fuehreRuntimeUeberwachungAdminAus } from './runtime-ueberwachung.js';
 import { AUSWEIS_FRIST_NAMEN, leseAusweisFristen, setzeAusweisFristen } from './agent-ausweis-fristen.js';
 import { leseFilesPlanAblaufSchalter, setzeFilesPlanAblaufSchalter } from './files-plan-ablauf-schalter.js';
@@ -65,7 +67,7 @@ const W1B_KERN_AKTIONEN = [
   'identitaet_umbenennen',
 ] as const;
 /** P22-T36: hauptagent_* additiv im selben admin-Weg; eigene Rechtepruefung (User + Main selbst) in hauptagent-dienst.ts. */
-export const W1B_ADMIN_ACTIONS = ['artefakt_einstellungen', 'agentennetzwerk', ...HEX_ADMIN_ACTIONS, ...SHELL_AUSGABE_ADMIN_ACTIONS, ...REVERSE_ADMIN_ACTIONS, ...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...WS_ALTBESTAND_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS, ...AGENT_ANMELDUNGEN_ADMIN_ACTIONS, ...KOORDINATOR_HEARTBEAT_ADMIN_ACTIONS] as const;
+export const W1B_ADMIN_ACTIONS = ['artefakt_einstellungen', 'agentennetzwerk', ...HEX_ADMIN_ACTIONS, ...SHELL_AUSGABE_ADMIN_ACTIONS, ...REVERSE_ADMIN_ACTIONS, ...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...WS_ALTBESTAND_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS, ...AGENT_ANMELDUNGEN_ADMIN_ACTIONS, ...KOORDINATOR_HEARTBEAT_ADMIN_ACTIONS, ...ZWANGS_PIN_ADMIN_ACTIONS] as const;
 export type W1bAdminAction = typeof W1B_KERN_AKTIONEN[number];
 
 /** Nur NEUE Parameternamen; bestehende (project, aktiv, grund, ebene, agent_id) bleiben byte-stabil unveraendert. */
@@ -120,6 +122,8 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   ...WS_ALTBESTAND_ADMIN_PARAMETER,
   ...CONTAINER_ADMIN_PARAMETER,
   ...AGENT_ANMELDUNGEN_ADMIN_PARAMETER,
+  // P10-T90: zwangs_pins (pin_stamm, pin_memory, pin_kurzfassung).
+  ...ZWANGS_PIN_ADMIN_PARAMETER,
   // P23-T10: Katalogsuche (query, nur_aktiv, nur_abweichend, fehlend_gegenueber_projekt, voll, limit, offset).
   ...ADMIN_SUCHE_PARAMETER,
 };
@@ -610,6 +614,8 @@ export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteu
   if (istKoordinatorHeartbeatAdminAction(action)) return fuehreKoordinatorHeartbeatAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
   // P22-T87 S1: Anmelde-Uebersicht (lesend: User, Koordinator inkl. Legacy, Main) – eigener Rechtepfad in agent-anmeldungen.ts.
   if (istAgentAnmeldungenAdminAction(action)) return fuehreAgentAnmeldungenAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
+  // P10-T90: Zwangs-Pins (status: User, Koordinator inkl. Legacy, Main; setzen/entfernen: User, Koordinator) – Rechtepfad in zwangs-pin.ts.
+  if (istZwangsPinAdminAction(action)) return fuehreZwangsPinAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
   if (istAusweisAktion(action)) {
     // Auch der Legacy-Koordinator ohne Ausweis darf vorbereiten/abrufen/loeschen (Vorgabe 27920).
     try {

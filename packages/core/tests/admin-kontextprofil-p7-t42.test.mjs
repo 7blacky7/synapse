@@ -37,7 +37,9 @@ const w1bAktionen = ['profil_schalter_status', 'profil_schalter_setzen', 'profil
   // P22-T191 (Nachtrag t215/P22-T199, Sonde: mit diesem Eintrag stimmen stdio/REST-Golden exakt): additive Aktion Artefakt-Einstellungen.
   'artefakt_einstellungen',
   // P22-T243 (t224 #3): additive Aktion Grenzen der Shell-Ausgabe.
-  'shell_ausgabe_einstellungen'];
+  'shell_ausgabe_einstellungen',
+  // P10-T90: additive Aktion Zwangs-Pins.
+  'zwangs_pins'];
 const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id', 'zustand', 'erwartete_revision', 'ziel_revision', 'korrektur', 'profil_patch', 'typ_id', 'typ_schluessel', 'typ_inhalt',
   'typ_revision', 'profil_scope', 'persona_name', 'persona_inhalt', 'persona_vorlage_id', 'persona_version', 'user_auftrag', 'user_zustimmung', 'anlass', 'bindung_task_id', 'bindung_art', 'bindung_identity_ids',
   // P22-T33 (T1, 227150da): additive W12-Parameter (agent_vorbereiten).
@@ -80,7 +82,9 @@ const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id'
   // P22-T227/T233: neuer Parameter der Log-Strom-Altersschwelle; Altvertrag bleibt unveraendert.
   'log_strom_veraltet_tage',
   // P22-T243 (t224 #3): additive Parameter der Aktion shell_ausgabe_einstellungen.
-  'shell_ausgabe_werte', 'shell_ausgabe_namen'];
+  'shell_ausgabe_werte', 'shell_ausgabe_namen',
+  // P10-T90: additive Parameter der Aktion zwangs_pins.
+  'pin_stamm', 'pin_memory', 'pin_kurzfassung'];
 // P23-T1: additive Werte in bestehenden Enums (Jev-Funktion skill_rerank in jev_schalten.funktion).
 // P23-T6: additiver Enumwert skill_rerank_probe (Jev-Funktion der Diagnose intern skill_probe).
 const neueEnumWerte = { funktion: new Set(['skill_rerank', 'skill_rerank_probe']) };

@@ -93,6 +93,7 @@ export const PROFIL_SCHALTER_ZWECK: Readonly<Record<string, string>> = {
   main_agentenverwaltung: 'Main verwaltet Agenten/Koordinatoren in allen User-Projekten.',
   koordinator_projektverwaltung: 'Koordinatoren verwalten jedes Projekt ausser synapse (Projektschalter, Build-Einstellungen, Ausweise).',
   koordinator_heartbeat: 'Heartbeat der Koordinatoren ueber die API.',
+  zwangs_pin: 'Zwangs-Pin: Pflicht-Memory an einen Stamm, Schreibsperre bis memory read (nur ueberwachte Claude-CLI-Kontexte).',
   agent_start_ort: 'Startort jedes Agenten in PG.',
   runtime_agenten_uebersicht: 'Uebersicht aller Runtime-Agenten mit Namenssuche.',
   runtime_agenten_steuerung: 'Runtime-Agenten steuern (stop/start/restart/wake).',

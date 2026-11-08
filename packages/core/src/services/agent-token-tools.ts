@@ -67,6 +67,8 @@ import {
 } from './koordinator-projektverwaltung.js';
 // P22-T86: chat(get) mit Ausweis nur eigene Nachrichten (Produkt-Schalter chat_get_eigene, Standard EIN).
 import { leseChatGetEigeneSchalter, chatGetEigeneAntwort } from './chat-ausweis-lesen.js';
+// P10-T90: Zwangs-Pin (Pflicht-Memory an Stamm; Sperre schreibender files-Ops bis memory read im Lauf + Kontext; Schalter zwangs_pin).
+import { pruefeZwangsPin, pruefePflichtTagSchutz, quittiereZwangsPinLesen, zwangsPinAntwortErfolgreich, type ZwangsPinAufrufer } from './zwangs-pin.js';
 export const AGENT_TOKEN_PARAMETER = {
   token: { type: 'string', description: 'Agenten-Ausweis (sai_...): bei JEDEM Aufruf mitgeben. Er allein bestimmt Identitaet, Projekt und Rolle (agent_id/role weglassen). Start/Kontextverlust: chat(action:"anmelden", token).' },
 };
@@ -329,7 +331,28 @@ export async function mitAgentToolAufruf<T>(
 ): Promise<T> {
   return mitAgentAufrufKontext({ principal: null, bezug: await leseAgentBezugModus() }, async () => {
     const kontext = await bereiteAgentToolAufrufVor(tool, eingabe, serverInstanceId, transportToken, erlaubteParameter, optionen);
+    // P10-T90: Zwangs-Pin VOR dem Handler (REST und stdio). Sperre = nur DIESER Aufruf wird abgelehnt (kontext.antwort), kein Zustand
+    // wird veraendert (offene Plaene/Ops/Reservierungen bleiben). Hinweise kommen ueber die Hinweisquellen-Registry (Quelle zwangs_pin).
+    const zpAufrufer = zwangsPinAufrufer(kontext.principal);
+    const zpProjekt = typeof kontext.args.project === 'string' && kontext.args.project ? kontext.args.project : kontext.principal?.project ?? null;
+    if (!kontext.antwort) {
+      const zpAktion = typeof kontext.args.action === 'string' ? kontext.args.action : undefined;
+      // Pflicht-Tags an Memories nur User/Koordinator (sonst Selbst-Freischaltung per memory update/write/delete).
+      const schutz = await pruefePflichtTagSchutz({ tool, action: zpAktion, args: kontext.args, project: zpProjekt,
+        legacyAgent: !kontext.principal && typeof kontext.args.agent_id === 'string' ? kontext.args.agent_id : null });
+      if (schutz) kontext.antwort = schutz;
+      else {
+        const zp = await pruefeZwangsPin({ tool, action: zpAktion, args: kontext.args, project: zpProjekt, aufrufer: zpAufrufer,
+          herkunft: herkunftVon(optionen) ?? null });
+        if (zp?.sperre) kontext.antwort = zp.sperre;
+      }
+    }
     let ergebnis = await arbeit(kontext);
+    // P10-T90: memory(read|read_with_code) mit Ausweis quittiert gepinnte Pflicht-Memories fuer diesen Lauf + Kontext.
+    if (tool === 'memory' && zpAufrufer && !kontext.antwort && (kontext.args.action === 'read' || kontext.args.action === 'read_with_code')
+      && zwangsPinAntwortErfolgreich(ergebnis)) {
+      await quittiereZwangsPinLesen({ project: zpProjekt, aufrufer: zpAufrufer, namen: kontext.args.name, id: kontext.args.id });
+    }
     // P22-T50: index_stats(sitzung:'fortsetzung') mit Ausweis -> Verweis auf chat(anmelden).
     // P22-T131: Hinweistexte (Sitzung, nur-token) bei Schalter agent_kennung_werbung EIN mit agent_kennung.
     const kennungTexte = (kontext.sitzung_hinweis || kontext.angabe_hinweis)
@@ -348,6 +371,10 @@ export async function mitAgentToolAufruf<T>(
     // P22-T44: Visum-/Einwanderungsanzeige (einmal je Lauf und bei Aenderung) an die fertige Antwort beider Transporte.
     return kontext.ausweis_hinweise?.length ? haengeAusweisHinweiseAn(ergebnis, kontext.ausweis_hinweise) : ergebnis;
   });
+}
+/** P10-T90: Aufrufer fuer den Zwangs-Pin aus dem geprueften Ausweis (ohne Ausweis null = nur Hinweis). */
+function zwangsPinAufrufer(p: AgentTokenAnmeldung | undefined): ZwangsPinAufrufer | null {
+  return p ? { identity_id: p.identitaet.id, agent_id: p.agent_id, lauf_id: p.lauf_id ?? null, context_epoch: p.context_epoch, modell: p.modell ?? null } : null;
 }
 function setzeAufrufPrincipal(p: AgentTokenAnmeldung): void {
   const k = aktuellerAgentAufruf();

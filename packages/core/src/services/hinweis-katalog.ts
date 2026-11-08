@@ -159,6 +159,7 @@ export const HINWEIS_PRODUZENTEN: readonly HinweisProduzent[] = [
   { katalog: 'werkzeug_regeln', transport: 'stdio', ort: 'server.ts haengeWerkzeugRegelnAn', feld: 'werkzeug_regeln', filter: 'pflicht' },
   { katalog: 'werkzeug_regeln', transport: 'rest', ort: 'mcp.ts attachWerkzeugRegeln', feld: 'werkzeug_regeln', filter: 'pflicht' },
   { katalog: 'ausloeser.log_strom_veraltet', transport: 'beide', ort: 'shell-log-strom.ts initialisiereLogStromHinweise', feld: 'ausloeser_hinweise', filter: 'vor_suche_claim' },
+  { katalog: 'ausloeser.zwangs_pin', transport: 'beide', ort: 'zwangs-pin.ts initialisiereZwangsPinHinweise', feld: 'ausloeser_hinweise', filter: 'vor_suche_claim' },
   { katalog: 'ausloeser', transport: 'stdio', ort: 'server.ts haengeAusloeserTextHinweiseAn', feld: 'ausloeser_hinweise', filter: 'vor_suche_claim' },
   { katalog: 'ausloeser', transport: 'rest', ort: 'mcp.ts attachWerkzeugRegeln -> haengeAusloeserHinweiseAn', feld: 'ausloeser_hinweise', filter: 'vor_suche_claim' },
   { katalog: 'unread_chat', transport: 'beide', ort: 'tool-antwort.ts ergaenzeToolHinweise -> getUnreadChatHint', feld: 'unreadChat', filter: 'vor_suche_claim' },

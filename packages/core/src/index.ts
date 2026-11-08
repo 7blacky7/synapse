@@ -1231,6 +1231,15 @@ export {
   AGENT_ANMELDUNGEN_FUNKTION, AGENT_ANMELDUNGEN_ADMIN_ACTIONS, AGENT_ANMELDUNGEN_ADMIN_PARAMETER, ANMELDUNG_WEGE,
   istAgentAnmeldungenAdminAction, fuehreAgentAnmeldungenAdminAus, leseAnmeldungen, leseAnmeldungenSchalter,
 } from './services/agent-anmeldungen.js';
+// P10-T90: Zwangs-Pin (Pflicht-Memory an Stamm, Schreibsperre bis memory read; Schalter zwangs_pin, admin zwangs_pins, Schema 181).
+export {
+  ZWANGS_PIN_FUNKTION, ZWANGS_PIN_FEHLER, ZWANGS_PIN_HINWEIS_FELD, ZWANGS_PIN_ADMIN_ACTIONS, ZWANGS_PIN_ADMIN_PARAMETER, ZWANGS_PIN_MODI,
+  istZwangsPinAdminAction, fuehreZwangsPinAdminAus, pruefeZwangsPin, quittiereZwangsPinLesen, zwangsPinAntwortErfolgreich, zwangsPinGeltung,
+  zwangsPinArt, sammleZwangsPinPfade, ladeZwangsPins, treffendeZwangsPins, stammRegex, stammPasst, stammSpezifitaet, normalisierePinPfad,
+  leereZwangsPinCache,
+} from './services/zwangs-pin.js';
+export type { ZwangsPin, ZwangsPinAufrufer, ZwangsPinErgebnis, ZwangsPinGeltung, ZwangsPinGeltungsArt, ZwangsPinArt } from './services/zwangs-pin.js';
+export { ZWANGS_PIN_SCHEMA_SQL } from './db/zwangs-pin-schema.js';
 export type { AnmeldungWeg, AnmeldungKontext, AnmeldungenAbfrage, AnmeldungenSchalter } from './services/agent-anmeldungen.js';
 export type { KorridorPruefung } from './services/specialist-respawn.js';
 
