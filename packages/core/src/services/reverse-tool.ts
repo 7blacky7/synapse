@@ -9,6 +9,8 @@ import { aktuelleAgentAkteurIdentityId, aktuellerAgentAufruf } from './agent-bez
 import { createHash, randomBytes } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
+// P22-T314 SOLL 3: Zeit-/Sperrgrenze fuer die schwere Lese-Abfrage liste (dieselben Einstellwerte wie code_intel).
+import { leseCodeIntelGrenzen } from './code-intel-grenzen.js';
 import { pruefeUnbekannteParameter } from './unbekannte-parameter.js';
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 import { maskiereMitKatalog } from './masken-katalog.js';
@@ -654,7 +656,13 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       if(a.project)await tx(db=>activity(db,a));return result;
     }
     return tx(async db=>{
-      if(action==='liste'||action==='vorschlaege'){const r=await list(db,a,ein);if(a.project){await projektRecht(db,a);await activity(db,a);}return r;}
+      if(action==='liste'||action==='vorschlaege'){
+        // P22-T314 SOLL 3: liste rechnet Schicht-Summen ueber reverse_schichten (Befund f9489e1d; R2/R3 schon P22-T274: eine
+        // Abfrage je Seite, max_parallel_workers_per_gather=0, 53100/53200 -> speicherlimit). Dazu jetzt statement_timeout und
+        // lock_timeout lokal in dieser Lese-Transaktion: PG bricht selbst ab, 57014 -> zeitlimit (unten im catch).
+        const g=await leseCodeIntelGrenzen();
+        await db.query("SELECT set_config('statement_timeout',$1,true),set_config('lock_timeout',$2,true)",[String(g.statement_timeout_ms),String(g.lock_timeout_ms)]);
+        const r=await list(db,a,ein);if(a.project){await projektRecht(db,a);await activity(db,a);}return r;}
       if(action==='bindungen'){
         const project=await projektRecht(db,a),limit=integer(a.limit,reverseZahl(ein,'seiten_limit'),reverseZahl(ein,'max_limit')),offset=integer(a.offset,0,2147483647);
         if(!limit)fail('werkzeug_fehler','parameter_ungueltig');

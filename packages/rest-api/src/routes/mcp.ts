@@ -257,7 +257,17 @@ import { leiteAgentIdAusHeaders } from './agent-header.js';
 import { pruefeUnbekannteParameter, baueErlaubteParameter, baueJsonParameterTypen, koerziereJsonParameter } from '@synapse/core';
 // asset_intel (P4-T70): Schema und Dispatcher aus core — dieselben, die die stdio-Strecke einhaengt.
 import { ASSET_INTEL_DEFINITION, fuehreAssetIntelAus, ergaenzeCodeIntelAntwort } from '@synapse/core';
-import { mitCodeIntelSchatten } from '@synapse/core';
+import { mitCodeIntelSchatten, setzeAnfrageAbbruch } from '@synapse/core';
+
+/**
+ * P22-T314: Abbruchsignal einer HTTP-Antwort - feuert, wenn der Client die Verbindung schliesst, bevor die Antwort fertig
+ * ist (MCP-Client-/Cloudflare-Timeout). code_intel beendet dann die laufende PG-Abfrage (pg_cancel_backend).
+ */
+function anfrageAbbruch(reply: FastifyReply): AbortSignal {
+  const ac = new AbortController();
+  reply.raw.once('close', () => { if (!reply.raw.writableEnded) ac.abort(); });
+  return ac.signal;
+}
 // P13-T34/A16: Parameter ansicht + MCP-Bildbloecke (Base64 nie in Text, structuredContent oder Log).
 import { ANSICHT_SCHEMA_PROPERTIES, mitCodeIntelAnsicht, trenneMcpBilder, haengeMcpBilderAn, type McpBild } from '@synapse/core';
 import { leiteReverseIntelUm } from '@synapse/core';
@@ -6889,6 +6899,9 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
 
         case 'tools/call': {
           // P10-T51 (N5): derselbe Weg wie POST /mcp/messages, siehe fuehreToolsCallAus.
+          // P22-T314: Client weg -> laufende code_intel-Abfrage in PG abbrechen (gilt fuer den Rest dieser Anfrage).
+          // Der SSE-Weg /mcp/messages antwortet sofort mit accepted; dort ist das Schliessen kein Abbruch.
+          setzeAnfrageAbbruch(anfrageAbbruch(reply));
           result = await fuehreToolsCallAus(
             params?.name as string,
             (params?.arguments || {}) as Record<string, unknown>,

@@ -10,6 +10,8 @@ import { getParserForFile } from '../parser/index.js';
 import { getCodeIntelSchatten, type FileBatchOp, type FileBatchStatus } from './file-batch.js';
 import * as ci from './code-intel.js';
 import { lesePlanloseReservierungen } from './file-reservation-intents.js';
+// P22-T314: Zeit-/Sperrgrenze, keine Parallel-Worker, Abbruch bei Client-Ende, verstaendliche PG-Fehler.
+import { begrenzterPool, leseCodeIntelGrenzen, aktuellesAbbruchSignal, pgFehlerAntwort } from './code-intel-grenzen.js';
 type Row = Record<string, unknown>;
 type Plan = { id: string; project: string; ops: FileBatchOp[]; expected_hashes: Record<string,string>; status: FileBatchStatus };
 type Datei = { file_path: string; content: string; deleted: boolean; neu: boolean; drift?: string };
@@ -267,7 +269,7 @@ async function commitUebergaben(project: string): Promise<Array<{plan: Plan; sta
      WHERE p.project=$1 AND p.status='committed' AND p.committed_at IS NOT NULL
        AND EXISTS (SELECT 1 FROM code_files f WHERE f.project=p.project AND f.updated_at<=p.committed_at AND NOT f.ignored
          AND p.expected_hashes ? f.file_path
-         AND ((f.deleted_at IS NULL AND (f.parsed_at IS NULL OR f.parsed_at<f.updated_at OR f.parser_version IS NULL)) OR
+         AND ((f.deleted_at IS NULL AND (f.parsed_at IS NULL OR f.parsed_at<f.updated_at)) OR
           (f.deleted_at IS NOT NULL AND (EXISTS (SELECT 1 FROM code_symbols x WHERE x.project=f.project AND x.file_path=f.file_path)
             OR EXISTS (SELECT 1 FROM code_statements x WHERE x.project=f.project AND x.file_path=f.file_path)
             OR EXISTS (SELECT 1 FROM code_call_edges x WHERE x.project=f.project AND x.file_path=f.file_path)
@@ -353,7 +355,23 @@ function keinBezugHinweis(bezug: Bezug): string {
 }
 /** Ohne Schalter unveränderte Antwort; ausschließlich ausstehende Commits überbrücken den Parse-Lag. */
 
+/**
+ * P22-T314 (Ursache thought 236ac889): JEDE code_intel-Abfrage dieses Aufrufs - Bestand, Commit-Uebergabe (index_folgt) und
+ * Ghost-Schatten - laeuft ueber begrenzterPool (SET LOCAL statement_timeout/lock_timeout, max_parallel_workers_per_gather=0,
+ * pg_cancel_backend beim Abbruch der Anfrage). PG-Fehler 57014/55P03/53100/53200 -> verstaendliche, wiederholbare Antwort.
+ */
 export async function mitCodeIntelSchatten(action: string,args: Row,bestand: ()=>Promise<Row>): Promise<Row> {
+  const grenzen = await leseCodeIntelGrenzen();
+  try {
+    return await mitLesePool(begrenzterPool(getPool(),grenzen,aktuellesAbbruchSignal()),()=>mitCodeIntelSchattenOhneGrenzen(action,args,bestand));
+  } catch (err) {
+    const pg = pgFehlerAntwort(err,grenzen);
+    if (pg) return {...pg,...(typeof args.project==='string'?{project:args.project}:{})};
+    throw err;
+  }
+}
+
+async function mitCodeIntelSchattenOhneGrenzen(action: string,args: Row,bestand: ()=>Promise<Row>): Promise<Row> {
   const basisAntwort = await mitCodeIntelSchattenKern(action,args,bestand);
   let antwort = basisAntwort;
   if (args.typen === true || (args.schatten !== undefined && args.typen !== false)) {
@@ -454,7 +472,10 @@ async function mitCodeIntelSchattenKern(action: string,args: Row,bestand: ()=>Pr
         ...(stand.befunde.length?{nicht_anwendbar:stand.befunde}:{}),
         ...(drift.length?{drift:drift.map(f=>({file_path:f.file_path,hinweis:f.drift}))}:{}),
         schatten_parse_ms:stand.ms,...(plan.status==='committed'?{status:'committet, Index folgt'}:{})});
-    } catch {
+    } catch (err) {
+      // P22-T314: Zeitlimit/Sperre/Speicher verstaendlich und wiederholbar statt allgemeinem Fehler.
+      const pg=pgFehlerAntwort(err);
+      if(pg) return {...pg,plan_id:plan.id,project};
       return {success:false,error:'Ghost-Schatten konnte nicht untersucht werden',plan_id:plan.id,project};
     }
   }

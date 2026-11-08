@@ -32,6 +32,11 @@ export interface TypPruefung {
   ort?: 'pruefcontainer';
   /** P16-T24 Debug: Dauer am Ausfuehrungsort inkl. Transport (ms). */
   ort_ms?: number;
+  /** P22-T314 Debug: Typstufe ausgelassen, weil der Pruef-Container nicht bereit war (User-Vorgabe 7613eaee). */
+  pruefung?: 'uebersprungen';
+  grund?: 'pruefcontainer_nicht_bereit';
+  /** P22-T314 Debug: Zustand des Pruef-Containers (aus, startet, pause: ..., typen_zeitlimit_in_folge). */
+  pruefcontainer?: string;
 }
 export interface TypAuftrag {
   project: string;
@@ -45,12 +50,18 @@ export interface TypAuftrag {
 const istTs = (p: string) => /\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/.test(p);
 type ContainerPruefer = (auftrag: TypAuftrag) => Promise<TypPruefung>;
 let containerPruefer: ContainerPruefer | null = null;
+/** P22-T314: gepufferter Bereitschaftszustand des Pruef-Containers (kein Roundtrip), von der API mitangemeldet. */
+type ContainerBereit = () => { bereit: boolean; grund?: string };
+let containerBereit: ContainerBereit | null = null;
 /**
  * P16-T24: Die API meldet den dauerhaften Pruef-Container als Ausfuehrungsort an (rest-api pruef-container.ts).
  * Nie ein Projekt-Workspace (Regel regel-container-pruefcontainer-ein-container-workspace-nur-auf-anweisung).
  * null = abmelden. Prueflogik bleibt derselbe Core-Worker (typen-pruefung-worker.ts).
  */
-export function registriereTypContainerPruefer(pruefer: ContainerPruefer | null): void { containerPruefer = pruefer; }
+export function registriereTypContainerPruefer(pruefer: ContainerPruefer | null, bereit?: ContainerBereit): void {
+  containerPruefer = pruefer;
+  containerBereit = pruefer ? bereit ?? null : null;
+}
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 
 function leeresErgebnis(status: TypPruefung['status'], hinweis?: string): TypPruefung {
@@ -158,11 +169,23 @@ export function checkJsAusPg(file:string,quellen:Map<string,string>):boolean {
 }
 
 /** Typprüfung ergänzt vorhandene Befunde. Abschalten betrifft nur Stufe 2; Code-Intel bleibt aktiv. */
-export async function pruefePlanTypen(project: string, dateien: PruefDatei[], basisvergleich = true): Promise<TypPruefung | null> {
+export async function pruefePlanTypen(project: string, dateien: PruefDatei[], basisvergleich = true, opt: { budget_ms?: number } = {}): Promise<TypPruefung | null> {
   if (!dateien.some(d => istTs(d.file_path))) return null;
   const start = Date.now();
+  // P22-T314 (User-Vorgabe thought 7613eaee, Befund f250768c): Pruef-Container nicht bereit -> Typstufe SOFORT auslassen,
+  // bevor der ganze TS-Bestand aus PG geladen wird und bevor auf den Container gewartet wird. Nie blockieren, keine Sperre.
+  if (containerPruefer && containerBereit && process.env.FEHLERPRUEFUNG_TYPEN !== '0') {
+    let b: { bereit: boolean; grund?: string };
+    try { b = containerBereit(); } catch (err) { b = { bereit: false, grund: (err as Error).message }; }
+    if (!b.bereit) {
+      return { ...leeresErgebnis('nicht_verfuegbar', `Pruef-Container nicht bereit (${b.grund ?? 'unbekannt'}); kleine Typpruefung uebersprungen, keine Sperre.`),
+        pruefung: 'uebersprungen', grund: 'pruefcontainer_nicht_bereit', ...(b.grund ? { pruefcontainer: b.grund } : {}), dauer_ms: Date.now() - start };
+    }
+  }
   // P22-T199: Budget aus der Einstellung typen_ms (projekt > global > Env FEHLERPRUEFUNG_TYPEN_MS > Standard 5000).
-  const ms = (await lesePlanPruefEinstellungen(project)).typen_ms.wert;
+  // P22-T314: opt.budget_ms kappt es (code_intel: code_intel_typen_ms), die files-Plan-Pruefung behaelt typen_ms.
+  const eingestellt = (await lesePlanPruefEinstellungen(project)).typen_ms.wert;
+  const ms = typeof opt.budget_ms === 'number' && opt.budget_ms > 0 ? Math.min(eingestellt, opt.budget_ms) : eingestellt;
   let intel: Awaited<ReturnType<typeof intelStufe>> = { befunde:[],ziele:[] };
   try {
     // Keine Quelltexte aus dem FS: gleiches Ergebnis im API- und Daemon-Schreibweg.

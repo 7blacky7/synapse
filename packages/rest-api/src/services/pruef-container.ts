@@ -733,6 +733,31 @@ export class PruefContainer {
    */
   typenHeap: (() => Promise<number | null>) | null = null;
 
+  /** P22-T314: Zeitlimits der Typpruefung in Folge und letzter Zeitpunkt; Zaehler der uebersprungenen Pruefungen. */
+  private typZeitlimitInFolge = 0;
+  private typZeitlimitZuletzt = 0;
+  private typUebersprungen = { anzahl: 0, letzter_grund: null as string | null, zuletzt: null as string | null };
+
+  /**
+   * P22-T314 (User-Vorgabe thought 7613eaee, Befund f250768c): Bereitschaft fuer die kleine Typpruefung aus dem GEPUFFERTEN
+   * Zustand, ohne Roundtrip. Nicht bereit (aus, startet, Pause, 2 Typ-Zeitlimits in Folge innerhalb 60 s) -> core
+   * pruefePlanTypen ueberspringt die Typstufe sofort (keine Quellen aus PG, kein Warten). Ein kalter Container wird im
+   * Hintergrund gestartet, damit die naechste Pruefung wieder laeuft.
+   */
+  typenBereit(): { bereit: boolean; grund?: string } {
+    let grund: string | null = null;
+    if (Date.now() < this.pauseBis) grund = 'pause: ' + this.pauseGrund;
+    else if (this.zustandName !== 'bereit' || !this.stream) {
+      grund = this.zustandName === 'startet' ? 'startet' : 'aus';
+      if (this.zustandName === 'aus') void this.bereitMachen().catch(() => {});
+    } else if (this.typZeitlimitInFolge >= 2 && Date.now() - this.typZeitlimitZuletzt < 60_000) grund = 'typen_zeitlimit_in_folge';
+    if (!grund) return { bereit: true };
+    this.typUebersprungen.anzahl++;
+    this.typUebersprungen.letzter_grund = grund;
+    this.typUebersprungen.zuletzt = new Date().toISOString();
+    return { bereit: false, grund };
+  }
+
   private async typenHeapLesen(): Promise<number | null> {
     if (!this.typenHeap) return null;
     try {
@@ -792,6 +817,9 @@ export class PruefContainer {
       this.typZ.letzte_ms = Date.now() - t0;
       this.typZ.letzter_status = r.status;
       if (r.status === 'zeitlimit') this.typZ.zeitlimit++;
+      // P22-T314: Zeitlimits in Folge (fertig setzt zurueck) -> typenBereit ueberspringt kurz.
+      if (r.status === 'zeitlimit') { this.typZeitlimitInFolge++; this.typZeitlimitZuletzt = Date.now(); }
+      else if (r.status === 'fertig') this.typZeitlimitInFolge = 0;
       return r;
     };
     if (Date.now() < this.pauseBis) return ende(leereTypPruefung('nicht_verfuegbar', `Pruef-Container pausiert: ${this.pauseGrund}`, 0));
@@ -934,7 +962,7 @@ export class PruefContainer {
         ...((this.info as { projektpruefung?: unknown } | null)?.projektpruefung ? { projektpruefung: (this.info as { projektpruefung?: unknown }).projektpruefung } : {}),
       },
       // P16-T24: Plan-Typpruefung im selben Container (Ort/Dauer der letzten Pruefung).
-      typen: { ort: 'pruefcontainer', ...this.typZ, werkzeug: (this.info as { typen?: unknown } | null)?.typen ?? null },
+      typen: { ort: 'pruefcontainer', ...this.typZ, uebersprungen: this.typUebersprungen, zeitlimit_in_folge: this.typZeitlimitInFolge, werkzeug: (this.info as { typen?: unknown } | null)?.typen ?? null },
       zaehler: { ...this.z },
     };
   }
@@ -1025,7 +1053,8 @@ export async function registriereContainerSyntaxPruefer(opt: { docker?: Docker; 
     const b = await wirksamesBuildBudget();
     return { jvm_leerlauf_s: b.jvm_leerlauf_s, gocache_leerlauf_s: b.gocache_leerlauf_s, gocache_max_mb: b.gocache_max_mb };
   };
-  registriereTypContainerPruefer((a) => pc.pruefeTypen(a));
+  // P22-T314: mit gepufferter Bereitschaft - nicht bereit -> Typstufe uebersprungen statt Warten.
+  registriereTypContainerPruefer((a) => pc.pruefeTypen(a), () => pc.typenBereit());
   await synchronisiereBuildBudget(true).catch(() => false);
   if (opt.takt !== false) pc.starteTakt();
   instanz = pc;

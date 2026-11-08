@@ -166,6 +166,8 @@ export function getHintergrundPool(): Pool {
       max: kleinerProzess() ? 2 : envGanzzahl('SYNAPSE_DB_HINTERGRUND_MAX', 8),
       idleTimeoutMillis: envGanzzahl('SYNAPSE_DB_IDLE_MS', 10_000),
       connectionTimeoutMillis: envGanzzahl('SYNAPSE_DB_HINTERGRUND_WARTE_MS', 60_000),
+      // P22-T314: in pg_stat_activity erkennbar (vorher namenlos, z. B. die INSERT-Stapel des Parse-Nachzugs).
+      application_name: 'synapse-' + dbProzess + '-hintergrund',
     });
     // Ein Fehler eines ruhenden Hintergrund-Clients (Verbindung weg) darf den Prozess nicht beenden.
     _hintergrundPool.on('error', (err) => {

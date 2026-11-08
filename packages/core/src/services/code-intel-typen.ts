@@ -2,6 +2,8 @@
 import { getPool } from '../db/client.js';
 import { getTypPruefDateienFuerPlan } from './file-batch.js';
 import { pruefePlanTypen, checkJsAusPg, type TypPruefung } from './typen-pruefung.js';
+// P22-T314: code_intel wartet hoechstens code_intel_typen_ms auf die kleine Typpruefung (Antwort bleibt unter dem Client-Timeout).
+import { leseCodeIntelGrenzen } from './code-intel-grenzen.js';
 import type { PruefDatei } from './plan-befunde.js';
 type Row=Record<string,unknown>;
 const hinweise=new Set<string>();
@@ -47,7 +49,7 @@ export async function ergaenzeTypbefunde(action:string,args:Row,antwort:Row):Pro
           'SELECT file_type FROM code_files WHERE project=$1 AND file_path=ANY($2::text[])',[project,[...gezielt]])).rows;
         if(!sichtbare.some(r=>['ts','tsx','mts','cts','js','mjs','cjs'].includes(r.file_type)))continue;
       }
-      const typ=await pruefePlanTypen(project,dateien);
+      const typ=await pruefePlanTypen(project,dateien,true,{budget_ms:(await leseCodeIntelGrenzen()).typen_ms});
       if(typ && (action==='tree'||typ.dateien.some(p=>gezielt.has(p))))
         result.push({plan_id:planId,...metadata(typ)});
     }
@@ -64,7 +66,7 @@ export async function ergaenzeTypbefunde(action:string,args:Row,antwort:Row):Pro
   const unterstuetzt=rows.filter(r=>['ts','tsx','mts','cts'].includes(r.file_type)
     || ['js','mjs','cjs'].includes(r.file_type)&&checkJsAusPg(r.file_path,configs));
   const dateien:PruefDatei[]=unterstuetzt.map(r=>({file_path:r.file_path,basis:r.content,ergebnis:r.content,ops:[]}));
-  const typ=await pruefePlanTypen(project,dateien,args.schatten!==undefined);
+  const typ=await pruefePlanTypen(project,dateien,args.schatten!==undefined,{budget_ms:(await leseCodeIntelGrenzen()).typen_ms});
   let out:Row=typ?{...antwort,typbefunde:metadata(typ)}:antwort;
   const fremde=[...new Set(rows.filter(r=>!unterstuetzt.includes(r)).map(r=>r.file_type))];
   const neu=fremde.filter(t=>{

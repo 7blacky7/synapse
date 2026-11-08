@@ -181,6 +181,8 @@ export { mitUserHerkunft, aktuelleUserHerkunft, userHerkunftAusMetadata } from '
 
 // P6-T27: optionale Ghost-Schatten, Standardabfragen unveraendert.
 export { mitCodeIntelSchatten, schattenCacheStatistik } from './services/code-intel-schatten.js';
+// P22-T314: Grenzen und Abbruch fuer code_intel-Abfragen.
+export { mitAnfrageAbbruch, setzeAnfrageAbbruch, begrenzterPool, leseCodeIntelGrenzen, leereCodeIntelGrenzenCache, pgFehlerAntwort, CODE_INTEL_GRENZEN_STANDARD, CODE_INTEL_GRENZEN_ZAEHLER } from './services/code-intel-grenzen.js';
 // P16-T15: gemeinsame Typprüfung; API registriert nur den Projekt-Workspace als Abhängigkeitsort.
 export { registriereTypContainerPruefer } from './services/typen-pruefung.js';
 export type { TypAuftrag, TypPruefung } from './services/typen-pruefung.js';

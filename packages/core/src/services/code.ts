@@ -113,6 +113,23 @@ function ohneNullBytes(wert: string | null | undefined): string | null {
   return wert.includes('\0') ? wert.replace(/\0/g, '') : wert;
 }
 
+/**
+ * P22-T314 (Pruefer-Fix): Schonfrist des Faelligkeitsgrunds GEAENDERT in Sekunden aus dem runtime_ueberwachung-Katalog
+ * (parse_geaendert_schonfrist_s, Standard 120, 0..3600), 30 s gepuffert; Lesefehler -> Standard. Ganzzahl, daher sicher im SQL.
+ */
+let schonfristPuffer: { bis: number; s: number } | null = null;
+async function parseGeaendertSchonfristS(): Promise<number> {
+  if (schonfristPuffer && schonfristPuffer.bis > Date.now()) return schonfristPuffer.s;
+  let s = 120;
+  try {
+    const ru = await import('./runtime-ueberwachung.js');
+    const v = Number((await ru.leseRuntimeUeberwachungEinstellungen()).parse_geaendert_schonfrist_s?.wert);
+    if (Number.isFinite(v) && v >= 0) s = Math.min(3600, Math.floor(v));
+  } catch { /* Standard */ }
+  schonfristPuffer = { bis: Date.now() + 30_000, s };
+  return s;
+}
+
 /** Meldet, dass der Erstscan eines Projekts durch ist (ruft der FileWatcher in 'ready'). */
 export function markiereScanAbgeschlossen(projectName: string): void {
   projekteMitAbgeschlossenemScan.add(projectName);
@@ -554,9 +571,12 @@ async function parseAndEmbedLauf(
       // parsed_at heilen falls NULL (z.B. durch file_path-Move zurueckgesetzt):
       // ohne das findet der parser-worker die fertige Datei jeden Tick erneut
       // im Backlog (parsed_at IS NULL) und loopt endlos ueber den Skip-Pfad.
+      // Pruefer-Fix P22-T314: auch parsed_at < updated_at heilen. Seit dem Faelligkeitsgrund GEAENDERT (parsed_at < updated_at)
+      // waere eine fertige Datei, deren updated_at nach dem Parse ohne Inhaltswechsel beruehrt wurde (Embeddings juenger als
+      // updated_at), sonst in jedem Tick erneut faellig und kaeme hier endlos wieder heraus (gemessen 08.11.: 3 solche Dateien).
       await pool.query(
         `UPDATE code_files SET parsed_at = NOW()
-          WHERE project = $1 AND file_path = $2 AND parsed_at IS NULL`,
+          WHERE project = $1 AND file_path = $2 AND (parsed_at IS NULL OR parsed_at < updated_at)`,
         [project, filePath]
       );
       return; // Already embedded, nichts zu tun
@@ -1937,6 +1957,21 @@ async function baueFaelligkeitsBedingung(
                               AND cc.file_path = code_files.file_path
                               AND cc.embedded_at IS NULL))`;
 
+  // P22-T314 (Befund bff52856 / Nachtrag: tool-ausgabe-seiten-p22-t310.test.mjs): GEAENDERT = Inhalt neuer als der letzte
+  // Parse (parsed_at < updated_at). updateFileInPg (code-write.ts) setzt parsed_at NICHT zurueck und stoesst den Parse
+  // nur fire-and-forget im Speicher an (enqueueParseAndEmbed). Geht dieser Anstoss verloren (Prozessende, Fehler, voller
+  // Pool), war die Datei bisher in KEINEM der drei Gruende faellig: der Index blieb alt, und code_intel lief bis zum
+  // naechsten zufaelligen Parse ueber den Ghost-Weg (index_folgt; gemessen 68 min fuer die .mjs). 2 min Schonfrist fuer
+  // einen laufenden Anstoss; dauerhafte Parse-Ausfaelle (parse_failures seit der Aenderung) bleiben draussen, sonst Schleife.
+  // Grund 'neu': normaler Parse mit Embeddings, nicht gedrosselt.
+  // Pruefer-Fix: Schonfrist als Einstellwert (admin runtime_ueberwachung parse_geaendert_schonfrist_s, Standard 120 s) statt fest.
+  const schonfristS = await parseGeaendertSchonfristS();
+  const geaendert = `(code_files.parsed_at < code_files.updated_at
+               AND code_files.updated_at < NOW() - INTERVAL '${schonfristS} seconds'
+               AND NOT EXISTS (SELECT 1 FROM parse_failures pf
+                                WHERE pf.project = code_files.project AND pf.file_path = code_files.file_path
+                                  AND pf.aufgetreten_am >= code_files.updated_at))`;
+
   // ohneChunkPruefung: NUR fuer die Projektauswahl in projekteMitBacklog. Der
   // EXISTS auf code_chunks laeuft einmal je Datei und kostet dort 1.122 ms, die
   // ueber den billigen UNION-Zweig (114 ms) ohnehin abgedeckt sind. Es ist KEINE
@@ -1945,16 +1980,16 @@ async function baueFaelligkeitsBedingung(
   // entscheidet danach parseUnparsedFiles mit der vollstaendigen Bedingung.
   const sql = opts?.ohneChunkPruefung
     ? `code_files.content IS NOT NULL
-        AND (code_files.parsed_at IS NULL${veraltet})`
+        AND (code_files.parsed_at IS NULL OR ${geaendert}${veraltet})`
     : `code_files.content IS NOT NULL
-        AND (code_files.parsed_at IS NULL
+        AND (code_files.parsed_at IS NULL OR ${geaendert}
              OR ${embedOffen}${veraltet})`;
 
   // Reihenfolge identisch zur Bedingung oben. Weicht sie ab, bekommt eine Datei
   // einen Grund, der ihre Aufnahme nicht erklaert — und der Worker behandelt sie
   // falsch, weil er genau an diesem Grund entscheidet.
   const grundSql = `CASE
-          WHEN code_files.parsed_at IS NULL THEN 'neu'
+          WHEN code_files.parsed_at IS NULL OR ${geaendert} THEN 'neu'
           WHEN ${embedOffen} THEN 'embed_offen'
           ELSE 'veraltet' END`;
 

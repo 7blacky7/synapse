@@ -145,6 +145,13 @@ export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
   // P22-T195: Quellenanmerkungen; dieselben admin/intern-Einstellwege.
   anmerkungen_seite: { art: 'zahl', standard: 50, min: 1, max: 200 },
   anmerkungen_snapshot_bytes: { art: 'zahl', standard: 2000000, min: 10000, max: 20000000 },
+  // P22-T314: Grenzen jeder code_intel-Abfrage in PG (SET LOCAL je Abfrage, code-intel-grenzen.ts); unter dem Client-/Cloudflare-Timeout.
+  code_intel_statement_timeout_ms: { art: 'zahl', standard: 25000, min: 1000, max: 600000 },
+  code_intel_lock_timeout_ms: { art: 'zahl', standard: 2000, min: 100, max: 60000 },
+  // P22-T314 (Pruefer-Fix): Schonfrist, bevor eine Datei mit parsed_at < updated_at als GEAENDERT faellig wird (code.ts).
+  parse_geaendert_schonfrist_s: { art: 'zahl', standard: 120, min: 0, max: 3600 },
+  // P22-T314 (User-Vorgabe 7613eaee): code_intel wartet hoechstens so lange auf die kleine Typpruefung (files-Plan-Pruefung: typen_ms).
+  code_intel_typen_ms: { art: 'zahl', standard: 5000, min: 500, max: 120000 },
   // P22-T192: User-Inbox; PG-Werte ueber bestehendes admin runtime_ueberwachung und Web-UI lesbar/setzbar.
   user_inbox_seite: { art: 'zahl', standard: 40, min: 1, max: 200 },
   user_inbox_abgleich_sekunden: { art: 'zahl', standard: 15, min: 5, max: 300 },
