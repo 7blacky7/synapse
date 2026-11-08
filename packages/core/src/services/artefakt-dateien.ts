@@ -7,7 +7,7 @@ import {getPool} from '../db/client.js';
 import {indexiereDateiInhalt,parseAndEmbed,searchCode} from './code.js';
 import {getProjectTree,getFunctions,getSymbols,getVariables,getFileContent} from './code-intel.js';
 import {aktualisiereVerlaufArtefakt} from './artefakt-vorlagen.js';
-import {ArtefaktDateiFehler,artefaktText,loeseArtefaktName,darfArtefaktSchreiben,artefaktIndexProjekt,
+import {ArtefaktDateiFehler,artefaktText,loeseArtefaktName,darfArtefaktSchreiben,artefaktIndexProjekt,TOOL_ANTWORT_WEITERLESEN,
   type ArtefaktDateiZugang,type ArtefaktKatalogEintrag} from './artefakt-katalog.js';
 
 export const ARTEFAKT_DATEI_STANDARD = {antwort_max_bytes:24000,seite_max_bytes:8000,seite_zeilen:100,ttl_stunden:72,bereinigung_max:100};
@@ -92,7 +92,9 @@ export function begrenzeArtefaktSeite(wert:Record<string,unknown>,budget:number)
   const line=start.from+teile.length-1;
   const col=teile.length===1?start.from_column+prefix.length:teile[teile.length-1].length+1;
   return {...basis,content:prefix,returned_range:{from:start.from,to:line-(col===1?1:0),from_column:start.from_column,eof:false},
-   naechster_aufruf:{...(wert.naechster_aufruf??{}),tool:'artefakt',action:'read',artefakt_id:wert.artefakt_id,from_line:line,from_column:col}};
+   // P22-T287 Paket 0: eine Tool-Antwort-Fortsetzung (ueberlauf) liest mit dem eigenen Aufruf weiter und behaelt ihr Seitenbudget.
+   naechster_aufruf:{...(wert.naechster_aufruf??{}),tool:'artefakt',action:wert.ueberlauf===true?TOOL_ANTWORT_WEITERLESEN:'read',artefakt_id:wert.artefakt_id,
+    from_line:line,from_column:col,...(wert.ueberlauf===true?{seiten_bytes:budget}:{})}};
  };
  const passt=(n:number)=>artefaktMcpAntwortBytes(seite(n))<=budget;
  if(passt(punkte.length))return seite(punkte.length);

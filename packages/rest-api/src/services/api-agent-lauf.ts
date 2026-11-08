@@ -38,8 +38,9 @@ import {
   type ApiAnbieterAdapter, type ApiNachrichtErgebnis,
 } from '@synapse/core';
 import { spawneRueckfallImContainer, leseApiRueckfall, pruefeRueckfallModell, rueckfallLimitName } from '@synapse/core';
-// P22-T287 Paket 0: Werkzeugergebnisse je Aufruf kuerzen (Schalter api_tool_ausgabe, Standard AUS).
-import { leseApiToolAusgabeGrenze, kuerzeApiWerkzeugInhalt, type ApiWerkzeugAusfuehrer } from '@synapse/core';
+// P22-T287 Paket 0: Werkzeugergebnisse je Aufruf begrenzen (Schalter api_tool_ausgabe, Standard AUS): Ueberlauf mit Weiterlese-ID, Kuerzen nur Rueckfall.
+import { leseApiToolAusgabeGrenze, kuerzeApiWerkzeugInhalt, ueberlaufApiWerkzeugErgebnis, TOOL_ANTWORT_WEITERLESEN, meldeWerkzeugGekuerzt, API_TOOL_AUSGABE_EREIGNIS,
+  type ApiWerkzeugAusfuehrer } from '@synapse/core';
 import { AnbieterDirekt, WerkzeugeDirekt, WERKZEUG_PRAEFIX } from './api-agent-direkt.js';
 import type { rufeApiTransport } from './api-agent-transport.js';
 import type { apiLaufWerkzeugListe, apiLaufWerkzeugAufruf } from '../routes/mcp.js';
@@ -215,7 +216,8 @@ export class LaufVerwaltung {
     hauptverlauf: { zeilen: 0, uebersprungen: 0, anmeldung_lang: 0, letzter_grund: null as string | null,
       letzter_fehler: null as string | null, main_schreiber_weg: 0 },
     // P22-T287 Paket 0: Kuerzung der Werkzeugergebnisse (letzte Grenze je Turn, Anzahl und letzte Kuerzung).
-    tool_ausgabe: { gekuerzt: 0, letzte_grenze: null as Record<string, unknown> | null, letzte_kuerzung: null as Record<string, unknown> | null },
+    tool_ausgabe: { gekuerzt: 0, letzte_grenze: null as Record<string, unknown> | null, letzte_kuerzung: null as Record<string, unknown> | null,
+      ueberlauf: 0, letzter_ueberlauf: null as Record<string, unknown> | null },
   };
 
   constructor(private readonly o: LaufVerwaltungOptionen = {}) {}
@@ -467,6 +469,24 @@ export class LaufVerwaltung {
     return r.rows[0]?.status ?? null;
   }
 
+  /**
+   * P22-T287 Paket 0 NOTBREMSE (Entscheid Koordinator): nur wenn die Ablage der Tool-Antwort-Fortsetzung technisch scheitert. Text auf
+   * die Grenze kuerzen, nie still: Hinweis „Ablage fehlgeschlagen, gekuerzt (Grund …)“ im Ergebnis, Debug letzte_kuerzung
+   * (grund ablage_fehler, ursache), Ereignis werkzeug_gekuerzt (Log + Verlaufszeile, core meldeWerkzeugGekuerzt).
+   */
+  private async notbremse(l: LaufZeile, name: string, r: { inhalt: Parameters<typeof kuerzeApiWerkzeugInhalt>[0]; fehler: boolean },
+    zeichen: number, tokens: number | null, debug: Record<string, unknown>): Promise<{ inhalt: Parameters<typeof kuerzeApiWerkzeugInhalt>[0]; fehler: boolean }> {
+    const ursache = String(debug.fehler ?? debug.grund ?? 'unbekannt');
+    const k = kuerzeApiWerkzeugInhalt(r.inhalt, zeichen, tokens, ursache);
+    if (!k.gekuerzt) return r;
+    this.stat.tool_ausgabe.gekuerzt += 1;
+    const gemeldet = await meldeWerkzeugGekuerzt(l.identity_id, { project: l.project, werkzeug: name, grund: 'ablage_fehler', ursache, vorher: k.vorher, nachher: k.nachher });
+    this.stat.tool_ausgabe.letzte_kuerzung = { identity_id: l.identity_id, werkzeug: name, vorher: k.vorher, nachher: k.nachher, grund: 'ablage_fehler', ursache,
+      ereignis: API_TOOL_AUSGABE_EREIGNIS, verlauf_id: gemeldet.verlauf_id, ...(gemeldet.hinweis ? { ereignis_hinweis: gemeldet.hinweis } : {}), ueberlauf_debug: debug,
+      am: new Date().toISOString() };
+    return { ...r, inhalt: k.inhalt };
+  }
+
   /** System-Prompt (Basis + eigene Anmeldung) und Werkzeugliste je Sitzung; nach API-Neustart neu (neue Anmeldung). */
   private async sitzung(l: LaufZeile): Promise<Sitzung> {
     const vorh = this.sitzungen.get(l.identity_id);
@@ -548,15 +568,28 @@ export class LaufVerwaltung {
     const adapter: ApiAnbieterAdapter = { name: direkt.name, rufe: async (a) => { const r = await direkt.rufe(a); aufrufe += 1; return r; } };
     // P22-T287 Paket 0: Grenze je Turn fuer die LAUFENDE API-Identitaet (Regel codexToolAusgabe, Wert je Identitaet); AUS = Bestand.
     const grenze = await leseApiToolAusgabeGrenze(l.project, l.identity_id, m?.context_window ?? null);
-    this.stat.tool_ausgabe.letzte_grenze = grenze.debug;
+    // P22-T287 Paket 0 (User 08.11.2026, addbecda): ueber der Grenze NICHT wegwerfen - volles Ergebnis als Tool-Antwort-Fortsetzung
+    // (vorhandener Ueberlauf P22-T191), erste Seite bis zur Grenze + Weiterlese-Aufruf artefakt(tool_antwort_weiterlesen); Folgeseiten
+    // ebenfalls unter der Grenze. Entscheid Koordinator: haengt NUR an api_tool_ausgabe; weiterlesen (Aktion im Werkzeugangebot) steht
+    // nur im Debug. Kuerzen nur als Notbremse bei technischem Fehler der Ablage (sonst ginge das Riesenergebnis ungekuerzt in die Sitzung).
+    const weiterlesen = s.werkzeuge.some(w => w.name === WERKZEUG_PRAEFIX + 'artefakt'
+      && (((w.schema as { properties?: { action?: { enum?: unknown } } } | undefined)?.properties?.action?.enum as unknown[] | undefined) ?? []).includes(TOOL_ANTWORT_WEITERLESEN));
+    this.stat.tool_ausgabe.letzte_grenze = { ...grenze.debug, weiterlesen };
     const ausfuehrer: ApiWerkzeugAusfuehrer = grenze.zeichen === null ? s.ausfuehrer : {
       rufe: async (name, eingabe) => {
-        const r = await s.ausfuehrer.rufe(name, eingabe);
-        const k = kuerzeApiWerkzeugInhalt(r.inhalt, grenze.zeichen as number, grenze.tokens);
-        if (!k.gekuerzt) return r;
-        this.stat.tool_ausgabe.gekuerzt += 1;
-        this.stat.tool_ausgabe.letzte_kuerzung = { identity_id: l.identity_id, werkzeug: name, vorher: k.vorher, nachher: k.nachher, am: new Date().toISOString() };
-        return { ...r, inhalt: k.inhalt };
+        const zeichen = grenze.zeichen as number;
+        const roh = await s.ausfuehrer.rufeRoh(name, eingabe);
+        const werkzeug = name.startsWith(WERKZEUG_PRAEFIX) ? name.slice(WERKZEUG_PRAEFIX.length) : name;
+        const u = await ueberlaufApiWerkzeugErgebnis(roh, { zeichen, tokens: grenze.tokens },
+          { identity_id: l.identity_id, agent_id: l.agent_id, project: l.project, main: l.rolle === 'main' }, werkzeug,
+          typeof eingabe?.action === 'string' ? eingabe.action : null);
+        if (u.art === 'nicht_moeglich') return await this.notbremse(l, name, WerkzeugeDirekt.inhaltAus(roh), zeichen, grenze.tokens, u.debug);
+        if (u.art === 'ueberlauf' || u.art === 'seite') {
+          this.stat.tool_ausgabe.ueberlauf += 1;
+          this.stat.tool_ausgabe.letzter_ueberlauf = { identity_id: l.identity_id, werkzeug: name, art: u.art, ...u.debug, weiterlesen_angeboten: weiterlesen,
+            am: new Date().toISOString() };
+        }
+        return WerkzeugeDirekt.inhaltAus(u.ergebnis);
       },
     };
     const ergebnis = await fuehreApiNachrichtAus({

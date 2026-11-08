@@ -187,7 +187,10 @@ export async function listeArtefakte(limit = 100): Promise<ArtefaktUebersicht[]>
     `SELECT a.id, a.session_id, a.title, a.revision, length(a.html) AS html_zeichen, a.image_path, a.created_by, a.created_at, a.updated_at,
             COALESCE(to_jsonb(a)->>'modus', 'fest') AS modus, to_jsonb(a)->>'standard_project' AS standard_project,
             (to_jsonb(a)->>'vorlage') IS NOT NULL AS hat_vorlage
-       FROM agent_artifacts a ORDER BY a.updated_at DESC LIMIT $1`,
+       FROM agent_artifacts a
+      -- P22-T287 Paket 0: Tool-Antwort-Fortsetzungen (Ueberlauf) sind keine Artefakte (Galerie/Persoenliche Artefakte).
+      WHERE NOT COALESCE((to_jsonb(a)->>'ueberlauf')::boolean, false)
+      ORDER BY a.updated_at DESC LIMIT $1`,
     [grenze],
   );
   return result.rows.map((row: Record<string, unknown>) => ({

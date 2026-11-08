@@ -20,6 +20,8 @@ import { PassThrough } from 'node:stream';
 import {
   getPool,
   begrenzeArtefaktAntwort, artefaktDateiSchalter, begrenzeArtefaktSeite, istArtefaktSeitenAntwort,
+  // P22-T287 Paket 0: eigener Weiterlese-Aufruf fuer Tool-Antwort-Fortsetzungen
+  leseToolAntwortFortsetzung, TOOL_ANTWORT_WEITERLESEN,
   fuehreArtefaktDateiAus, leseArtefaktDateiEinstellungen, setzeArtefaktDateiEinstellungen,
   pruefeArtefaktDateiFreigabe, listeArtefaktKatalog, loeseArtefaktName, setzeArtefaktMetadaten, ArtefaktDateiFehler,
   speichereArtefakt,
@@ -234,6 +236,8 @@ function bewertungsFehlerAntwort(error: unknown): Record<string, unknown> {
 export async function fuehreArtefaktAus(args: Record<string, unknown>, agentId?: string): Promise<unknown> {
   const action = typeof args.action === 'string' ? args.action : '';
   if(action==='tool_antwort')return {success:true,antwort:await begrenzeArtefaktWerkzeugAntwort(args.antwort,args,str(args,'tool_name')??'stdio',str(args,'tool_action')??undefined)};
+  // P22-T287 Paket 0: Tool-Antwort-Fortsetzung weiterlesen (kein artefakt read, kein Schalter artefakt_dateien; nur ueberlauf-Eintraege).
+  if(action===TOOL_ANTWORT_WEITERLESEN)return fuehreToolAntwortWeiterlesen(args);
   if (['read','search_replace','replace_lines','insert_after','versions','restore','code_intel','einstellungen','status'].includes(action) || (action==='search' && !!str(args,'artefakt_id'))) return fuehreArtefaktDateiAufrufAus(args,agentId);
   // P22-T191 b: zuerst Katalog/Name; keine unautorisierte Identitaetsbehauptung durch session_id.
   if(action==='zeigen'&&(args.name!==undefined||args.beschreibung!==undefined||args.bereich!==undefined)){
@@ -352,10 +356,24 @@ export async function begrenzeArtefaktWerkzeugAntwort(wert:unknown,args:Record<s
  if(tool==='artefakt'&&['tool_antwort','status','einstellungen'].includes(action??''))return wert;
  try{
   // Nach ALLEN REST-Anhaengen erneut dieselbe Seitenrechnung, ohne ein Folge-Artefakt anzulegen.
-  if(istArtefaktSeitenAntwort(wert))return begrenzeArtefaktSeite(wert,(await leseArtefaktDateiEinstellungen()).werte.antwort_max_bytes);
+  if(istArtefaktSeitenAntwort(wert)){
+   const max=(await leseArtefaktDateiEinstellungen()).werte.antwort_max_bytes;
+   // P22-T287 Paket 0: eine Tool-Antwort-Fortsetzung behaelt ihr Seitenbudget (seiten_bytes des Weiterlese-Aufrufs, 2048..1000000).
+   const sb=Number(wert.seiten_budget_bytes),eigen=wert.ueberlauf===true&&Number.isSafeInteger(sb)&&sb>=2048&&sb<=1000000?sb:null;
+   return begrenzeArtefaktSeite(wert,eigen??max);
+  }
   const b={...await betrachterAusAufruf(args,!!str(args,'session_id')),session_id:str(args,'session_id')};
   return await begrenzeArtefaktAntwort(wert,b,tool,action);
  }catch(error){if(istArtefaktSeitenAntwort(wert))return {success:false,error:'artefakt_seitenbudget_fehler',message:meldung(error).slice(0,200)};return wert&&typeof wert==='object'?{...wert,ueberlauf_debug:{fehler:meldung(error)}}:wert;}
+}
+/** P22-T287 Paket 0: artefakt(action:"tool_antwort_weiterlesen") - Betrachter aus dem bezeugten Aufruf, Rechte wie der Katalog. */
+async function fuehreToolAntwortWeiterlesen(args:Record<string,unknown>):Promise<Record<string,unknown>>{
+ try{
+  const b={...await betrachterAusAufruf(args,!!str(args,'session_id')),session_id:str(args,'session_id')};
+  return await leseToolAntwortFortsetzung(args,b);
+ }catch(error){
+  return error instanceof ArtefaktDateiFehler?{success:false,error:error.code,message:error.message}:{success:false,error:'tool_antwort_weiterlesen_fehler',message:meldung(error)};
+ }
 }
 export async function fuehreArtefaktDateiAufrufAus(args:Record<string,unknown>,agentId?:string):Promise<Record<string,unknown>>{
  try{

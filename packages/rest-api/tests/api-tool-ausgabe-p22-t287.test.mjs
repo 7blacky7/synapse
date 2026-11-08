@@ -12,6 +12,15 @@
  *   C  Wert je Identitaet (S4a, schalter_identitaet EIN): tool_ausgabe_kontext_prozent 5 nur fuer C -> engere Grenze nur fuer C
  *   D  unbekanntes Modellfenster = Bestand (keine geratene Grenze)
  *   E  eigener Wert api_tool_output_tokens je Identitaet (2000) bestimmt die API-Grenze; codex_tool_output_tokens bleibt unberuehrt
+ *   B/C/E laufen ohne artefakt im Werkzeugangebot (Fake-Liste leer): nach Entscheid Koordinator trotzdem Ueberlauf (nur api_tool_ausgabe
+ *      zaehlt), KEIN Kuerzen; erste Seite unter der jeweiligen Grenze mit Weiterlese-Aufruf, Debug weiterlesen_angeboten false.
+ *   F  User-Entscheidung addbecda (Ueberlauf mit Weiterlese-ID): artefakt(tool_antwort_weiterlesen) im Werkzeugangebot -> 600 000 Zeichen
+ *      werden ueber den vorhandenen Ueberlauf (core artefakt-ueberlauf.ts) abgelegt; das Fake-Modell folgt jedem naechster_aufruf durch die
+ *      echte Schleife und den echten artefakt-Dispatcher (rest-api artefakt-tool.ts fuehreArtefaktAus + begrenzeArtefaktWerkzeugAntwort):
+ *      jede Seite unter der Grenze, Inhalt vollstaendig, nicht in list/search/Galerie, Verlaufszeile Tool-Antwort-Fortsetzung, fremd gesperrt.
+ *   G  Notbremse (Entscheid Koordinator): Ablage scheitert (Pruefregel im privaten Schema) -> gekuerzt, aber sichtbar: Hinweis
+ *      „Ablage fehlgeschlagen, gekuerzt (Grund …)“ im Ergebnis, Debug letzte_kuerzung grund ablage_fehler, Ereignis werkzeug_gekuerzt
+ *      (Verlaufszeile meta.werkzeug_gekuerzt).
  */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -37,7 +46,8 @@ const MOD='or-deepseek-chat';
 const FENSTER=200000;
 const GROSS='F'.repeat(600000)+'ENDE-DES-RIESENERGEBNISSES';
 const tokens=new Map(), idVonToken=new Map();
-let core,pool,L,checks=0;
+let core,pool,L,AT,checks=0;
+const bezug={modus:'beide',standard:'beide',quelle:'standard',bis:null,letzter_fehler:null};
 const failures=[];
 const mask=s=>String(s).replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]');
 function check(ok,label,info){checks++;if(ok){console.log('OK '+label);return;}failures.push(label);console.error('FAIL '+label+(info!==undefined?' | DEBUG tatsaechlich: '+mask(JSON.stringify(info)).slice(0,700):''));}
@@ -54,10 +64,17 @@ const aufruf=async (werkzeug,eingabe,ausweis)=>{
  const id=idVonToken.get(ausweis)??'unbekannt';
  if(werkzeug==='chat'&&eingabe?.action==='anmelden')return {content:[{type:'text',text:JSON.stringify({success:true,principal:{identity_id:id,project:P}})}]};
  if(werkzeug==='code_intel')return {content:[{type:'text',text:GROSS}]};
+ // F: echter artefakt-Dispatcher samt Transportgrenze (wie fuehreToolsCallAus: Ergebnis -> begrenzeArtefaktWerkzeugAntwort -> MCP-Huelle).
+ if(werkzeug==='artefakt'){
+  const principal={art:'identity',identity_id:id,agent_id:'api-'+id.slice(0,8),project:P,rolle:'subagent',modell:null,context_epoch:1,lauf_id:null};
+  const wert=await core.mitAgentAufrufKontext({principal,bezug},()=>AT.fuehreArtefaktAus({...eingabe},'api-'+id.slice(0,8)));
+  const begrenzt=await core.mitAgentAufrufKontext({principal,bezug},()=>AT.begrenzeArtefaktWerkzeugAntwort(wert,eingabe??{},'artefakt',eingabe?.action));
+  return core.baueToolErgebnis(begrenzt,{tool:'artefakt',strukturiert:true});
+ }
  return {content:[{type:'text',text:'werkzeug-ok'}]};
 };
-const verwaltung=()=>new (L.LaufVerwaltung)({db:pool,takt_ms:60_000,pausiert:()=>true,liste:async()=>[],aufruf,
- ausweis:async(_p,id)=>tokens.get(id)??'sai_test',transport:transportRufen});
+const verwaltung=(o={})=>new (L.LaufVerwaltung)({db:pool,takt_ms:60_000,pausiert:()=>true,liste:o.liste??(async()=>[]),aufruf,
+ ausweis:async(_p,id)=>tokens.get(id)??'sai_test',transport:o.transport??transportRufen});
 
 try{
  await admin.query('CREATE SCHEMA '+schema);
@@ -74,6 +91,7 @@ try{
  url.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=url.href;
  core=await import('../../core/dist/index.js');pool=core.getPool();
  L=await import('../dist/services/api-agent-lauf.js');
+ AT=await import('../dist/services/agent-runtime/artefakt-tool.js');
  const Z=await import('../../core/dist/services/agent-profil-schalter-ziel.js');
  await pool.query(core.API_AGENT_LAUF_SCHEMA_SQL);
  // S4a-Tabellen (agent_einstellung_ziel/_verlauf, Schema 182 additiv) fehlen in synapse_test bis zum Deploy: im privaten Schema anlegen.
@@ -94,7 +112,7 @@ try{
   await core.legeApiEingangAn({identity_id:a.identity_id,text:'Liste alle Funktionen',quelle:'auftrag',absender:'user'});
   antworten=[werkzeugAntwort('call_1','mcp__synapse__code_intel',{action:'functions',path:'gibt/es/nicht.ts'}),textAntwort('FERTIG')];
   const v=verwaltung();await v.takt();await v.warteAufTurns();
-  const r=await pool.query("SELECT max(length(inhalt::text))::int AS n, bool_or(inhalt::text LIKE '%gezielter abfragen%') AS hinweis, bool_or(inhalt::text LIKE '%ENDE-DES-RIESENERGEBNISSES%') AS ende FROM api_agent_verlauf WHERE identity_id=$1",[a.identity_id]);
+  const r=await pool.query("SELECT max(length(inhalt::text))::int AS n, bool_or(inhalt::text LIKE '%gezielter abfragen%') AS hinweis, bool_or(inhalt::text LIKE '%tool_antwort_weiterlesen%') AS weiter, bool_or(inhalt::text LIKE '%Ablage fehlgeschlagen, gekürzt (Grund:%') AS ablage, bool_or(inhalt::text LIKE '%ENDE-DES-RIESENERGEBNISSES%') AS ende FROM api_agent_verlauf WHERE identity_id=$1",[a.identity_id]);
   return {v,zeile:r.rows[0],lauf:(await pool.query('SELECT status,letzter_fehler FROM api_agent_laeufe WHERE identity_id=$1',[a.identity_id])).rows[0]};
  };
 
@@ -132,9 +150,10 @@ try{
    'B Grenze = codexToolAusgabe(Modellfenster) * Zeichen je Token, Schalter aus dem Projekt',{g:g.debug,erwartet});
   const r=await turnMitRiesenErgebnis(B);
   const z=r.v.zustand().tool_ausgabe;
-  check(r.zeile.hinweis===true&&r.zeile.ende===false&&r.zeile.n<g.zeichen+2000,'B EIN: Ergebnis gekuerzt, Hinweis "gekuerzt, gezielter abfragen" im Verlauf',{zeile:r.zeile,zeichen:g.zeichen});
-  check(z.gekuerzt===1&&z.letzte_kuerzung?.identity_id===B.identity_id&&z.letzte_kuerzung?.werkzeug==='mcp__synapse__code_intel'&&z.letzte_kuerzung?.vorher>600000,
-   'B Debug zustand().tool_ausgabe: Anzahl, laufende Identitaet, Werkzeug, Laengen',z);
+  check(r.zeile.weiter===true&&!r.zeile.hinweis&&r.zeile.ende===false&&r.zeile.n<g.zeichen+2000,'B EIN: erste Seite mit Weiterlese-Aufruf statt Kuerzung, auch ohne artefakt im Werkzeugangebot (Entscheid)',{zeile:r.zeile,zeichen:g.zeichen});
+  check(z.gekuerzt===0&&z.ueberlauf===1&&z.letzter_ueberlauf?.identity_id===B.identity_id&&z.letzter_ueberlauf?.werkzeug==='mcp__synapse__code_intel'&&z.letzter_ueberlauf?.laenge>600000
+   &&z.letzter_ueberlauf?.weiterlesen_angeboten===false,
+   'B Debug zustand().tool_ausgabe: Ueberlauf gezaehlt, laufende Identitaet, Werkzeug, Laenge, weiterlesen_angeboten false',z);
   check(r.lauf.status==='bereit','B Lauf endet regulaer (bereit)',r.lauf);
  });
 
@@ -147,7 +166,7 @@ try{
   check(gC.aktiv&&gC.debug.werte_quellen.tool_ausgabe_kontext_prozent==='identitaet'&&gC.zeichen<gD.zeichen&&gD.zeichen===grenzeB,
    'C nur C bekommt den engeren Anteil (Quelle identitaet), D behaelt die Projektgrenze',{c:gC.debug,d:gD.debug});
   const r=await turnMitRiesenErgebnis(C);
-  check(r.zeile.hinweis===true&&r.zeile.n<gC.zeichen+2000,'C Turn von C wird auf die Grenze von C gekuerzt (Ziel = laufende API-Identitaet)',{zeile:r.zeile,zeichen:gC.zeichen});
+  check(r.zeile.weiter===true&&!r.zeile.hinweis&&r.zeile.n<gC.zeichen+2000,'C erste Seite von C unter der Grenze von C (Ziel = laufende API-Identitaet)',{zeile:r.zeile,zeichen:gC.zeichen});
  });
 
  await section('E eigener API-Wert je Identitaet',async()=>{
@@ -159,7 +178,90 @@ try{
    'E api_tool_output_tokens 2000 nur fuer E bestimmt die Grenze (Quelle identitaet)',g.debug);
   check(st.werte.codex_tool_output_tokens===100000&&st.quellen.codex_tool_output_tokens!=='identitaet','E codex_tool_output_tokens bleibt unberuehrt (getrennt einstellbar)',{werte:st.werte,quellen:st.quellen});
   const r=await turnMitRiesenErgebnis(E);
-  check(r.zeile.hinweis===true&&r.zeile.n<g.zeichen+2000,'E Turn von E auf 6000 Zeichen gekuerzt',{zeile:r.zeile,zeichen:g.zeichen});
+  check(r.zeile.weiter===true&&!r.zeile.hinweis&&r.zeile.n<g.zeichen+2000,'E erste Seite von E unter 6000 Zeichen mit Weiterlese-Aufruf',{zeile:r.zeile,zeichen:g.zeichen});
+ });
+
+ await section('F Ueberlauf mit Weiterlese-ID (User addbecda): erste Seite + ID, alle Folgeseiten, Inhalt vollstaendig',async()=>{
+  const F=await ident('t287-p0-ueberlauf');
+  const g=await core.leseApiToolAusgabeGrenze(P,F.identity_id,FENSTER);
+  // Werkzeugangebot MIT artefakt(tool_antwort_weiterlesen) - sonst gilt der Rueckfall Kuerzen (Abschnitte B/C/E).
+  const liste=async()=>[{name:'artefakt',description:core.ARTEFAKT_DEFINITION.description,inputSchema:core.ARTEFAKT_DEFINITION.inputSchema}];
+  const seiten=[];
+  // Fake-Modell folgt jedem naechster_aufruf der letzten Werkzeugantwort, bis keiner mehr kommt.
+  const folge=async (a)=>{
+   let letztes=null;
+   for(const n of a?.verlauf??[])for(const b of (Array.isArray(n?.inhalt)?n.inhalt:[]))if(b?.typ==='werkzeug_ergebnis')letztes=b;
+   if(!letztes)return werkzeugAntwort('call_f0','mcp__synapse__code_intel',{action:'functions',path:'gibt/es/nicht.ts'});
+   const text=letztes.inhalt.filter(x=>x.typ==='text').map(x=>x.text).join('');
+   let j=null;try{j=JSON.parse(text);}catch{j=null;}
+   seiten.push({laenge:text.length,j});
+   const n=j?.naechster_aufruf;
+   if(n&&seiten.length<40){const {tool:_t,...args}=n;return werkzeugAntwort('call_f'+seiten.length,'mcp__synapse__'+String(n.tool??'artefakt'),args);}
+   return textAntwort('FERTIG');
+  };
+  await core.legeApiLaufAn({identity_id:F.identity_id,project:P,agent_id:F.agent_id,rolle:'subagent',modell:MOD,anbieter:'openrouter-api',gestartet_von:'user'});
+  await core.legeApiEingangAn({identity_id:F.identity_id,text:'Liste alle Funktionen',quelle:'auftrag',absender:'user'});
+  const v=verwaltung({liste,transport:folge});await v.takt();await v.warteAufTurns();
+  const lauf=(await pool.query('SELECT status,letzter_fehler FROM api_agent_laeufe WHERE identity_id=$1',[F.identity_id])).rows[0];
+  const erste=seiten[0]?.j;
+  check(!!erste&&erste.ueberlauf===true&&erste.art==='tool_antwort_fortsetzung'&&typeof erste.artefakt_id==='string'
+   &&erste.naechster_aufruf?.action==='tool_antwort_weiterlesen'&&erste.naechster_aufruf?.artefakt_id===erste.artefakt_id&&Number.isSafeInteger(erste.naechster_aufruf?.seiten_bytes)
+   &&String(erste.hinweis).includes('tool_antwort_weiterlesen'),
+   'F erste Seite: Kennzeichnung tool_antwort_fortsetzung, ID und genauer Weiterlese-Aufruf (eigener Aufruf, nicht artefakt read)',{erste:erste&&{...erste,content:String(erste.content).slice(0,80)},seiten:seiten.length});
+  check(seiten.length>=3&&seiten.every(s=>s.laenge<=g.zeichen),'F jede Seite (erste + Folgeseiten) unter der Grenze '+g.zeichen+' Zeichen',{seiten:seiten.map(s=>s.laenge),grenze:g.zeichen});
+  const gelesen=seiten.map(s=>s.j?.content??'').join('');
+  let voll=null;try{voll=JSON.parse(gelesen);}catch{voll=null;}
+  check(voll?.text===GROSS&&seiten.slice(1).every(s=>s.j?.artefakt_id===erste?.artefakt_id&&s.j?.success===true)&&seiten.at(-1)?.j?.returned_range?.eof===true&&!seiten.at(-1)?.j?.naechster_aufruf&&/Ende erreicht/.test(String(seiten.at(-1)?.j?.hinweis)),
+   'F alle Folgeseiten lesbar, Inhalt vollstaendig (600 000 Zeichen + ENDE, nichts verloren)',{seiten:seiten.length,zeichen:gelesen.length,ende:gelesen.slice(-60),fehler:seiten.map(s=>s.j?.error).filter(Boolean),
+    parse:voll===null?'kein JSON':'ok',text_laenge:voll?.text?.length,soll_laenge:GROSS.length,ids:seiten.map(s=>String(s.j?.artefakt_id).slice(0,8)),
+    erfolg:seiten.map(s=>s.j?.success),letzter_aufruf:seiten.at(-1)?.j?.naechster_aufruf,grenzen:seiten.map(s=>[s.j?.returned_range,String(s.j?.content).slice(0,12)])});
+  const z=v.zustand().tool_ausgabe;
+  check(lauf?.status==='bereit'&&z.ueberlauf>=1&&z.letzter_ueberlauf?.identity_id===F.identity_id&&z.letzte_grenze?.weiterlesen===true&&z.gekuerzt===0,
+   'F Lauf bereit, Debug zustand().tool_ausgabe: ueberlauf, letzter_ueberlauf, weiterlesen angeboten, nichts gekuerzt',{lauf,z});
+  const verlaufMax=(await pool.query('SELECT max(length(inhalt::text))::int AS n FROM api_agent_verlauf WHERE identity_id=$1',[F.identity_id])).rows[0].n;
+  check(verlaufMax<g.zeichen+5000,'F api_agent_verlauf haelt nur Seiten (kein Riesenergebnis)',{verlaufMax,grenze:g.zeichen});
+  const id=erste?.artefakt_id;
+  const zeile=(await pool.query('SELECT ueberlauf,created_by_identity_id,ablauf_am,title FROM agent_artifacts WHERE id=$1',[id])).rows[0];
+  check(zeile?.ueberlauf===true&&zeile.created_by_identity_id===F.identity_id&&zeile.ablauf_am!==null&&/^Tool-Antwort-Fortsetzung /.test(zeile.title),
+   'F Ablage im vorhandenen Ueberlauf (agent_artifacts ueberlauf=true, TTL, Urheber = laufende Identitaet)',zeile);
+  const vz=(await pool.query('SELECT text,meta FROM hauptagent_verlauf WHERE identity_id=$1 AND quelle_ref=$2',[F.identity_id,'tool-antwort-fortsetzung:'+id])).rows[0];
+  check(!!vz&&/^Tool-Antwort-Fortsetzung: code_intel/.test(vz.text)&&vz.meta?.tool_antwort_fortsetzung?.id===id&&!('artefakt_id' in (vz.meta??{})),
+   'F Verlauf: Zeile Tool-Antwort-Fortsetzung ohne Artefakt-Bezug',vz);
+  const galerie=await core.listeArtefakte(500);
+  check(!galerie.some(a=>a.id===id),'F nicht in Galerie/Persoenlichen Artefakten (listeArtefakte)',{anzahl:galerie.length});
+  await schalter('projekt','artefakt_dateien',true,P);
+  const principal={art:'identity',identity_id:F.identity_id,agent_id:F.agent_id,project:P,rolle:'subagent',modell:null,context_epoch:1,lauf_id:null};
+  const alsF=fn=>core.mitAgentAufrufKontext({principal,bezug},fn);
+  const kat=await alsF(()=>AT.fuehreArtefaktAus({action:'list',project:P,limit:200},'t287'));
+  const such=await alsF(()=>AT.fuehreArtefaktAus({action:'search',project:P,query:'Tool-Antwort'},'t287'));
+  const name=await alsF(()=>AT.fuehreArtefaktAus({action:'read',project:P,artefakt_id:'tool-antwort-'+id},'t287'));
+  check(kat.success&&!JSON.stringify(kat).includes(id)&&such.success&&!JSON.stringify(such).includes(id)&&name.success===false,
+   'F nicht in Artefakt-Liste/Suche/Namensaufloesung',{kat:kat.count,such:such.count,name:name.error});
+  await schalter('projekt','artefakt_dateien',false,P);
+  const fremd={...principal,identity_id:randomUUID(),project:P+'-fremd'};
+  const fr=await core.mitAgentAufrufKontext({principal:fremd,bezug},()=>AT.fuehreArtefaktAus({action:'tool_antwort_weiterlesen',artefakt_id:id},'t287'));
+  check(fr.success===false&&fr.error==='artefakt_unbekannt','F fremdes Projekt kann die Fortsetzung nicht lesen',fr);
+  const kein=await alsF(()=>AT.fuehreArtefaktAus({action:'tool_antwort_weiterlesen',artefakt_id:randomUUID()},'t287'));
+  check(kein.success===false&&kein.error==='artefakt_unbekannt','F unbekannte ID klar abgelehnt',kein);
+ });
+
+ await section('G Notbremse: Ablage scheitert -> sichtbar gekuerzt (Hinweis, Debug, Ereignis werkzeug_gekuerzt)',async()=>{
+  const G=await ident('t287-p0-notbremse');
+  const g=await core.leseApiToolAusgabeGrenze(P,G.identity_id,FENSTER);
+  // Ablage technisch sperren: Ueberlauf-Zeilen verletzen im PRIVATEN Schema eine Pruefregel (INSERT scheitert), danach wieder frei.
+  await pool.query('ALTER TABLE agent_artifacts ADD CONSTRAINT t287_ablage_sperre CHECK (NOT ueberlauf) NOT VALID');
+  let r;try{r=await turnMitRiesenErgebnis(G);}finally{await pool.query('ALTER TABLE agent_artifacts DROP CONSTRAINT IF EXISTS t287_ablage_sperre');}
+  const z=r.v.zustand().tool_ausgabe;
+  check(r.zeile.ablage===true&&r.zeile.hinweis===true&&!r.zeile.weiter&&r.zeile.ende===false&&r.zeile.n<g.zeichen+2000,
+   'G Ergebnis gekuerzt MIT Hinweis „Ablage fehlgeschlagen, gekuerzt (Grund …)“, kein Riesenergebnis',{zeile:r.zeile,zeichen:g.zeichen});
+  check(z.gekuerzt===1&&z.ueberlauf===0&&z.letzte_kuerzung?.grund==='ablage_fehler'&&z.letzte_kuerzung?.ereignis===core.API_TOOL_AUSGABE_EREIGNIS
+   &&/t287_ablage_sperre/.test(String(z.letzte_kuerzung?.ursache))&&z.letzte_kuerzung?.identity_id===G.identity_id&&!!z.letzte_kuerzung?.verlauf_id,
+   'G Debug zustand().tool_ausgabe.letzte_kuerzung: grund ablage_fehler, Ursache, Ereignis, Verlaufszeile',z);
+  const ev=(await pool.query("SELECT text,status,meta FROM hauptagent_verlauf WHERE identity_id=$1 AND quelle_ref LIKE 'werkzeug-gekuerzt:%'",[G.identity_id])).rows;
+  check(ev.length===1&&ev[0].status==='fehler'&&ev[0].meta?.werkzeug_gekuerzt?.ereignis==='werkzeug_gekuerzt'&&ev[0].meta?.werkzeug_gekuerzt?.grund==='ablage_fehler'
+   &&/Ablage fehlgeschlagen/.test(ev[0].text),'G Ereignis werkzeug_gekuerzt (grund ablage_fehler) als Verlaufszeile der laufenden Identitaet',ev);
+  const abl=(await pool.query('SELECT count(*)::int AS n FROM agent_artifacts WHERE ueberlauf AND created_by_identity_id=$1',[G.identity_id])).rows[0].n;
+  check(abl===0&&r.lauf.status==='bereit','G keine halbe Ablage, Lauf endet regulaer',{abl,lauf:r.lauf});
  });
 
  await section('D unbekanntes Modellfenster = Bestand',async()=>{

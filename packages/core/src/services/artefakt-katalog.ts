@@ -15,6 +15,8 @@ export class ArtefaktDateiFehler extends Error {
 }
 export const artefaktText = (v: unknown): string => typeof v === 'string' ? v.trim() : '';
 export const artefaktUuid = (v: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+/** P22-T287 Paket 0 (User 08.11.2026, addbecda): eigener Weiterlese-Aufruf fuer Ueberlauf-Eintraege (Tool-Antwort-Fortsetzung), nicht artefakt read. */
+export const TOOL_ANTWORT_WEITERLESEN = 'tool_antwort_weiterlesen' as const;
 export async function artefaktDateiSchalter(funktion: 'artefakt_dateien' | 'tool_antwort_ueberlauf' = 'artefakt_dateien', project?: string | null) {
   const p = await leseProfilProduktSchalter(funktion, project).catch(() => null);
   const basis = { name: funktion, aktiv: !!p && p.aktiv && !p.letzter_fehler, quelle: p?.quelle ?? 'fehler',
@@ -74,8 +76,9 @@ export async function listeArtefaktKatalog(args: Record<string, unknown>, b: Art
   if (!['project','global','all'].includes(String(scope))) throw new ArtefaktDateiFehler('scope_ungueltig','scope project|global|all');
   const query = artefaktText(args.query)||artefaktText(args.name);
   // SQL filtert vor LIMIT; fremde Projekte koennen weder Treffer noch Mehrdeutigkeit erzeugen.
+  // P22-T287 Paket 0: Ueberlauf-Eintraege (Tool-Antwort-Fortsetzung) sind keine Artefakte - nicht in list/search/Namensaufloesung.
   const r = await getPool().query<ArtefaktKatalogEintrag>(AUSWAHL+`
-    WHERE (a.ablauf_am IS NULL OR a.ablauf_am>NOW()) AND
+    WHERE (a.ablauf_am IS NULL OR a.ablauf_am>NOW()) AND NOT a.ueberlauf AND
     ($1::boolean OR COALESCE(a.bereich,CASE WHEN a.vorlage IS NOT NULL THEN 'global' ELSE 'projekt' END)='global'
      OR COALESCE(a.standard_project,i.project)=$2 OR a.created_by_identity_id::text=$3 OR a.session_id::text=$4)
     AND ($5='all' OR ($5='global' AND COALESCE(a.bereich,CASE WHEN a.vorlage IS NOT NULL THEN 'global' ELSE 'projekt' END)='global')

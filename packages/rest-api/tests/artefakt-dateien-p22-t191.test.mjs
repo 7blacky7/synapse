@@ -86,6 +86,9 @@ try{
  ok(r.ueberlauf&&r.artefakt_id&&r.naechster_aufruf&&r.total_lines>100,'F echte PG-Ueberlaufantwort mit Folgeaufruf',r);
  ok(Buffer.byteLength(JSON.stringify(C.baueToolErgebnis(r,{tool:'probe',strukturiert:true})))<=4096,'F komplette MCP-Huelle unter Bytebudget',{bytes:Buffer.byteLength(JSON.stringify(C.baueToolErgebnis(r,{tool:'probe',strukturiert:true})))});
  const overflow=r.artefakt_id;
+ // P22-T287 Paket 0: Kennzeichnung Tool-Antwort-Fortsetzung, eigener Weiterlese-Aufruf, nicht in der Artefakt-Liste.
+ ok(r.art==='tool_antwort_fortsetzung'&&r.naechster_aufruf.action==='tool_antwort_weiterlesen'&&r.naechster_aufruf.artefakt_id===overflow,'F P22-T287 Kennzeichnung und eigener Weiterlese-Aufruf',r.naechster_aufruf);
+ const liste287=await tool({action:'list',limit:200});ok(liste287.success&&!JSON.stringify(liste287).includes(overflow),'F P22-T287 Ueberlauf nicht in artefakt list',liste287.count);
  const fehler=await als(()=>C.begrenzeArtefaktAntwort({success:false,error:'Fehler '.repeat(2000)},zugang,'probe','fehler'));
  ok(fehler.ueberlauf&&fehler.success===false&&fehler.original_success===false,'F Ueberlauf behaelt Originalfehlerstatus',fehler);
  gelesen=r.content;cursor=r.naechster_aufruf;loops=0;
@@ -147,14 +150,16 @@ try{
     gesamt+=page.content;n++;assert(n<2000);
     const next=page.naechster_aufruf;if(!next)break;
     const {tool:_werkzeug,...folgeArgs}=next;const a={...folgeArgs,project:P};
+    // P22-T287 Paket 0: Fortsetzungen laufen ueber artefakt(tool_antwort_weiterlesen), auch im files-Weg.
+    const zielTool=a.action==='tool_antwort_weiterlesen'?'artefakt':rpcTool;
     if(weg.startsWith('stdio')){
-     const proxy={...transport,werkzeug:rpcTool,fetchImpl:async(_u,init)=>{
+     const proxy={...transport,werkzeug:zielTool,fetchImpl:async(_u,init)=>{
       const x=JSON.parse(init.body),value=await als(()=>MCP.handleToolCall(x.params.name,x.params.arguments,'ko191'));
       const limited=await als(()=>AT.begrenzeArtefaktWerkzeugAntwort(value,x.params.arguments,x.params.name,'read'));
       return {ok:true,json:async()=>({jsonrpc:'2.0',id:x.id,result:C.baueToolErgebnis(limited,{tool:rpcTool,strukturiert:true})})};
      }};
      const proxied=await ST.rufeArtefaktApi(a,proxy);page=proxied.structuredContent;
-    }else page=await als(()=>MCP.handleToolCall(rpcTool,a,'ko191'));
+    }else page=await als(()=>MCP.handleToolCall(zielTool,a,'ko191'));
    }
    console.log('MESSUNG P22-T191 '+JSON.stringify({weg,budget,maxBytes,pages:n,zeichen:gesamt.length}));
    ok(gesamt===JSON.stringify(voll,null,2),'F2 '+weg+' Escape/Unicode vollständig ohne Verlust '+budget,{pages:n,soll:JSON.stringify(voll,null,2).length,ist:gesamt.length});

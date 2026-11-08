@@ -70,8 +70,17 @@ export class WerkzeugeDirekt implements ApiWerkzeugAusfuehrer {
   }
 
   async rufe(name: string, eingabe: Record<string, unknown>): Promise<{ inhalt: Array<ApiTextBlock | ApiBildBlock>; fehler: boolean }> {
+    return WerkzeugeDirekt.inhaltAus(await this.rufeRoh(name, eingabe));
+  }
+
+  /** P22-T287 Paket 0: rohes MCP-Ergebnis (content, structuredContent, isError) fuer den Ueberlauf im API-Lauf. */
+  async rufeRoh(name: string, eingabe: Record<string, unknown>): Promise<{ content?: unknown; structuredContent?: unknown; isError?: unknown }> {
     const werkzeug = name.startsWith(WERKZEUG_PRAEFIX) ? name.slice(WERKZEUG_PRAEFIX.length) : name;
-    const r = (await (this.o.aufruf ?? apiLaufWerkzeugAufruf)(werkzeug, eingabe ?? {}, this.o.ausweis, this.zugang) ?? {}) as { content?: unknown; isError?: unknown };
+    return (await (this.o.aufruf ?? apiLaufWerkzeugAufruf)(werkzeug, eingabe ?? {}, this.o.ausweis, this.zugang) ?? {}) as { content?: unknown; structuredContent?: unknown; isError?: unknown };
+  }
+
+  /** MCP-Ergebnis -> Bloecke der Schleife (Bilder als Bildblock, Text als Textblock). */
+  static inhaltAus(r: { content?: unknown; isError?: unknown }): { inhalt: Array<ApiTextBlock | ApiBildBlock>; fehler: boolean } {
     const inhalt: Array<ApiTextBlock | ApiBildBlock> = [];
     for (const c of (Array.isArray(r.content) ? r.content : []) as McpInhalt[]) {
       if (c.type === 'image' && typeof c.data === 'string' && typeof c.mimeType === 'string') inhalt.push({ typ: 'bild', media_type: c.mimeType, daten: c.data });
