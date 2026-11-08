@@ -23,6 +23,7 @@
  * verstaendliche, wiederholbare Antworten ab statt "interner Fehler".
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
+import process from 'node:process';
 import type { Pool, PoolClient } from 'pg';
 
 export interface CodeIntelGrenzen {
@@ -32,11 +33,13 @@ export interface CodeIntelGrenzen {
   typen_ms: number;
   /** P22-T316: JIT fuer code_intel-Abfragen zulassen (Standard false = SET LOCAL jit = off). Fehlt das Feld, gilt false. */
   jit?: boolean;
-  quelle: { statement_timeout_ms: string; lock_timeout_ms: string; typen_ms?: string; jit?: string };
+  /** P22-T321: Schwelle (ms) fuer schatten_zeiten in Schatten-Antworten (Einstellwert code_intel_schatten_zeiten_ab_ms). */
+  schatten_zeiten_ab_ms?: number;
+  quelle: { statement_timeout_ms: string; lock_timeout_ms: string; typen_ms?: string; jit?: string; schatten_zeiten_ab_ms?: string };
 }
 
 /** Code-Standard (gleich dem Katalog in runtime-ueberwachung.ts; dort Grenzen min/max). */
-export const CODE_INTEL_GRENZEN_STANDARD = { statement_timeout_ms: 25_000, lock_timeout_ms: 2_000, typen_ms: 5_000, jit: false } as const;
+export const CODE_INTEL_GRENZEN_STANDARD = { statement_timeout_ms: 25_000, lock_timeout_ms: 2_000, typen_ms: 5_000, jit: false, schatten_zeiten_ab_ms: 1_000 } as const;
 
 const CACHE_MS = 30_000;
 let grenzenCache: { bis: number; wert: CodeIntelGrenzen } | null = null;
@@ -50,7 +53,7 @@ export function leereCodeIntelGrenzenCache(): void {
 export async function leseCodeIntelGrenzen(): Promise<CodeIntelGrenzen> {
   if (grenzenCache && grenzenCache.bis > Date.now()) return grenzenCache.wert;
   let wert: CodeIntelGrenzen = {
-    ...CODE_INTEL_GRENZEN_STANDARD, quelle: { statement_timeout_ms: 'standard', lock_timeout_ms: 'standard', typen_ms: 'standard', jit: 'standard' },
+    ...CODE_INTEL_GRENZEN_STANDARD, quelle: { statement_timeout_ms: 'standard', lock_timeout_ms: 'standard', typen_ms: 'standard', jit: 'standard', schatten_zeiten_ab_ms: 'standard' },
   };
   try {
     // Dynamisch: runtime-ueberwachung.ts zieht viele Dienste nach; code_intel soll davon nicht abhaengen.
@@ -59,15 +62,23 @@ export async function leseCodeIntelGrenzen(): Promise<CodeIntelGrenzen> {
     const st = Number(e.code_intel_statement_timeout_ms?.wert);
     const lt = Number(e.code_intel_lock_timeout_ms?.wert);
     const ty = Number(e.code_intel_typen_ms?.wert);
+    const sz = Number(e.code_intel_schatten_zeiten_ab_ms?.wert);
     wert = {
       statement_timeout_ms: Number.isFinite(st) && st > 0 ? st : CODE_INTEL_GRENZEN_STANDARD.statement_timeout_ms,
       lock_timeout_ms: Number.isFinite(lt) && lt > 0 ? lt : CODE_INTEL_GRENZEN_STANDARD.lock_timeout_ms,
       typen_ms: Number.isFinite(ty) && ty > 0 ? ty : CODE_INTEL_GRENZEN_STANDARD.typen_ms,
       jit: e.code_intel_jit?.wert === true,
+      schatten_zeiten_ab_ms: Number.isFinite(sz) && sz >= 0 ? sz : CODE_INTEL_GRENZEN_STANDARD.schatten_zeiten_ab_ms,
       quelle: { statement_timeout_ms: e.code_intel_statement_timeout_ms?.quelle ?? 'standard', lock_timeout_ms: e.code_intel_lock_timeout_ms?.quelle ?? 'standard',
-        typen_ms: e.code_intel_typen_ms?.quelle ?? 'standard', jit: e.code_intel_jit?.quelle ?? 'standard' },
+        typen_ms: e.code_intel_typen_ms?.quelle ?? 'standard', jit: e.code_intel_jit?.quelle ?? 'standard',
+        schatten_zeiten_ab_ms: Number.isFinite(sz) && sz >= 0 ? (e.code_intel_schatten_zeiten_ab_ms?.quelle ?? 'standard') : 'standard' },
     };
   } catch { /* Lesefehler -> Code-Standard */ }
+  // P22-T321: Env SYNAPSE_SCHATTEN_ZEITEN_AB_MS nur als Rueckfall, wenn kein PG-Wert gesetzt ist (Regel 7: Einstellwert > Env > Code).
+  const szEnv = process.env.SYNAPSE_SCHATTEN_ZEITEN_AB_MS;
+  if (wert.quelle.schatten_zeiten_ab_ms === 'standard' && szEnv !== undefined && szEnv.trim() !== '' && Number.isFinite(Number(szEnv)) && Number(szEnv) >= 0) {
+    wert = { ...wert, schatten_zeiten_ab_ms: Number(szEnv), quelle: { ...wert.quelle, schatten_zeiten_ab_ms: 'env' } };
+  }
   grenzenCache = { bis: Date.now() + CACHE_MS, wert };
   return wert;
 }

@@ -4,6 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import type { Pool } from 'pg';
 import { getPool, mitLesePool } from '../db/client.js';
 import { getParserForFile } from '../parser/index.js';
@@ -352,6 +353,18 @@ async function standardMitUebergabe(project: string, bestand: ()=>Promise<Row>):
   for(const {plan,stand}of pending) antwort=markiere(antwort,plan.id,new Set(stand.dateien.filter(f=>letzte.get(f.file_path)===plan.id).map(f=>f.file_path))) as Row;
   return {...antwort,index_folgt:pending.map(({plan,stand})=>({plan_id:plan.id,status:'committet, Index folgt',dateien:stand.dateien.map(f=>f.file_path)}))};
 }
+/** P22-T321: Planauswahl fuer schatten:'alle' - offene Plaene und committete mit faelliger Datei (Bedingung wie commitUebergaben). */
+const SCHATTEN_ALLE_PLAENE_SQL=`WITH faellig AS MATERIALIZED (
+  SELECT f.file_path,f.updated_at FROM code_files f WHERE f.project=$1 AND NOT f.ignored AND (
+    (f.deleted_at IS NULL AND (f.parsed_at IS NULL OR f.parsed_at<f.updated_at)) OR
+    (f.deleted_at IS NOT NULL AND (EXISTS (SELECT 1 FROM code_symbols x WHERE x.project=f.project AND x.file_path=f.file_path)
+      OR EXISTS (SELECT 1 FROM code_statements x WHERE x.project=f.project AND x.file_path=f.file_path)
+      OR EXISTS (SELECT 1 FROM code_call_edges x WHERE x.project=f.project AND x.file_path=f.file_path)
+      OR EXISTS (SELECT 1 FROM code_references x WHERE x.project=f.project AND x.file_path=f.file_path)))))
+ SELECT p.id::text AS id,p.project,p.ops,p.expected_hashes,p.status FROM file_batch_plans p
+ WHERE p.project=$1 AND (p.status='open' OR (p.status='committed' AND p.committed_at IS NOT NULL
+   AND EXISTS (SELECT 1 FROM faellig f WHERE f.updated_at<=p.committed_at AND p.expected_hashes ? f.file_path)))
+ ORDER BY 1`;
 const GHOST_KOPF='\nGhost-Schatten (Index-Zählwerte oben unverändert):\n';
 /** P6-T44: Bezug einer schatten:'alle'-Anfrage. vergleich = Plan nur ausgeben, wenn sein Ergebnis vom Bestand abweicht. */
 type Bezug={text:string;trifft:(pfad:string)=>boolean;vergleich:boolean};
@@ -410,7 +423,7 @@ function keinBezugHinweis(bezug: Bezug): string {
 export async function mitCodeIntelSchatten(action: string,args: Row,bestand: ()=>Promise<Row>): Promise<Row> {
   const grenzen = await leseCodeIntelGrenzen();
   try {
-    return await mitLesePool(begrenzterPool(getPool(),grenzen,aktuellesAbbruchSignal()),()=>mitCodeIntelSchattenOhneGrenzen(action,args,bestand));
+    return await mitLesePool(begrenzterPool(getPool(),grenzen,aktuellesAbbruchSignal()),()=>mitCodeIntelSchattenOhneGrenzen(action,args,bestand,grenzen.schatten_zeiten_ab_ms ?? 1000));
   } catch (err) {
     const pg = pgFehlerAntwort(err,grenzen);
     if (pg) return {...pg,...(typeof args.project==='string'?{project:args.project}:{})};
@@ -418,12 +431,33 @@ export async function mitCodeIntelSchatten(action: string,args: Row,bestand: ()=
   }
 }
 
-async function mitCodeIntelSchattenOhneGrenzen(action: string,args: Row,bestand: ()=>Promise<Row>): Promise<Row> {
-  const basisAntwort = await mitCodeIntelSchattenKern(action,args,bestand);
+/**
+ * P22-T321 (Bericht 899e15dd: schatten:'alle' 7-11 s): Zeit je Stufe. plaene_ms (Planauswahl), ghost_ms (lade), abfrage_ms (Ghost-Lesepool),
+ * basis_ms (Bestand/Vergleich), typen_ms, reservierungen_ms, gesamt_ms, rest_ms (Antwortbau und Uebriges). In der Antwort als
+ * schatten_zeiten nur bei Schatten-Aufrufen ab Einstellwert code_intel_schatten_zeiten_ab_ms (runtime_ueberwachung, Standard 1000 ms,
+ * Lesestelle leseCodeIntelGrenzen; Env SYNAPSE_SCHATTEN_ZEITEN_AB_MS nur Rueckfall; Goldens schneller Aufrufe bleiben bytegleich),
+ * dann zusaetzlich eine Logzeile.
+ */
+const zeit=(z: Record<string,number>,k: string,t: number)=>{ z[k]=Math.round(((z[k]??0)+performance.now()-t)*10)/10; };
+async function mitCodeIntelSchattenOhneGrenzen(action: string,args: Row,bestand: ()=>Promise<Row>,ab=1000): Promise<Row> {
+  const zeiten: Record<string,number> = {}, t0=performance.now();
+  const antwort=await schattenOhneGrenzenInnen(action,args,bestand,zeiten);
+  zeit(zeiten,'gesamt_ms',t0);
+  const schatten=args.schatten!==undefined || (action==='tree' && args.show_ghosts===true);
+  if(!schatten || !(zeiten.gesamt_ms>=(Number.isFinite(ab)?ab:1000)) || !antwort || typeof antwort!=='object' || Array.isArray(antwort)) return antwort;
+  const teile=['plaene_ms','ghost_ms','abfrage_ms','basis_ms','typen_ms','reservierungen_ms'].reduce((a,k)=>a+(zeiten[k]??0),0);
+  zeiten.rest_ms=Math.max(0,Math.round((zeiten.gesamt_ms-teile)*10)/10);
+  console.info('[code-intel] schatten_zeiten '+JSON.stringify({action,schatten:args.schatten??null,project:args.project,...zeiten}));
+  return {...antwort,schatten_zeiten:zeiten};
+}
+async function schattenOhneGrenzenInnen(action: string,args: Row,bestand: ()=>Promise<Row>,zeiten: Record<string,number>): Promise<Row> {
+  const basisAntwort = await mitCodeIntelSchattenKern(action,args,bestand,zeiten);
   let antwort = basisAntwort;
   if (args.typen === true || (args.schatten !== undefined && args.typen !== false)) {
     try {
+      const tT=performance.now();
       antwort = await (await import('./code-intel-typen.js')).ergaenzeTypbefunde(action,args,basisAntwort);
+      zeit(zeiten,'typen_ms',tT);
     } catch (err) {
       // Zusätzliche Prüfung darf eine erfolgreiche Code-Intel-Leseantwort nie in einen Fehler verwandeln.
       console.error('[code-intel] Typprüfung nicht verfügbar:', (err as Error).message);
@@ -440,6 +474,7 @@ async function mitCodeIntelSchattenOhneGrenzen(action: string,args: Row,bestand:
     (args.schatten!==undefined && (typeof args.schatten!=='string' ||
       (args.schatten!=='alle' && !/^\d+$/.test(args.schatten))))) return antwort;
   const bezug = schattenBezug(action,args);
+  const tR=performance.now();
   const reservierungen = (await lesePlanloseReservierungen(project)).filter(r => {
     if(!bezug.trifft(r.file_path)) return false;
     if(args.file_type && path.extname(r.file_path).slice(1)!==args.file_type) return false;
@@ -452,6 +487,7 @@ async function mitCodeIntelSchattenOhneGrenzen(action: string,args: Row,bestand:
     }
     return true;
   });
+  zeit(zeiten,'reservierungen_ms',tR);
   if(!reservierungen.length) return antwort;
   return {...antwort, reservierungen,
     ...(action==='tree' ? {tree:String(antwort.tree??'')+
@@ -459,7 +495,7 @@ async function mitCodeIntelSchattenOhneGrenzen(action: string,args: Row,bestand:
       reservierungen.map(r=>'  [r] '+r.file_path+' — '+r.reserviert_von+
         ', Task '+(r.task_id??'unbekannt')+', seit '+r.seit+', bis '+r.expires_at).join('\n')} : {})};
 }
-async function mitCodeIntelSchattenKern(action: string,args: Row,bestand: ()=>Promise<Row>): Promise<Row> {
+async function mitCodeIntelSchattenKern(action: string,args: Row,bestand: ()=>Promise<Row>,zeiten: Record<string,number> = {}): Promise<Row> {
   if(args.schatten===undefined && !(action==='tree' && args.show_ghosts===true)) {
     const project=s(args,'project');
     return project && args.semantic!==true && ['tree','functions','symbols','references','search','file','statements','calls'].includes(action)
@@ -475,7 +511,16 @@ async function mitCodeIntelSchattenKern(action: string,args: Row,bestand: ()=>Pr
   const auswahl=args.schatten??'alle';
   if(typeof auswahl!=='string' || (auswahl!=='alle'&&!/^\d+$/.test(auswahl))) return {success:false,error:'schatten muss plan_id oder alle sein',project};
   const pool=getPool();
-  const plans=(await pool.query("SELECT id::text,project,ops,expected_hashes,status FROM file_batch_plans WHERE project=$1 AND (status='open' OR (status='committed' AND committed_at IS NOT NULL)) AND ($2='alle' OR id::text=$2) AND ($2<>'alle' OR status='open' OR EXISTS (SELECT 1 FROM code_files f WHERE f.project=file_batch_plans.project AND f.updated_at<=file_batch_plans.committed_at AND NOT f.ignored AND file_batch_plans.expected_hashes ? f.file_path AND ((f.deleted_at IS NULL AND (f.parsed_at IS NULL OR f.parsed_at<f.updated_at OR f.parser_version IS NULL)) OR (f.deleted_at IS NOT NULL AND (EXISTS (SELECT 1 FROM code_symbols x WHERE x.project=f.project AND x.file_path=f.file_path) OR EXISTS (SELECT 1 FROM code_statements x WHERE x.project=f.project AND x.file_path=f.file_path) OR EXISTS (SELECT 1 FROM code_call_edges x WHERE x.project=f.project AND x.file_path=f.file_path) OR EXISTS (SELECT 1 FROM code_references x WHERE x.project=f.project AND x.file_path=f.file_path)))))) ORDER BY id",[project,auswahl])).rows as Plan[];
+  // P22-T321 (Messung Prod 08.11.2026): die alte Einzelabfrage brauchte in PG 6,8-7,8 s (OR-Verkettung ueber $2 verhindert den
+  // Semi-Join: je committetem Plan ein Lauf ueber alle code_files) und zaehlte mit 'OR parser_version IS NULL' jeden committeten
+  // Plan mit JSON/MD-Dateien (ohne Struktur-Parser nie gesetzt) als offen -> '76 offene Plaene', obwohl 0 offen waren.
+  // Jetzt: gezielte plan_id unveraendert; 'alle' = offene Plaene + committete mit wirklich faelliger Datei (wie commitUebergaben,
+  // P22-T314), faellige Dateien einmal vorab (CTE), 0,17 s.
+  const tP=performance.now();
+  const plans=(auswahl==='alle'
+    ? await pool.query(SCHATTEN_ALLE_PLAENE_SQL,[project])
+    : await pool.query("SELECT id::text,project,ops,expected_hashes,status FROM file_batch_plans WHERE project=$1 AND id::text=$2 AND (status='open' OR (status='committed' AND committed_at IS NOT NULL)) ORDER BY id",[project,auswahl])).rows as Plan[];
+  zeit(zeiten,'plaene_ms',tP);
   const offene=new Set(plans.map(p=>p.id));
   for(const key of cache.keys()) {
     const [proj,id]=JSON.parse(key);
@@ -484,7 +529,9 @@ async function mitCodeIntelSchattenKern(action: string,args: Row,bestand: ()=>Pr
   if(!plans.length) {
     if(auswahl!=='alle') return {success:false,error:'Offener Plan in diesem Projekt nicht gefunden',project};
     const bezug=schattenBezug(action,args);
+    const tB=performance.now();
     const antwort=await bestand();
+    zeit(zeiten,'basis_ms',tB);
     return antwort==null || (typeof antwort==='object' && !Array.isArray(antwort))
       ? {...(antwort??{}),schatten_hinweis:keinBezugHinweis(bezug)}
       : antwort;
@@ -498,18 +545,24 @@ async function mitCodeIntelSchattenKern(action: string,args: Row,bestand: ()=>Pr
   for(const plan of kandidaten){
     if(typeof args.stand_nach_op==='number' && args.stand_nach_op>=plan.ops.length) return {success:false,error:'stand_nach_op liegt außerhalb des Plans',project};
     try {
+      const tG=performance.now();
       const stand=await lade(plan,n(args,'stand_nach_op'));
+      zeit(zeiten,'ghost_ms',tG);
       if(plan.status==='committed' && !stand.dateien.length) {
         cache.delete(JSON.stringify([project,plan.id,n(args,'stand_nach_op')??null]));
         if(auswahl!=='alle') return bestand();
         continue;
       }
+      const tA=performance.now();
       const antwort=action==='tree'?await ghostTree(project,args,stand,plan.id):
         await mitLesePool(lesePool(pool,project,stand),()=>abfrage(action,args));
+      zeit(zeiten,'abfrage_ms',tA);
       if(bezug) {
         if(action==='tree' && !String(antwort.tree).includes(GHOST_KOPF)) { ohneBezug++; continue; }
         if(bezug.vergleich) {
+          const tV=performance.now();
           basis??=JSON.stringify(await abfrage(action,args));
+          zeit(zeiten,'basis_ms',tV);
           if(JSON.stringify(antwort)===basis) { ohneBezug++; continue; }
         }
       }
@@ -529,7 +582,9 @@ async function mitCodeIntelSchattenKern(action: string,args: Row,bestand: ()=>Pr
   if(auswahl!=='alle') return antworten[0];
   const ohne=bezug && ohneBezug>0 ? {ohne_bezug:ohneBezug,ohne_bezug_hinweis:ohneBezugHinweis(ohneBezug,bezug)} : {};
   if(!antworten.length) {
+    const tB=performance.now();
     const antwort=await bestand();
+    zeit(zeiten,'basis_ms',tB);
     return bezug && (antwort==null || (typeof antwort==='object' && !Array.isArray(antwort)))
       ? {...(antwort??{}),schatten_hinweis:keinBezugHinweis(bezug),...ohne} : antwort;
   }

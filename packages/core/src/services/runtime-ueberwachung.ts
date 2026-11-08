@@ -151,6 +151,8 @@ export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
   // P22-T316: JIT fuer code_intel-Abfragen (Standard aus = SET LOCAL jit = off). Ghost-Schaetzungen liegen ohne Append-Statistik ueber
   // jit_above_cost, die Kompilierung lohnt bei diesen Index-Lookups nicht.
   code_intel_jit: { art: 'bool', standard: false },
+  // P22-T321: ab dieser Gesamtdauer (ms) nennt eine Schatten-Antwort ihre Zeit je Stufe (schatten_zeiten) und loggt sie; 0 = immer.
+  code_intel_schatten_zeiten_ab_ms: { art: 'zahl', standard: 1000, min: 0, max: 600000 },
   // P22-T314 (Pruefer-Fix): Schonfrist, bevor eine Datei mit parsed_at < updated_at als GEAENDERT faellig wird (code.ts).
   parse_geaendert_schonfrist_s: { art: 'zahl', standard: 120, min: 0, max: 3600 },
   // P22-T312: Persona-Generator (persona-generator.ts) - Modell (Registry-Alias, Standard guenstig) und Ausgabelimit des einen Aufrufs.
