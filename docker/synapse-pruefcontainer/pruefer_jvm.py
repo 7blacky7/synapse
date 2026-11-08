@@ -20,6 +20,9 @@ des Containers mit allen anderen Werkzeugen (Messung im Bericht P16-T5 E3b).
 NUR BEI BEDARF (P16-T22): die JVM ist das einzige dauerhaft laufende Werkzeug im Container. Ohne Kotlin-/Java-/Scala-/
 Groovy-Anfrage seit PRUEF_JVM_IDLE_S (Standard 600, 0 = nie) wird sie beendet (Zaehler idle_stops); die naechste Anfrage
 startet sie wieder (Startlimit wie beim ersten Mal). Die API waermt sie nicht mehr bei jedem Containerstart vor.
+P16-T26 C: der Leerlaufwert kommt zur Laufzeit von der API (Nachricht pflege, Einstellwert jvm_leerlauf_s aus code_check
+build_einstellungen, setze_leerlauf); PRUEF_JVM_IDLE_S ist nur noch der Startwert. Der Waechter laeuft deshalb immer und
+liest den Wert je Takt (0 = nie beenden).
 """
 import base64
 import os
@@ -70,14 +73,16 @@ class JvmHelfer:
     def _waechter_lauf(self):
         """P16-T22: beendet die JVM nach JVM_IDLE_S ohne Anfrage (keine offenen Anfragen)."""
         while True:
-            time.sleep(min(30.0, max(1.0, JVM_IDLE_S / 4)))
+            idle = JVM_IDLE_S  # P16-T26 C: je Takt neu gelesen (setze_leerlauf)
+            time.sleep(30.0 if idle <= 0 else min(30.0, max(1.0, idle / 4)))
+            idle = JVM_IDLE_S
             p = self._proc
             with self._offen_sperre:
                 offen = len(self._offen)
-            if p is None or offen or time.monotonic() - self._zuletzt < JVM_IDLE_S:
+            if idle <= 0 or p is None or offen or time.monotonic() - self._zuletzt < idle:
                 continue
             with self._start_sperre:
-                if self._proc is not p or time.monotonic() - self._zuletzt < JVM_IDLE_S:
+                if self._proc is not p or time.monotonic() - self._zuletzt < idle:
                     continue
                 self._proc = None
             self.zaehler['idle_stops'] += 1
@@ -126,7 +131,7 @@ class JvmHelfer:
                 raise RuntimeError(f'JVM nicht bereit nach {JVM_START_S:g} s: {erste[0][:200] if erste else b""!r}')
             self._proc = p
             threading.Thread(target=self._leser, args=(p,), daemon=True).start()
-            if JVM_IDLE_S > 0 and self._waechter is None:
+            if self._waechter is None:  # P16-T26 C: immer, der Leerlaufwert kann spaeter gesetzt werden
                 self._waechter = threading.Thread(target=self._waechter_lauf, daemon=True)
                 self._waechter.start()
             self.letzter_start_ms = round((time.perf_counter() - t0) * 1000, 1)
@@ -277,3 +282,10 @@ def vorwaermen(timeout_s: float):
 
 def zustand():
     return _helfer.zustand()
+
+
+def setze_leerlauf(sekunden):
+    """P16-T26 C: Leerlauf-Ende der JVM zur Laufzeit (Einstellwert der API, 0 = nie). Wirkt beim naechsten Waechter-Takt."""
+    global JVM_IDLE_S
+    JVM_IDLE_S = max(0.0, float(sekunden))
+    return JVM_IDLE_S

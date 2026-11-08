@@ -289,10 +289,10 @@ test('J7 Vorwaermen startet Container UND JVM; erstes Kotlin-Schreiben im 30-ms-
 test('J8 Limits am laufenden Container: Speicher (Standard) und PIDs reichen fuer die JVM', opt, async () => {
   const i = await docker.getContainer(NAME).inspect();
   const mem = pruefContainerConfigAusEnv().memMb * 1024 * 1024;
-  // E3b: Standard 384 MB (Lastmessung mit allen Sprachen inkl. JVM: memory.peak 206-215 MB)
-  if (!process.env.PRUEFCONTAINER_MEM_MB) assert.equal(mem, 384 * 1024 * 1024);
+  // P16-T26: Standard 0 = keine Speichergrenze (vorher 384 MB, E3b-Lastmessung memory.peak 206-215 MB).
+  if (!process.env.PRUEFCONTAINER_MEM_MB) assert.equal(mem, 0, 'P16-T26 pruef-container.ts Standard memMb 0');
   assert.equal(i.HostConfig.Memory, mem);
-  assert.equal(i.HostConfig.MemorySwap, mem);
+  if (mem > 0) assert.equal(i.HostConfig.MemorySwap, mem);
   assert.equal(i.HostConfig.ReadonlyRootfs, true);
   assert.equal(i.HostConfig.NetworkMode, 'none');
   assert.equal(i.Config.User, '65532:65532');
@@ -323,7 +323,8 @@ test('J9 Latenz warm Kotlin/Java und RAM-Spitze mit beiden Sprachen in einer JVM
     assert.ok(await mess('java', JAVA_NEU) < 100);
     const peak = Number(cgroup('memory.peak', NAME + '-lat')) / 1048576;
     console.log(`  memory.peak nach Kotlin+Java: ${peak.toFixed(0)} MB (Limit ${pruefContainerConfigAusEnv().memMb} MB)`);
-    assert.ok(peak < pruefContainerConfigAusEnv().memMb);
+    // P16-T26: nur mit Obergrenze gibt es eine Grenze zu pruefen.
+    if (pruefContainerConfigAusEnv().memMb > 0) assert.ok(peak < pruefContainerConfigAusEnv().memMb);
   } finally {
     await pc.beenden();
   }

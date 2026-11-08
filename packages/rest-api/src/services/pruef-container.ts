@@ -38,16 +38,24 @@
  * das Budget FEHLERPRUEFUNG_BUDGET_MS, laeuft er weiter; die naechste Pruefung desselben Inhalts (commit nach plan,
  * plan_status) bekommt das Ergebnis sofort - wie im Syntax-Pool der Stufe 1.
  *
- * LIMITS (Env, Standard): PRUEFCONTAINER_MEM_MB (384, ohne Swap; E3b gemessen: memory.peak 206-215 MB unter Last mit allen
- * 9 Sprachen gleichzeitig inkl. JVM -Xmx160m, Rest = Reserve fuer volle Heap-Nutzung), PRUEFCONTAINER_CPUS (1), PRUEFCONTAINER_PIDS (64),
+ * LIMITS (Env, Standard): PRUEFCONTAINER_MEM_MB (P16-T26, User-Entscheidung 08.11.2026: Standard 0 = KEINE Speichergrenze,
+ * der Container holt sich von Unraid so viel er braucht; > 0 = optionale Obergrenze in MB, mind. 128, ohne Swap. Frueher
+ * 384: E3b gemessen memory.peak 206-215 MB fuer alle Syntaxpruefer, die Plan-Typpruefung braucht fuer packages/core aber
+ * > 1,5 GB), PRUEFCONTAINER_CPUS (1), PRUEFCONTAINER_PIDS (64),
  * PRUEFCONTAINER_TMPFS_MB (64). SICHERHEIT: read-only rootfs, User 65532, cap_drop ALL, no-new-privileges, keine Binds.
+ * P16-T26 A: Docker-Init als PID 1 (HostConfig.Init, PRUEFCONTAINER_INIT=0 schaltet ab) sammelt verwaiste Prozesse ein;
+ * pruefserver.py beendet zusaetzlich nach jedem Werkzeuglauf dessen Prozessgruppe.
+ * P16-T26 C/D: PFLEGE - nach jedem Start und im Takt (tickMs) schickt pflegen() die Leerlaufwerte (jvm_leerlauf_s,
+ * gocache_leerlauf_s, gocache_max_mb aus code_check build_einstellungen) und holt Speicher (memory.current/stat) und
+ * Prozessliste; Diagnose zustand().pflege. Altes Image ohne pflege -> unterstuetzt false bis zum naechsten Start.
  * Schalter: PRUEFCONTAINER=0 (aus), SYNTAXPRUEFUNG=0 (alle Syntaxpruefer aus). Image: PRUEFCONTAINER_IMAGE.
  *
  * BUILD-PRUEFUNG (P16-T16 E1, 14.10.2026): derselbe Container prueft auf Auftrag ein TS-Monorepo projektweit
  * ({build:{dateien, projekte, zeitlimit_s, heap_mb}} -> pruefer_tsbuild.py, tsc --noEmit, nur tmpfs). Logik, Cache,
  * Schalter und Warteschlange in core build-pruefung.ts; hier nur der Transport (pruefeBuild) und das Speicherbudget
  * (setzeBudget: Speicher/tmpfs aus code_check build_einstellungen; ein laufender Container wird neu gestartet).
- * Fuer die Build-Pruefung reicht das Syntax-Budget (384 MB) nicht: Budget ueber build_einstellungen anheben.
+ * P16-T26: ohne Speichergrenze (Standard) braucht die Build-Pruefung kein eigenes Speicherbudget; build_einstellungen
+ * speicher_mb setzt nur noch eine Obergrenze (0 = unbegrenzt). Heap von tsc/Typpruefung: build_einstellungen heap_mb.
  *
  * NUR BENOETIGTE WERKZEUGE (P16-T22, 20.10.2026): alle Werkzeuge ausser der JVM laufen nur fuer die Dauer eines
  * Auftrags (Unterprozess). Die JVM (Kotlin/Java/Scala/Groovy) startet erst bei der ersten Anfrage einer JVM-Sprache
@@ -66,7 +74,7 @@ import { PassThrough } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
 import { registriereSyntaxPruefer, registriereWorker, workerPausiert, meldeWorkerArbeit, registriereInternQuelle, type SyntaxMeldung } from '@synapse/core';
-import { registriereBuildPruefer, synchronisiereBuildBudget, buildPruefungZustand, type BuildAuftrag, type BuildLaufErgebnis } from '@synapse/core';
+import { registriereBuildPruefer, synchronisiereBuildBudget, buildPruefungZustand, wirksamesBuildBudget, type BuildAuftrag, type BuildLaufErgebnis } from '@synapse/core';
 import { registriereTypContainerPruefer, type TypAuftrag, type TypPruefung } from '@synapse/core';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -140,6 +148,7 @@ export interface PruefContainerConfig {
   socketPath: string;
   image: string;
   name: string;
+  /** P16-T26: Speicher-Obergrenze in MB; 0 = unbegrenzt (Standard, Docker Memory 0). */
   memMb: number;
   cpus: number;
   pids: number;
@@ -166,8 +175,10 @@ export interface PruefContainerConfig {
   jvmKaltBudgetMs: number;
   /** P16-T22: JVM schon beim Containerstart vorwaermen (Standard aus: erst bei der ersten JVM-Anfrage). */
   jvmVorwaermen: boolean;
-  /** P16-T22: JVM im Container nach so vielen Sekunden ohne Anfrage beenden (0 = nie). */
+  /** P16-T22: JVM im Container nach so vielen Sekunden ohne Anfrage beenden (0 = nie). P16-T26: Startwert, danach Einstellwert. */
   jvmIdleS: number;
+  /** P16-T26 A: Docker-Init (tini) als PID 1 im Container (Standard an, PRUEFCONTAINER_INIT=0 aus). */
+  init: boolean;
 }
 
 function envZahl(name: string, standard: number): number {
@@ -176,12 +187,20 @@ function envZahl(name: string, standard: number): number {
   return Number.isFinite(wert) && wert >= 0 ? wert : standard;
 }
 
+/** P16-T26: Speichergrenze in MB normieren - 0 (oder kleiner/ungueltig) = unbegrenzt, sonst mindestens 128. */
+export function speicherGrenzeMb(mb: number): number {
+  return Number.isFinite(mb) && mb > 0 ? Math.max(128, Math.round(mb)) : 0;
+}
+
+/** P16-T26 Debug: Grenze lesbar ('unbegrenzt' bzw. '<n> MB'). */
+const grenzeText = (mb: number): string => (mb > 0 ? `${mb} MB` : 'unbegrenzt');
+
 export function pruefContainerConfigAusEnv(): PruefContainerConfig {
   return {
     socketPath: process.env.WORKSPACE_DOCKER_SOCKET || '/var/run/docker.sock',
     image: process.env.PRUEFCONTAINER_IMAGE || 'synapse-pruefcontainer:latest',
     name: process.env.PRUEFCONTAINER_NAME || 'synapse-pruefcontainer',
-    memMb: Math.max(128, envZahl('PRUEFCONTAINER_MEM_MB', 384)),
+    memMb: speicherGrenzeMb(envZahl('PRUEFCONTAINER_MEM_MB', 0)),
     cpus: envZahl('PRUEFCONTAINER_CPUS', 1) || 1,
     pids: Math.max(16, envZahl('PRUEFCONTAINER_PIDS', 64)),
     tmpfsMb: Math.max(8, envZahl('PRUEFCONTAINER_TMPFS_MB', 64)),
@@ -200,6 +219,7 @@ export function pruefContainerConfigAusEnv(): PruefContainerConfig {
     jvmKaltBudgetMs: envZahl('PRUEFCONTAINER_JVM_KALT_BUDGET_MS', 4000),
     jvmVorwaermen: process.env.PRUEFCONTAINER_JVM_VORWAERMEN === '1',
     jvmIdleS: envZahl('PRUEFCONTAINER_JVM_IDLE_S', 600),
+    init: process.env.PRUEFCONTAINER_INIT !== '0',
   };
 }
 
@@ -228,7 +248,7 @@ interface Offen {
   timer: NodeJS.Timeout | null;
 }
 
-type Antwort = { id?: number | null; ok?: boolean; meldungen?: SyntaxMeldung[]; fehler?: string; info?: PruefContainerInfo; bereit?: boolean; ms?: number; vorgewaermt?: Record<string, unknown>; rustcheck?: BuildLaufErgebnis; build?: BuildLaufErgebnis; kotlinc?: BuildLaufErgebnis; javac?: BuildLaufErgebnis; gobuild?: BuildLaufErgebnis; pyright?: BuildLaufErgebnis; cbuild?: BuildLaufErgebnis; cppbuild?: BuildLaufErgebnis; dartbuild?: BuildLaufErgebnis; csharpbuild?: BuildLaufErgebnis; typen?: TypPruefung };
+type Antwort = { id?: number | null; ok?: boolean; meldungen?: SyntaxMeldung[]; fehler?: string; info?: PruefContainerInfo; bereit?: boolean; ms?: number; vorgewaermt?: Record<string, unknown>; rustcheck?: BuildLaufErgebnis; build?: BuildLaufErgebnis; kotlinc?: BuildLaufErgebnis; javac?: BuildLaufErgebnis; gobuild?: BuildLaufErgebnis; pyright?: BuildLaufErgebnis; cbuild?: BuildLaufErgebnis; cppbuild?: BuildLaufErgebnis; dartbuild?: BuildLaufErgebnis; csharpbuild?: BuildLaufErgebnis; typen?: TypPruefung; pflege?: Record<string, unknown> };
 
 const START_FENSTER_MS = 5 * 60_000;
 
@@ -315,7 +335,8 @@ export class PruefContainer {
     });
     this.tick = setInterval(() => {
       if (workerPausiert('pruefcontainer_idle_stop')) return;
-      this.idleTick().catch((err) => console.error(`[pruefcontainer] idleTick: ${(err as Error).message}`));
+      // P16-T26: im selben Takt Pflege (Einstellwerte hin, Speicher/Prozesse zurueck).
+      this.idleTick().then(() => this.pflegen()).catch((err) => console.error(`[pruefcontainer] idleTick: ${(err as Error).message}`));
     }, this.cfg.tickMs);
     this.tick.unref();
   }
@@ -508,12 +529,13 @@ export class PruefContainer {
       this.letzterStartMs = Date.now() - t0;
       // E3a: Speicherlimit am laufenden Container nachlesen. Ohne Swap-Accounting im Kernel setzt Docker
       // MemorySwap still auf -1 (Unraid t60) - dann ist nur der RAM begrenzt; das soll sichtbar sein.
+      // P16-T26: Memory 0 = gewollt unbegrenzt (Standard) - keine Swap-Grenze zu pruefen, keine Warnung.
       try {
         const ins = await container.inspect();
         const memory = Number(ins.HostConfig?.Memory ?? 0);
         const memorySwap = Number(ins.HostConfig?.MemorySwap ?? 0);
-        this.speicher = { memory, memory_swap: memorySwap, swap_begrenzt: memorySwap === memory };
-        if (memorySwap !== memory) {
+        this.speicher = { memory, memory_swap: memorySwap, swap_begrenzt: memory > 0 && memorySwap === memory };
+        if (memory > 0 && memorySwap !== memory) {
           const text = `MemorySwap ${memorySwap} statt ${memory} (Kernel ohne Swap-Accounting?) - begrenzt ist nur der RAM`;
           console.error(`[pruefcontainer] WARNUNG ${text}`);
           this.merkeFehler(text);
@@ -521,6 +543,9 @@ export class PruefContainer {
       } catch { /* Diagnose best effort */ }
       console.error(`[pruefcontainer] bereit nach ${Date.now() - t0} ms (${container.id.slice(0, 12)}, ${this.cfg.image}): ${JSON.stringify(this.info.werkzeuge)}`);
       try { this.onInfo?.(this.info); } catch { /* Anmeldung best effort */ }
+      // P16-T26 C/D: neues Image kann pflege - Einstellwerte gleich nach dem Start schicken (wirft nie).
+      this.pflegeZ.unterstuetzt = true;
+      void this.pflegen();
     } catch (err) {
       console.error(`[pruefcontainer] Start fehlgeschlagen: ${(err as Error).message}`);
       this.merkeFehler(`Start fehlgeschlagen: ${(err as Error).message}`);
@@ -548,14 +573,17 @@ export class PruefContainer {
         NetworkMode: 'none',
         ReadonlyRootfs: true,
         Tmpfs: { '/tmp': `size=${this.cfg.tmpfsMb}m,noexec,nosuid,nodev,mode=1777` },
-        Memory: this.cfg.memMb * 1024 * 1024,
-        MemorySwap: this.cfg.memMb * 1024 * 1024,
+        // P16-T26: memMb 0 = keine Speichergrenze (Memory 0; MemorySwap 0 = nicht gesetzt). CPU, PIDs, Sicherheit bleiben.
+        Memory: this.cfg.memMb > 0 ? this.cfg.memMb * 1024 * 1024 : 0,
+        MemorySwap: this.cfg.memMb > 0 ? this.cfg.memMb * 1024 * 1024 : 0,
         NanoCpus: Math.round(this.cfg.cpus * 1e9),
         PidsLimit: this.cfg.pids,
         CapDrop: ['ALL'],
         SecurityOpt: ['no-new-privileges'],
         AutoRemove: false,
         RestartPolicy: { Name: 'no' },
+        // P16-T26 A: Init als PID 1 sammelt verwaiste Kinder ein (keine Zombies gegen PidsLimit).
+        Init: this.cfg.init,
       },
     };
   }
@@ -691,8 +719,62 @@ export class PruefContainer {
     }
   }
 
-  /** P16-T24: Zaehler der Plan-Typpruefung (Diagnose). */
-  private typZ = { auftraege: 0, fehler: 0, zeitlimit: 0, letzte_ms: null as number | null, letzter_status: null as string | null };
+  /** P16-T24: Zaehler der Plan-Typpruefung (Diagnose). P16-T26: Heap und hoechster RSS der letzten Pruefung. */
+  private typZ = { auftraege: 0, fehler: 0, zeitlimit: 0, letzte_ms: null as number | null, letzter_status: null as string | null, letzter_heap_mb: null as number | null, letzter_rss_mb: null as number | null };
+
+  /**
+   * P16-T26: Heap der Plan-Typpruefung in MB = Einstellwert heap_mb (code_check build_einstellungen; eine Lesestelle mit
+   * der Build-Pruefung: core wirksamesBuildBudget). registriereContainerSyntaxPruefer bindet ihn an. null (Tests) oder
+   * Fehler -> kein heap_mb in der Nachricht, pruefer_typen.py nimmt seinen Standard PRUEF_TYPEN_HEAP_MB (2048).
+   */
+  typenHeap: (() => Promise<number | null>) | null = null;
+
+  private async typenHeapLesen(): Promise<number | null> {
+    if (!this.typenHeap) return null;
+    try {
+      const mb = await this.typenHeap();
+      return typeof mb === 'number' && Number.isFinite(mb) && mb > 0 ? Math.round(mb) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * P16-T26 C: Leerlaufwerte fuer den Container (jvm_leerlauf_s, gocache_leerlauf_s, gocache_max_mb; Einstellwerte aus
+   * code_check build_einstellungen, Lesestelle core wirksamesBuildBudget). registriereContainerSyntaxPruefer bindet sie an.
+   */
+  leerlaufWerte: (() => Promise<Record<string, number> | null>) | null = null;
+  /** P16-T26 D: letzte Pflege-Antwort (Speicher aufgeschluesselt, Prozessliste, GOCACHE, JVM, wirksame Leerlaufwerte). */
+  private pflegeStand: Record<string, unknown> | null = null;
+  private pflegeZ = { abfragen: 0, fehler: 0, unterstuetzt: true, zuletzt: null as string | null, letzter_fehler: null as string | null };
+
+  /**
+   * P16-T26 C/D: Pflege-Nachricht - schickt die Leerlaufwerte und holt Messwerte (memory.current/stat, Prozesse aus
+   * /proc, GOCACHE). Nur wenn der Container bereit ist (startet ihn nie). Wirft nie. Altes Image ohne 'pflege' (Antwort
+   * "keine Pruefung fuer Sprache") -> unterstuetzt false bis zum naechsten Start.
+   */
+  async pflegen(): Promise<Record<string, unknown> | null> {
+    if (this.zustandName !== 'bereit' || !this.stream || !this.pflegeZ.unterstuetzt) return null;
+    let werte: Record<string, number> | null = null;
+    try { werte = this.leerlaufWerte ? await this.leerlaufWerte() : null; } catch { werte = null; }
+    this.pflegeZ.abfragen++;
+    try {
+      const antwort = await this.schicke({ pflege: werte ?? {} }, 10_000) as Antwort;
+      const stand = antwort.pflege ?? null;
+      this.pflegeStand = stand;
+      this.pflegeZ.zuletzt = new Date().toISOString();
+      // Die API-Seite der JVM-Warmhaltung (jvmLeerlaufPruefen) folgt dem wirksamen Wert im Container.
+      const jvm = (stand?.einstellungen as { jvm_leerlauf_s?: unknown } | undefined)?.jvm_leerlauf_s;
+      if (typeof jvm === 'number' && Number.isFinite(jvm) && jvm >= 0) this.cfg.jvmIdleS = jvm;
+      return stand;
+    } catch (err) {
+      const text = (err as Error).message;
+      if (/keine Pruefung fuer Sprache/.test(text)) this.pflegeZ.unterstuetzt = false;
+      else this.pflegeZ.fehler++;
+      this.pflegeZ.letzter_fehler = text.slice(0, 200);
+      return null;
+    }
+  }
 
   /**
    * P16-T24: kleine Typpruefung je files-Plan im Pruef-Container. Wirft nie: Container nicht erreichbar/Pause/altes
@@ -711,12 +793,16 @@ export class PruefContainer {
     if (Date.now() < this.pauseBis) return ende(leereTypPruefung('nicht_verfuegbar', `Pruef-Container pausiert: ${this.pauseGrund}`, 0));
     this.letzteAktivitaet = Date.now();
     const lauf = (async (): Promise<TypPruefung> => {
-      const [engine] = await Promise.all([ladeTypEngine(), this.bereitMachen()]);
+      const [engine, , heapMb] = await Promise.all([ladeTypEngine(), this.bereitMachen(), this.typenHeapLesen()]);
       const rest = auftrag.budget_ms - (Date.now() - t0);
       if (rest <= 0) return leereTypPruefung('zeitlimit', 'Pruef-Container nicht innerhalb des Typbudgets bereit.', Date.now() - t0);
-      const antwort = await this.schicke({ typen: { ...engine, auftrag: { ...auftrag, budget_ms: rest } } }, rest + 2000) as Antwort;
+      const antwort = await this.schicke({ typen: { ...engine, auftrag: { ...auftrag, budget_ms: rest }, ...(heapMb ? { heap_mb: heapMb } : {}) } }, rest + 2000) as Antwort;
       this.letzteAktivitaet = Date.now();
       if (!antwort.typen) return leereTypPruefung('nicht_verfuegbar', 'Antwort ohne typen (Image ohne P16-T24? neu bauen: docker/synapse-pruefcontainer)', Date.now() - t0);
+      // P16-T26: Messwerte des Containers (aeltere Images ohne P16-T26 liefern sie nicht).
+      const mess = antwort.typen as TypPruefung & { heap_mb?: unknown; speicher?: { rss_mb?: unknown } };
+      this.typZ.letzter_heap_mb = typeof mess.heap_mb === 'number' ? mess.heap_mb : null;
+      this.typZ.letzter_rss_mb = typeof mess.speicher?.rss_mb === 'number' ? mess.speicher.rss_mb : null;
       return { ...antwort.typen, ort: 'pruefcontainer', ort_ms: Date.now() - t0 };
     })();
     try {
@@ -781,10 +867,11 @@ export class PruefContainer {
    * gestoppt (offene Auftraege scheitern), der naechste Auftrag startet ihn mit den neuen Grenzen. true = geaendert.
    */
   async setzeBudget(b: { speicher_mb?: number; tmpfs_mb?: number }): Promise<boolean> {
-    const mem = typeof b.speicher_mb === 'number' && Number.isFinite(b.speicher_mb) ? Math.max(128, Math.round(b.speicher_mb)) : this.cfg.memMb;
+    // P16-T26: speicher_mb 0 = unbegrenzt (Standard); > 0 = Obergrenze, mind. 128.
+    const mem = typeof b.speicher_mb === 'number' && Number.isFinite(b.speicher_mb) ? speicherGrenzeMb(b.speicher_mb) : this.cfg.memMb;
     const tmp = typeof b.tmpfs_mb === 'number' && Number.isFinite(b.tmpfs_mb) ? Math.max(8, Math.round(b.tmpfs_mb)) : this.cfg.tmpfsMb;
     if (mem === this.cfg.memMb && tmp === this.cfg.tmpfsMb) return false;
-    console.error(`[pruefcontainer] Speicherbudget ${this.cfg.memMb}/${this.cfg.tmpfsMb} MB -> ${mem}/${tmp} MB (Speicher/tmpfs), Container startet neu`);
+    console.error(`[pruefcontainer] Speicherbudget ${grenzeText(this.cfg.memMb)}/${this.cfg.tmpfsMb} MB -> ${grenzeText(mem)}/${tmp} MB (Speicher/tmpfs), Container startet neu`);
     this.cfg.memMb = mem;
     this.cfg.tmpfsMb = tmp;
     this.buildZ.budget_neustarts++;
@@ -811,6 +898,8 @@ export class PruefContainer {
       latenz_ms: { anzahl: d.length, p50: q(0.5), p95: q(0.95), max: d.length ? d[d.length - 1] : null, letzter_start: this.letzterStartMs },
       letzte_fehler: [...this.letzteFehler].reverse(),
       speicher: this.speicher,
+      // P16-T26 D: letzte Pflege (stand.speicher.stat_mb: anon/file/shmem, stand.prozesse, stand.gocache, stand.einstellungen).
+      pflege: { ...this.pflegeZ, stand: this.pflegeStand },
       kalt_budget_ms: this.cfg.kaltBudgetMs,
       // Erstpruefung: Sprachen, die seit dem Containerstart geantwortet haben (fuer die uebrigen gilt kalt_budget_ms).
       erst_geprueft: [...this.erstGeprueft],
@@ -830,7 +919,8 @@ export class PruefContainer {
       pause_bis: this.pauseBis > Date.now() ? new Date(this.pauseBis).toISOString() : null,
       pause_grund: this.pauseBis > Date.now() ? this.pauseGrund : null,
       letzte_aktivitaet: new Date(this.letzteAktivitaet).toISOString(),
-      limits: { mem_mb: this.cfg.memMb, cpus: this.cfg.cpus, pids: this.cfg.pids, tmpfs_mb: this.cfg.tmpfsMb, timeout_ms: this.cfg.timeoutMs, idle_min: this.cfg.idleMin },
+      // P16-T26: mem_mb 0 = unbegrenzt; speicher_grenze zeigt es lesbar.
+      limits: { mem_mb: this.cfg.memMb, speicher_grenze: grenzeText(this.cfg.memMb), init: this.cfg.init, cpus: this.cfg.cpus, pids: this.cfg.pids, tmpfs_mb: this.cfg.tmpfsMb, timeout_ms: this.cfg.timeoutMs, idle_min: this.cfg.idleMin },
       // P16-T16 E1: projektweite Build-Pruefung
       build: {
         ...this.buildZ, werkzeug: (this.info as { tsbuild?: unknown } | null)?.tsbuild ?? null,
@@ -919,9 +1009,18 @@ export async function registriereContainerSyntaxPruefer(opt: { docker?: Docker; 
     pruefe: (a) => pc.pruefeBuild(a),
     setzeBudget: (b) => pc.setzeBudget(b),
     budget: () => ({ speicher_mb: pc.cfg.memMb, tmpfs_mb: pc.cfg.tmpfsMb }),
+    // P16-T26 C: nach build_einstellungen sofort pflegen (sonst im naechsten Takt).
+    pflegen: () => pc.pflegen(),
   });
   registriereInternQuelle('build_pruefung', () => buildPruefungZustand());
   // P16-T24: Plan-Typpruefung ueber denselben Container (nie mehr Projekt-Workspace).
+  // P16-T26: Heap der Typpruefung = Einstellwert heap_mb (wie die Build-Pruefung), Standard 2048 bei unbegrenztem Speicher.
+  pc.typenHeap = async () => (await wirksamesBuildBudget()).heap_mb;
+  // P16-T26 C: Leerlaufwerte fuer den Container aus derselben Lesestelle.
+  pc.leerlaufWerte = async () => {
+    const b = await wirksamesBuildBudget();
+    return { jvm_leerlauf_s: b.jvm_leerlauf_s, gocache_leerlauf_s: b.gocache_leerlauf_s, gocache_max_mb: b.gocache_max_mb };
+  };
   registriereTypContainerPruefer((a) => pc.pruefeTypen(a));
   await synchronisiereBuildBudget(true).catch(() => false);
   if (opt.takt !== false) pc.starteTakt();

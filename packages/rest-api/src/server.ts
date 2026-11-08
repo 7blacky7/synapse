@@ -303,7 +303,7 @@ export async function startServer(): Promise<void> {
   // PRUEFCONTAINER_IDLE_MIN Standard 0 -, Neustart nach Absturz; innen schalten sich nur die Pruefer an/aus). EIN Container
   // fuer alle Pruefarten inkl. Plan-Typpruefung (P16-T24), siehe services/pruef-container.ts.
   // Ohne Docker oder ohne Image (docker build -t synapse-pruefcontainer:latest docker/synapse-pruefcontainer) bleibt
-  // es bei Stufe 1. Notaus: PRUEFCONTAINER=0. Limits: PRUEFCONTAINER_MEM_MB (256), PRUEFCONTAINER_CPUS (1).
+  // es bei Stufe 1. Notaus: PRUEFCONTAINER=0. Limits: PRUEFCONTAINER_MEM_MB (Standard 0 = keine Speichergrenze, P16-T26), PRUEFCONTAINER_CPUS (1).
   try {
     const { registriereContainerSyntaxPruefer } = await import('./services/pruef-container.js');
     const namen = await registriereContainerSyntaxPruefer();

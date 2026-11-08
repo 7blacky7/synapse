@@ -266,9 +266,11 @@ test('T4 Haertung und Limits am laufenden Container', opt, async () => {
   assert.ok(i, 'Testcontainer laeuft');
   assert.equal(i.HostConfig.NetworkMode, 'none');
   assert.equal(i.HostConfig.ReadonlyRootfs, true);
-  // E3b: Standard 384 MB (Lastmessung mit allen Sprachen inkl. JVM, Bericht P16-T5 E3b)
-  assert.equal(i.HostConfig.Memory, 384 * 1024 * 1024);
-  assert.equal(i.HostConfig.MemorySwap, 384 * 1024 * 1024);
+  // P16-T26 pruef-container.ts containerOptionen: Standard 0 = keine Speichergrenze (vorher 384 MB, E3b);
+  // mit PRUEFCONTAINER_MEM_MB > 0 die Obergrenze ohne Swap.
+  const memSoll = pruefContainerConfigAusEnv().memMb * 1024 * 1024;
+  assert.equal(i.HostConfig.Memory, memSoll, `P16-T26 Memory erwartet ${memSoll}, ist ${i.HostConfig.Memory}`);
+  if (memSoll > 0) assert.equal(i.HostConfig.MemorySwap, memSoll);
   assert.equal(i.HostConfig.NanoCpus, 1e9);
   assert.equal(i.HostConfig.PidsLimit, 64);
   assert.deepEqual(i.HostConfig.CapDrop, ['ALL']);
@@ -278,7 +280,8 @@ test('T4 Haertung und Limits am laufenden Container', opt, async () => {
   assert.equal((i.HostConfig.Binds ?? []).length, 0, 'keine Binds');
   // E3a: der Pruef-Container liest das Limit selbst nach (Unraid t60: MemorySwap -1 ohne Swap-Accounting).
   const sp = pruefContainerZustand().speicher;
-  assert.deepEqual(sp, { memory: 384 * 1024 * 1024, memory_swap: 384 * 1024 * 1024, swap_begrenzt: true });
+  assert.equal(sp.memory, memSoll, JSON.stringify(sp));
+  assert.equal(sp.swap_begrenzt, memSoll > 0, `P16-T26 swap_begrenzt nur mit Obergrenze: ${JSON.stringify(sp)}`);
 });
 
 test('T5 Latenz warm (verschiedene Inhalte, ohne Cache)', opt, async () => {
@@ -750,7 +753,7 @@ test('T18 E3a-Latenz warm im Budget, Speicherspitze unter Last, Diagnose an inte
       'dockerfile', 'hcl', 'starlark', 'jsonnet', 'make', 'meson', 'linkerscript',
       'csharp', 'dart', 'swift',
       'perl', 'ada', 'haskell', 'ocaml', 'ocaml_interface', 'elixir', 'erlang', 'clojure', 'racket', 'r', 'nix']);
-    assert.equal(z.speicher.swap_begrenzt, true);
+    assert.equal(z.speicher.swap_begrenzt, pruefContainerConfigAusEnv().memMb > 0, 'P16-T26 swap_begrenzt nur mit Obergrenze');
   } finally {
     await pc.beenden();
   }

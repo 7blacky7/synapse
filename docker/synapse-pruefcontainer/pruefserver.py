@@ -22,6 +22,10 @@ PROTOKOLL (eine JSON-Zeile je Nachricht, UTF-8):
                                             Antwort {"id", "ok": true, "build": {...}}; eigener Thread, einer zur Zeit)
          {"id": 11, "typen": {...}}         (P16-T24: kleine Typpruefung je files-Plan, Modul pruefer_typen.py;
                                             Antwort {"id", "ok": true, "typen": {TypPruefung}}; eigener Thread)
+         {"id": 12, "pflege": {"jvm_leerlauf_s": 600, "gocache_leerlauf_s": 900, "gocache_max_mb": 256}}
+                                           (P16-T26: Einstellwerte der API uebernehmen; Antwort {"pflege": {einstellungen,
+                                            speicher (memory.current/peak/max + memory.stat), prozesse (/proc), gocache, jvm,
+                                            aufgeraeumt}}. Die API schickt sie nach dem Start und in ihrem Takt.)
   raus:  {"id": 7, "ok": true, "meldungen": [{"zeile": 3, "spalte": 5, "code": null, "meldung": "..."}], "ms": 31.2}
          Eine Meldung kann "weich": true tragen (Hinweis, sperrt nie).
          {"id": 7, "ok": false, "fehler": "..."}
@@ -39,6 +43,7 @@ GRUNDSAETZE
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -96,6 +101,8 @@ def speicher():
             continue
         if wert.isdigit():
             aus[schluessel] = round(int(wert) / 1048576, 1)
+        elif name == 'memory.max' and wert == 'max':
+            aus['limit'] = 'unbegrenzt'  # P16-T26: Container ohne Speichergrenze (Standard)
     return aus
 
 
@@ -106,6 +113,117 @@ def _mit_speicher(ergebnis):
         if s:
             ergebnis['speicher'] = s
     return ergebnis
+
+
+# ─── P16-T26 Pflege: Einstellwerte der API, Leerlauf-Ende, Messwerte (User-Freigabe 08.11.2026, Punkte B-D) ─────────
+# pruefserver.py ist das "kleine Script, das mit der API spricht": kein Netz (NetworkMode none), kein zusaetzlicher
+# Prozess. Die API (pruef-container.ts pflegen) schickt die Einstellwerte und holt die Messwerte ueber stdin/stdout.
+# memory.stat schluesselt memory.current auf: anon = Prozess-RAM, file = Seitencache (vom Kernel freigebbar),
+# shmem = tmpfs (/tmp inkl. GOCACHE) - Live-Befund Koordinator 08.11.: 335 MB current im Leerlauf bei nur pruefserver.py.
+_STAT_FELDER = ('anon', 'file', 'shmem', 'kernel', 'slab', 'sock', 'file_mapped', 'file_dirty', 'active_file', 'inactive_file')
+try:
+    _TICKS = os.sysconf('SC_CLK_TCK')
+except (ValueError, OSError, AttributeError):
+    _TICKS = 100
+
+
+def speicher_aufgeschluesselt():
+    """P16-T26 D: speicher() + memory.stat in MB (stat_mb) + pids.current + belegtes /tmp. Wirft nie."""
+    aus = speicher()
+    try:
+        with open(os.path.join(_CGROUP, 'memory.stat'), encoding='ascii') as f:
+            stat = dict(z.split(None, 1) for z in f.read().splitlines() if ' ' in z)
+        aus['stat_mb'] = {k: round(int(stat[k].strip()) / 1048576, 1) for k in _STAT_FELDER if stat.get(k, '').strip().isdigit()}
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(os.path.join(_CGROUP, 'pids.current'), encoding='ascii') as f:
+            aus['pids'] = int(f.read().strip())
+    except (OSError, ValueError):
+        pass
+    try:
+        aus['tmp_belegt_mb'] = round(shutil.disk_usage(pruefer_tsbuild.TMP).used / 1048576, 1)
+    except OSError:
+        pass
+    return aus
+
+
+def prozesse(max_anzahl=40):
+    """P16-T26 D: Prozesse im Container aus /proc: pid, ppid, name, zustand (R/S/Z ...), rss_mb, alter_s, cmd (gekuerzt)."""
+    try:
+        with open('/proc/uptime', encoding='ascii') as f:
+            uptime = float(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        uptime = None
+    aus = []
+    try:
+        namen = os.listdir('/proc')
+    except OSError:
+        return aus
+    for name in namen:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f'/proc/{name}/stat', encoding='utf-8', errors='replace') as f:
+                roh = f.read()
+            comm = roh[roh.index('(') + 1:roh.rindex(')')]
+            felder = roh[roh.rindex(')') + 2:].split()
+            rss_kb = None
+            with open(f'/proc/{name}/status', encoding='utf-8', errors='replace') as f:
+                for zeile in f:
+                    if zeile.startswith('VmRSS:'):
+                        rss_kb = int(zeile.split()[1])
+                        break
+            with open(f'/proc/{name}/cmdline', 'rb') as f:
+                cmd = f.read(400).replace(b'\0', b' ').decode('utf-8', 'replace').strip()
+            start_s = int(felder[19]) / _TICKS  # Feld 22 starttime (Ticks seit Boot)
+        except (OSError, ValueError, IndexError):
+            continue
+        aus.append({'pid': int(name), 'ppid': int(felder[1]), 'name': comm, 'zustand': felder[0],
+                    'rss_mb': round(rss_kb / 1024, 1) if rss_kb is not None else None,
+                    'alter_s': round(uptime - start_s) if uptime is not None else None, 'cmd': cmd[:120]})
+    aus.sort(key=lambda p: -(p['rss_mb'] or 0))
+    return aus[:max_anzahl]
+
+
+def leerlauf_einstellungen():
+    """P16-T26 C: wirksame Leerlaufwerte im Container."""
+    return {'jvm_leerlauf_s': pruefer_jvm.JVM_IDLE_S, 'gocache_leerlauf_s': pruefer_projekt.GOCACHE_IDLE_S,
+            'gocache_max_mb': pruefer_projekt.GOCACHE_MAX_MB}
+
+
+def _wert(werte, name, hoechstens):
+    v = werte.get(name) if isinstance(werte, dict) else None
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return max(0.0, min(float(v), hoechstens))
+
+
+def pflege(werte):
+    """P16-T26 C/D: Einstellwerte uebernehmen (nur genannte, gueltige) und Messwerte liefern. Wirft nie."""
+    geaendert = {}
+    jvm = _wert(werte, 'jvm_leerlauf_s', 86400)
+    if jvm is not None and jvm != pruefer_jvm.JVM_IDLE_S:
+        geaendert['jvm_leerlauf_s'] = pruefer_jvm.setze_leerlauf(jvm)
+    go_s = _wert(werte, 'gocache_leerlauf_s', 86400)
+    go_mb = _wert(werte, 'gocache_max_mb', 65536)
+    if go_s is not None or go_mb is not None:
+        geaendert.update(pruefer_projekt.setze_gocache(max_mb=go_mb, leerlauf_s=go_s))
+    if geaendert:
+        sys.stderr.write(f'[pruefserver] Pflege: Einstellwerte uebernommen {json.dumps(geaendert)}\n')
+    return {'einstellungen': leerlauf_einstellungen(), 'geaendert': geaendert, 'speicher': speicher_aufgeschluesselt(),
+            'prozesse': prozesse(), 'gocache': pruefer_projekt.gocache_zustand(), 'jvm': pruefer_jvm.zustand(),
+            'aufgeraeumt': dict(pruefer_tsbuild.AUFGERAEUMT)}
+
+
+def _pflege_takt():
+    """P16-T26 B: Leerlauf-Ende des geteilten GOCACHE, alle 30 s geprueft (die JVM hat ihren eigenen Waechter)."""
+    while True:
+        time.sleep(30)
+        try:
+            pruefer_projekt.gocache_leerlauf_pruefen()
+        except Exception as e:  # noqa: BLE001
+            sys.stderr.write(f'[pruefserver] GOCACHE-Pflege: {e}\n')
 
 
 def lauf(cmd, eingabe: bytes, env_extra=None):
@@ -125,6 +243,7 @@ def lauf(cmd, eingabe: bytes, env_extra=None):
             pass
         p.communicate()
         raise TimeoutError(f'{cmd[0]} nach {TIMEOUT_S:g} s abgebrochen')
+    pruefer_tsbuild.gruppe_beenden(p.pid)  # P16-T26 A: abgespaltene Reste der Gruppe
     return p.returncode, out, err
 
 
@@ -477,7 +596,10 @@ def info():
     return {'werkzeuge': {name: v() for name, (_f, v) in PRUEFER.items()},
             'parallel': PARALLEL, 'timeout_s': TIMEOUT_S, 'rust_edition': RUST_EDITION,
             'python2_rueckfall': bool(_py2_driver()), 'jvm': pruefer_jvm.zustand(),
-            'treesitter': pruefer_treesitter.info(), 'tsbuild': pruefer_tsbuild.version(), 'speicher': speicher(),
+            'treesitter': pruefer_treesitter.info(), 'tsbuild': pruefer_tsbuild.version(),
+            # P16-T26 D: Speicher aufgeschluesselt, Prozessliste, wirksame Leerlaufwerte, Aufraeum-Zaehler.
+            'speicher': speicher_aufgeschluesselt(), 'prozesse': prozesse(), 'leerlauf': leerlauf_einstellungen(),
+            'aufgeraeumt': dict(pruefer_tsbuild.AUFGERAEUMT),
             'projektpruefung': {'rust': pruefer_rustprojekt.info(), **pruefer_projekt.info(), 'c_cpp': pruefer_cprojekt.info(), 'dart_csharp': pruefer_dart_csharp.info(), 'jvm': pruefer_jvmprojekt.info()},
             'typen': pruefer_typen.info()}
 
@@ -487,6 +609,10 @@ def bearbeite(auftrag):
     try:
         if auftrag.get('info'):
             schreibe({'id': aid, 'ok': True, 'info': info()})
+            return
+        # --- P16-T26 Pflege (Einstellwerte + Messwerte), schnell, laeuft im Syntax-Pool ---
+        if auftrag.get('pflege') is not None:
+            schreibe({'id': aid, 'ok': True, 'pflege': pflege(auftrag.get('pflege'))})
             return
         if auftrag.get('build') is not None:
             schreibe({'id': aid, 'ok': True, 'build': _mit_speicher(pruefer_tsbuild.pruefe(auftrag.get('build') or {}))})
@@ -538,6 +664,7 @@ def bearbeite(auftrag):
 
 def main():
     schreibe({'bereit': True, 'info': info()})
+    threading.Thread(target=_pflege_takt, daemon=True).start()  # P16-T26 B
     pool = ThreadPoolExecutor(max_workers=PARALLEL)
     for zeile in sys.stdin.buffer:
         zeile = zeile.strip()

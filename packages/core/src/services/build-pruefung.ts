@@ -65,6 +65,10 @@
  * BUDGET (User 444127bc 2b): Speicher und tmpfs des Pruefcontainers, Heap von tsc und Zeitlimit per
  *        code_check(build_einstellungen) einstellbar (Tabelle build_pruefung_einstellungen), im Tool abrufbar.
  *        Aenderung von Speicher/tmpfs startet den Container neu (vor dem naechsten Auftrag abgeglichen).
+ *        P16-T26 (User 08.11.2026): Speicher 0 = KEINE Grenze (Standard), Einstellwert nur noch optionale Obergrenze;
+ *        heap_mb gilt auch fuer die Plan-Typpruefung, Standard BUILD_HEAP_STANDARD_MB bei unbegrenztem Speicher.
+ *        P16-T26 C: Leerlauf-Ende im Container als Einstellwerte (jvm_leerlauf_s, gocache_leerlauf_s, gocache_max_mb,
+ *        PRUEF_LEERLAUF_STANDARD); die API schickt sie per Pflege-Nachricht, ohne Container-Neustart.
  */
 
 import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
@@ -162,8 +166,10 @@ export interface BuildPrueferAnbindung {
   pruefe(auftrag: BuildAuftrag): Promise<BuildLaufErgebnis>;
   /** Speicher/tmpfs des Pruefcontainers setzen; ein laufender Container wird neu gestartet. */
   setzeBudget(b: { speicher_mb?: number; tmpfs_mb?: number }): Promise<unknown> | unknown;
-  /** Aktuell wirksame Container-Grenzen. */
+  /** Aktuell wirksame Container-Grenzen (P16-T26: speicher_mb 0 = unbegrenzt). */
   budget(): { speicher_mb: number; tmpfs_mb: number };
+  /** P16-T26 C: Leerlaufwerte sofort an den Container schicken (sonst im naechsten Takt). */
+  pflegen?(): Promise<unknown>;
 }
 
 /** Stand der Build-Stufe an einem Plan (PlanPruefung.build, plan/plan_status/commit). */
@@ -281,6 +287,10 @@ interface Werte {
   tmpfs_mb?: number;
   heap_mb?: number;
   zeitlimit_s?: number;
+  /** P16-T26 C: Leerlauf-Ende im Pruefcontainer (nur bereich 'pruefcontainer'). */
+  jvm_leerlauf_s?: number;
+  gocache_leerlauf_s?: number;
+  gocache_max_mb?: number;
   /** E2: Sprachen neben TypeScript (go, python); [] = nur TypeScript. */
   sprachen?: string[];
   /** P16-T23: Nachlauf statt Warteschlange (Projekt/global; Standard AUS). */
@@ -371,24 +381,73 @@ export async function buildNachlaufAktiv(project?: string | null): Promise<Build
   return basis;
 }
 
+/**
+ * P16-T26: Standard-Heap (MB) fuer tsc und die Plan-Typpruefung, wenn der Pruefcontainer keine Speichergrenze hat
+ * (Standard seit User-Entscheidung 08.11.2026). Gemessen 08.11.2026 (tsc --extendedDiagnostics, ein Programm):
+ * packages/core 902 MB, rest-api 403 MB, web-ui 413 MB; Plan-Typpruefung core im Pruefcontainer-Weg 722 MB RSS.
+ * 2048 statt 4096 (Koordinator 08.11.2026: Unraid hat nur ~5,7 GB frei). Mit Obergrenze bleibt die alte Kopplung
+ * Speicher - 192 MB. Einstellbar: code_check build_einstellungen heap_mb.
+ */
+export const BUILD_HEAP_STANDARD_MB = 2048;
+
+/** P16-T26 C: Standard des Leerlauf-Endes im Pruefcontainer (s bzw. MB; 0 = nie bzw. kein geteilter GOCACHE). */
+export const PRUEF_LEERLAUF_STANDARD = { jvm_leerlauf_s: 600, gocache_leerlauf_s: 900, gocache_max_mb: 256 } as const;
+
 export interface BuildBudget {
+  /** P16-T26: Speicher-Obergrenze des Pruefcontainers in MB; 0 = unbegrenzt (Standard). */
   speicher_mb: number;
   tmpfs_mb: number;
   heap_mb: number;
   zeitlimit_s: number;
   max_mb: number;
+  /** P16-T26 Debug: 'unbegrenzt' oder '<n> MB'. */
+  speicher_grenze: string;
+  /** P16-T26 Debug: Herkunft von heap_mb. */
+  heap_quelle: 'einstellung' | 'env' | 'speicher_minus_192' | 'standard';
+  /** P16-T26 C: JVM im Container nach so vielen s ohne Anfrage beenden (0 = nie). */
+  jvm_leerlauf_s: number;
+  /** P16-T26 B/C: geteilten GOCACHE (tmpfs = RAM) nach so vielen s ohne Go-Auftrag leeren (0 = nie). */
+  gocache_leerlauf_s: number;
+  /** P16-T26 C: Obergrenze des geteilten GOCACHE in MB (0 = kein geteilter Cache). */
+  gocache_max_mb: number;
+  /** P16-T26 Debug: Herkunft je Leerlaufwert. */
+  leerlauf_quelle: Record<'jvm_leerlauf_s' | 'gocache_leerlauf_s' | 'gocache_max_mb', 'einstellung' | 'env' | 'standard'>;
 }
 
-/** Wirksames Budget: Tabelle (bereich 'pruefcontainer') vor Env. heap_mb ohne Angabe = Speicher - 192 MB (mind. 128). */
+/**
+ * Wirksames Budget: Tabelle (bereich 'pruefcontainer') vor Env. P16-T26: Speicher 0 = unbegrenzt (Standard, Env
+ * PRUEFCONTAINER_MEM_MB > 0 = Obergrenze). heap_mb ohne Angabe: bei Obergrenze Speicher - 192 MB (mind. 128), bei
+ * unbegrenztem Speicher BUILD_HEAP_STANDARD_MB.
+ */
 export async function wirksamesBuildBudget(): Promise<BuildBudget> {
   const w = (await ladeEinstellungen()).get('pruefcontainer')?.werte ?? {};
-  const speicher = w.speicher_mb ?? Math.max(128, envZahl('PRUEFCONTAINER_MEM_MB', 384));
+  const speicherEnv = envZahl('PRUEFCONTAINER_MEM_MB', 0);
+  const speicher = typeof w.speicher_mb === 'number' ? Math.max(0, w.speicher_mb) : speicherEnv > 0 ? Math.max(128, speicherEnv) : 0;
   const tmpfs = w.tmpfs_mb ?? Math.max(8, envZahl('PRUEFCONTAINER_TMPFS_MB', 64));
   const heapEnv = envZahl('BUILD_PRUEFUNG_HEAP_MB', 0);
+  const [heap, heapQuelle]: [number, BuildBudget['heap_quelle']] = typeof w.heap_mb === 'number' ? [w.heap_mb, 'einstellung']
+    : heapEnv > 0 ? [heapEnv, 'env']
+      : speicher > 0 ? [Math.max(128, speicher - 192), 'speicher_minus_192'] : [BUILD_HEAP_STANDARD_MB, 'standard'];
+  // P16-T26 C: Leerlauf-Ende im Container (Einstellung > Env > Standard); geht per Pflege-Nachricht an den Container.
+  const leerlauf = (name: keyof typeof PRUEF_LEERLAUF_STANDARD, env: string): [number, 'einstellung' | 'env' | 'standard'] => {
+    const v = w[name];
+    if (typeof v === 'number') return [v, 'einstellung'];
+    const e = envZahl(env, -1);
+    return e >= 0 ? [e, 'env'] : [PRUEF_LEERLAUF_STANDARD[name], 'standard'];
+  };
+  const [jvmS, jvmQ] = leerlauf('jvm_leerlauf_s', 'PRUEFCONTAINER_JVM_IDLE_S');
+  const [goS, goSQ] = leerlauf('gocache_leerlauf_s', 'PRUEFCONTAINER_GOCACHE_IDLE_S');
+  const [goMb, goMbQ] = leerlauf('gocache_max_mb', 'PRUEFCONTAINER_GOCACHE_MAX_MB');
   return {
     speicher_mb: speicher,
     tmpfs_mb: tmpfs,
-    heap_mb: w.heap_mb ?? (heapEnv > 0 ? heapEnv : Math.max(128, speicher - 192)),
+    heap_mb: heap,
+    speicher_grenze: speicher > 0 ? `${speicher} MB` : 'unbegrenzt',
+    heap_quelle: heapQuelle,
+    jvm_leerlauf_s: jvmS,
+    gocache_leerlauf_s: goS,
+    gocache_max_mb: goMb,
+    leerlauf_quelle: { jvm_leerlauf_s: jvmQ, gocache_leerlauf_s: goSQ, gocache_max_mb: goMbQ },
     zeitlimit_s: w.zeitlimit_s ?? (envZahl('BUILD_PRUEFUNG_ZEITLIMIT_S', 300) || 300),
     // Schnappschuss darf das tmpfs nicht fuellen (Dateien + tsc-Arbeitsplatz).
     max_mb: Math.max(1, Math.min(envZahl('BUILD_PRUEFUNG_MAX_MB', 48) || 48, Math.floor(tmpfs * 0.8))),
@@ -1892,9 +1951,12 @@ export const BUILD_PARAMETER: Record<string, Record<string, unknown>> = {
   warten_sekunden: { type: 'number', description: 'build_status mit pruefen: hoechstens so lange auf das Ergebnis warten (0..50, Standard 0)' },
   modus: { type: 'string', enum: ['status', 'setzen'], description: 'build_einstellungen: status (Standard) | setzen (nur Koordinator/User)' },
   aktiv: { type: 'boolean', description: 'build_einstellungen setzen: Build-Tor an/aus - mit project fuer dieses Projekt, ohne project global' },
-  speicher_mb: { type: 'number', description: 'build_einstellungen setzen: Speichergrenze des Pruefcontainers in MB (256..16384); Container startet neu' },
+  speicher_mb: { type: 'number', description: 'build_einstellungen setzen: optionale Speicher-Obergrenze des Pruefcontainers in MB (0 = unbegrenzt, Standard; sonst 256..16384); Container startet neu' },
   tmpfs_mb: { type: 'number', description: 'build_einstellungen setzen: /tmp des Pruefcontainers in MB (16..4096); Container startet neu' },
-  heap_mb: { type: 'number', description: 'build_einstellungen setzen: Heap von tsc in MB (128..16384; Standard Speicher - 192)' },
+  heap_mb: { type: 'number', description: 'build_einstellungen setzen: Node-Heap von tsc und Plan-Typpruefung in MB (128..16384; Standard 2048 bei unbegrenztem Speicher, mit Obergrenze Speicher - 192)' },
+  jvm_leerlauf_s: { type: 'number', description: 'build_einstellungen setzen (P16-T26): JVM im Pruefcontainer nach so vielen s ohne Kotlin/Java/Scala/Groovy-Anfrage beenden (0..86400, 0 = nie, Standard 600); wirkt ohne Neustart' },
+  gocache_leerlauf_s: { type: 'number', description: 'build_einstellungen setzen (P16-T26): geteilten Go-Build-Cache im tmpfs (zaehlt als RAM) nach so vielen s ohne Go-Pruefung leeren (0..86400, 0 = nie, Standard 900); wirkt ohne Neustart' },
+  gocache_max_mb: { type: 'number', description: 'build_einstellungen setzen (P16-T26): Obergrenze des geteilten Go-Build-Caches in MB (0..4096, 0 = kein geteilter Cache, Standard 256); wirkt ohne Neustart' },
   zeitlimit_s: { type: 'number', description: 'build_einstellungen setzen: Zeitlimit je Build-Lauf in s (10..3600); danach teilweise (sperrt nicht)' },
   sprachen: { type: 'array', items: { type: 'string', enum: ['kotlin', 'java', 'rust', 'go', 'python', 'c', 'cpp', 'dart', 'csharp', 'keine'] }, description: 'build_einstellungen setzen: Sprachen der projektweiten Pruefung neben TypeScript (kotlin, java, rust, go, python, c, cpp, dart, csharp; keine = nur TypeScript) - mit project fuer dieses Projekt, ohne global. Standard go+python (Env BUILD_PRUEFUNG_SPRACHEN). Dart/C# offline, fehlender SDK-/Paketkontext teilweise; F# nicht unterstützt.' },
   plan_id: { type: 'string', description: 'build_pruefen (P16-T23): geschriebener Plan, dessen Stand projektweit im Hintergrund geprueft wird (Aufruf steht fertig in der commit-Antwort); offener Plan -> erst committen' },
@@ -2000,14 +2062,22 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
       const fehler: string[] = [];
       const grund = text(args.grund);
       const budget: Werte = {};
-      const speicher = zahl(args.speicher_mb, 'speicher_mb', 256, 16384, fehler);
+      // P16-T26: 0 = unbegrenzt (Standard), sonst Obergrenze 256..16384.
+      const speicher = args.speicher_mb === 0 || args.speicher_mb === '0' ? 0 : zahl(args.speicher_mb, 'speicher_mb (0 = unbegrenzt)', 256, 16384, fehler);
       const tmpfs = zahl(args.tmpfs_mb, 'tmpfs_mb', 16, 4096, fehler);
       const heap = zahl(args.heap_mb, 'heap_mb', 128, 16384, fehler);
       const zeit = zahl(args.zeitlimit_s, 'zeitlimit_s', 10, 3600, fehler);
+      // P16-T26 C: Leerlauf-Ende im Container (wirkt per Pflege-Nachricht, ohne Neustart).
+      const jvmLeerlauf = zahl(args.jvm_leerlauf_s, 'jvm_leerlauf_s', 0, 86400, fehler);
+      const goLeerlauf = zahl(args.gocache_leerlauf_s, 'gocache_leerlauf_s', 0, 86400, fehler);
+      const goMax = zahl(args.gocache_max_mb, 'gocache_max_mb', 0, 4096, fehler);
       if (speicher !== undefined) budget.speicher_mb = speicher;
       if (tmpfs !== undefined) budget.tmpfs_mb = tmpfs;
       if (heap !== undefined) budget.heap_mb = heap;
       if (zeit !== undefined) budget.zeitlimit_s = zeit;
+      if (jvmLeerlauf !== undefined) budget.jvm_leerlauf_s = jvmLeerlauf;
+      if (goLeerlauf !== undefined) budget.gocache_leerlauf_s = goLeerlauf;
+      if (goMax !== undefined) budget.gocache_max_mb = goMax;
       const aktiv = args.aktiv === true || args.aktiv === 'true' ? true : args.aktiv === false || args.aktiv === 'false' ? false : undefined;
       // P16-T23: Nachlauf-Schalter (Projekt/global) und Sammelzeit (global).
       const nachlauf = args.nachlauf === true || args.nachlauf === 'true' ? true : args.nachlauf === false || args.nachlauf === 'false' ? false : undefined;
@@ -2037,7 +2107,7 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
       const zurueck = text(args.zuruecksetzen);
       if (zurueck && !['projekt', 'global', 'budget', 'plan_pruefung'].includes(zurueck)) fehler.push('zuruecksetzen nur projekt | global | budget | plan_pruefung');
       if (zurueck === 'projekt' && !project) fehler.push('zuruecksetzen projekt braucht project');
-      if (Object.keys(planWerte).length === 0 && aktiv === undefined && sprachen === undefined && nachlauf === undefined && buendelS === undefined && Object.keys(budget).length === 0 && !zurueck) fehler.push('nichts zu setzen (aktiv, sprachen, nachlauf, nachlauf_buendel_s, speicher_mb, tmpfs_mb, heap_mb, zeitlimit_s oder zuruecksetzen)');
+      if (Object.keys(planWerte).length === 0 && aktiv === undefined && sprachen === undefined && nachlauf === undefined && buendelS === undefined && Object.keys(budget).length === 0 && !zurueck) fehler.push('nichts zu setzen (aktiv, sprachen, nachlauf, nachlauf_buendel_s, speicher_mb, tmpfs_mb, heap_mb, zeitlimit_s, jvm_leerlauf_s, gocache_leerlauf_s, gocache_max_mb oder zuruecksetzen)');
       if (fehler.length > 0) return { success: false, error: 'ungueltig', message: fehler.join('; '), fehler };
       const geaendert: string[] = [];
       if (zurueck) {
@@ -2077,8 +2147,12 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
       einstellungsCache = null;
       leerePlanPruefCache();
       const neustart = await synchronisiereBuildBudget(true);
+      // P16-T26 C: Leerlaufwerte (bzw. zuruecksetzen budget) sofort an den laufenden Container, sonst im naechsten Takt.
+      const leerlaufNeu = jvmLeerlauf !== undefined || goLeerlauf !== undefined || goMax !== undefined || zurueck === 'budget';
+      const gepflegt = leerlaufNeu && anbindung?.pflegen ? await anbindung.pflegen().then((s) => !!s, () => false) : false;
       return {
         success: true, modus, geaendert,
+        ...(leerlaufNeu ? { pflege: gepflegt ? 'an den Pruefcontainer geschickt' : 'wirkt im naechsten Takt der API (Container nicht bereit oder anderer Prozess)' } : {}),
         ...(neustart ? { neustart: 'Pruefcontainer mit neuem Speicherbudget: wird beim naechsten Auftrag neu gestartet (laufende Auftraege abgebrochen).' } : {}),
         ...(anbindung ? {} : { hinweis: 'Gespeichert. Dieser Prozess hat keinen Pruefcontainer; die API uebernimmt das Budget vor ihrem naechsten Auftrag.' }),
         ...(await einstellungenAnzeige(project)),

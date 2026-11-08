@@ -233,7 +233,8 @@ test('T13-9 RAM unter Last: alle JVM-Sprachen + naga + perl/ada parallel im Limi
   const peak = Number(execFileSync('docker', ['exec', NAME, 'cat', '/sys/fs/cgroup/memory.peak']).toString().trim()) / 1048576;
   const limit = pruefContainerConfigAusEnv().memMb;
   console.log(`  memory.peak alle JVM-Sprachen + naga + perl/ada: ${peak.toFixed(0)} MB (Limit ${limit} MB)`);
-  assert.ok(peak < limit * 0.9, `memory.peak ${peak} MB zu nah am Limit ${limit}`);
+  // P16-T26: Standard ohne Speichergrenze (limit 0) - dann nur messen.
+  if (limit > 0) assert.ok(peak < limit * 0.9, `memory.peak ${peak} MB zu nah am Limit ${limit}`);
 });
 
 test.after(async () => {

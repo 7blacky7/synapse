@@ -76,6 +76,25 @@ def warte_mit_rss(p):
     return True, round(ru.ru_maxrss / 1024, 1)  # Linux: ru_maxrss in KiB
 
 
+# P16-T26 A (User-Freigabe 08.11.2026): nach JEDEM Werkzeuglauf die Prozessgruppe beenden. Werkzeuge laufen mit
+# start_new_session=True; was sie abspalten (Enkel, Hintergrunddienste), bliebe sonst nach normalem Ende stehen - bei PID 1
+# ohne Init als Zombie gegen PidsLimit. Zaehler fuer die Diagnose (pruefserver pflege/info -> aufgeraeumt).
+# PID-Wiederverwendung: Linux vergibt PIDs fortlaufend; ein gerade frei gewordener Gruppenname wird praktisch nie sofort
+# neu vergeben, das Restrisiko (fremde neue Gruppe gleicher Nummer) ist bewusst in Kauf genommen.
+AUFGERAEUMT = {'laeufe': 0, 'mit_resten': 0}
+
+
+def gruppe_beenden(pid):
+    """Beendet die Prozessgruppe pid (SIGKILL). True = es lebten noch Prozesse der Gruppe. Wirft nie."""
+    AUFGERAEUMT['laeufe'] += 1
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    AUFGERAEUMT['mit_resten'] += 1
+    return True
+
+
 def _env(heap_mb):
     return {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': LEERES_VERZEICHNIS, 'LANG': 'C.UTF-8',
             'NODE_OPTIONS': f'--max-old-space-size={int(heap_mb)}'}
@@ -175,6 +194,7 @@ def _lauf(wurzel, projekt, rest_s, heap_mb):
                 return {'projekt': projekt, 'status': 'zeitlimit', 'ms': round((time.monotonic() - t0) * 1000), 'rc': None,
                         'hinweis': f'nach {rest_s:.0f} s abgebrochen'}, []
             time.sleep(0.05)
+        gruppe_beenden(p.pid)  # P16-T26 A
         fo.seek(0)
         fe.seek(0)
         out, err = fo.read(), fe.read()

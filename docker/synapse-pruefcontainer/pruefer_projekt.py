@@ -31,6 +31,10 @@ NUR PRUEFEN: Go ausschliesslich das Image-Go mit 'build -o /dev/null' und 'vet' 
 GOCACHE: geteilt unter /tmp/pruef-gocache (inhaltsadressiert, nur Compilerergebnisse, nichts davon wird gestartet),
   damit nicht jeder Lauf die Standardbibliothek neu uebersetzt. Ueber PRUEF_GO_CACHE_MAX_MB oder bei knappem tmpfs
   wird er vor dem Lauf geleert.
+  P16-T26 B/C (User-Freigabe 08.11.2026): das tmpfs zaehlt als RAM des Containers. Ohne Go-Auftrag seit
+  PRUEF_GO_CACHE_IDLE_S (Standard 900, 0 = nie) leert ihn der Pflege-Takt von pruefserver.py (gocache_leerlauf_pruefen,
+  nur wenn kein Projektpruefer laeuft). Grenze und Leerlauf setzt die API zur Laufzeit (Nachricht pflege, Einstellwerte
+  gocache_max_mb / gocache_leerlauf_s aus code_check build_einstellungen); gocache_max_mb 0 = kein geteilter Cache.
 GOMODCACHE (P16-T22): je Lauf leer im Auftragsverzeichnis (tmpfs, -modcacherw). Das alte Image-Verzeichnis
   /opt/pruef/gomodcache ist zur Laufzeit read-only; Go legt darin cache/download an und meldete live je Import
   'mkdir ...: read-only file system' als Scheinfehler. Solche Umgebungsfehler sind jetzt Schrittstatus 'werkzeug'
@@ -56,6 +60,9 @@ PYTHON_ISOLIERT = os.environ.get('PRUEF_PYTHON_ISOLIERT', '/opt/pruef/bin/python
 GOMODCACHE = os.environ.get('PRUEF_GO_MODCACHE') or None
 GOCACHE_GETEILT = os.environ.get('PRUEF_GO_CACHE', os.path.join(ts.TMP, 'pruef-gocache'))
 GOCACHE_MAX_MB = int(os.environ.get('PRUEF_GO_CACHE_MAX_MB', '256'))
+# P16-T26 B: Leerlauf-Ende des geteilten GOCACHE (s, 0 = nie); Zeitpunkt der letzten Go-Nutzung und Zaehler.
+GOCACHE_IDLE_S = float(os.environ.get('PRUEF_GO_CACHE_IDLE_S', '900'))
+_go = {'zuletzt': None, 'leerlauf_geleert': 0, 'groesse_geleert': 0}
 MAX_DATEIEN = int(os.environ.get('PRUEF_PROJEKT_MAX_DATEIEN', '20000'))
 MAX_BYTES = int(os.environ.get('PRUEF_PROJEKT_MAX_BYTES', str(64 * 1024 * 1024)))
 MAX_OUTPUT = int(os.environ.get('PRUEF_PROJEKT_MAX_OUTPUT', str(8 * 1024 * 1024)))
@@ -150,23 +157,78 @@ def _go_pfade(root, projekt):
                 raise ValueError('Go replace verlaesst den Schnappschuss')
 
 
+def _verzeichnis_bytes(pfad):
+    groesse = 0
+    for wurzel, _dirs, dateien in os.walk(pfad):
+        for name in dateien:
+            try:
+                groesse += os.lstat(os.path.join(wurzel, name)).st_size
+            except OSError:
+                pass
+    return groesse
+
+
 def _gocache(cache):
-    """Geteilter GOCACHE (siehe Modulkopf); bei Problemen ein privater im Auftragsverzeichnis."""
+    """Geteilter GOCACHE (siehe Modulkopf); bei Problemen oder gocache_max_mb 0 ein privater im Auftragsverzeichnis."""
+    _go['zuletzt'] = time.monotonic()  # P16-T26 B: Leerlauf zaehlt ab der letzten Go-Nutzung
+    if GOCACHE_MAX_MB <= 0:
+        return os.path.join(cache, 'gocache')
     try:
         if os.path.isdir(GOCACHE_GETEILT):
-            groesse = 0
-            for wurzel, _dirs, dateien in os.walk(GOCACHE_GETEILT):
-                for name in dateien:
-                    try:
-                        groesse += os.lstat(os.path.join(wurzel, name)).st_size
-                    except OSError:
-                        pass
-            if groesse > GOCACHE_MAX_MB * 1024 * 1024 or shutil.disk_usage(ts.TMP).free < 64 * 1024 * 1024:
+            if _verzeichnis_bytes(GOCACHE_GETEILT) > GOCACHE_MAX_MB * 1024 * 1024 or shutil.disk_usage(ts.TMP).free < 64 * 1024 * 1024:
                 shutil.rmtree(GOCACHE_GETEILT, ignore_errors=True)
+                _go['groesse_geleert'] += 1
         os.makedirs(GOCACHE_GETEILT, mode=0o700, exist_ok=True)
         return GOCACHE_GETEILT
     except OSError:
         return os.path.join(cache, 'gocache')
+
+
+def setze_gocache(max_mb=None, leerlauf_s=None):
+    """P16-T26 C: Grenze/Leerlauf zur Laufzeit (Einstellwerte der API). Rueckgabe: nur die geaenderten Werte."""
+    global GOCACHE_MAX_MB, GOCACHE_IDLE_S
+    geaendert = {}
+    if max_mb is not None and int(max_mb) != GOCACHE_MAX_MB:
+        GOCACHE_MAX_MB = max(0, int(max_mb))
+        geaendert['gocache_max_mb'] = GOCACHE_MAX_MB
+    if leerlauf_s is not None and float(leerlauf_s) != GOCACHE_IDLE_S:
+        GOCACHE_IDLE_S = max(0.0, float(leerlauf_s))
+        geaendert['gocache_leerlauf_s'] = GOCACHE_IDLE_S
+    return geaendert
+
+
+def gocache_leerlauf_pruefen(jetzt=None):
+    """P16-T26 B: geteilten GOCACHE nach GOCACHE_IDLE_S ohne Go-Auftrag leeren. Nie waehrend ein Projektpruefer laeuft
+    (dieselbe Semaphore). True = geleert. Wirft nie."""
+    jetzt = time.monotonic() if jetzt is None else jetzt
+    if not os.path.isdir(GOCACHE_GETEILT):
+        return False
+    # Pruefer-Fix P16-T26: gocache_max_mb 0 = kein geteilter Cache; ein schon vorhandener wird sofort geleert (sonst bliebe
+    # er bei gocache_leerlauf_s 0 fuer immer im tmpfs = RAM). Sonst gilt das Leerlauf-Ende.
+    abgeschaltet = GOCACHE_MAX_MB <= 0
+    zuletzt = _go['zuletzt']
+    if not abgeschaltet and (GOCACHE_IDLE_S <= 0 or (zuletzt is not None and jetzt - zuletzt < GOCACHE_IDLE_S)):
+        return False
+    if not ts._sperre.acquire(blocking=False):
+        return False
+    try:
+        shutil.rmtree(GOCACHE_GETEILT, ignore_errors=True)
+        _go['leerlauf_geleert'] += 1
+        _go['zuletzt'] = None
+        grund = 'gocache_max_mb 0 (kein geteilter Cache)' if abgeschaltet else f'{GOCACHE_IDLE_S:g} s ohne Go-Auftrag'
+        sys.stderr.write(f'[pruefserver] GOCACHE geleert: {grund} (tmpfs/RAM frei)\n')
+        return True
+    finally:
+        ts._sperre.release()
+
+
+def gocache_zustand():
+    """P16-T26 D: Groesse und Leerlauf des geteilten GOCACHE fuer die Diagnose."""
+    da = os.path.isdir(GOCACHE_GETEILT)
+    return {'pfad': GOCACHE_GETEILT, 'vorhanden': da, 'mb': round(_verzeichnis_bytes(GOCACHE_GETEILT) / 1048576, 1) if da else 0,
+            'max_mb': GOCACHE_MAX_MB, 'leerlauf_s': GOCACHE_IDLE_S,
+            'ohne_go_s': round(time.monotonic() - _go['zuletzt']) if _go['zuletzt'] is not None else None,
+            'leerlauf_geleert': _go['leerlauf_geleert'], 'groesse_geleert': _go['groesse_geleert']}
 
 
 def _env(art, cache, heap):
@@ -222,6 +284,8 @@ def _lauf(cmd, cwd, env, rest, logroot):
                 _kill(p)
                 break
             time.sleep(0.05)
+        if status == 'fertig':
+            ts.gruppe_beenden(p.pid)  # P16-T26 A: Reste der Prozessgruppe (Zeitlimit/Ausgabe beendet _kill schon)
         if status == 'fertig' and os.fstat(out.fileno()).st_size + os.fstat(err.fileno()).st_size > MAX_OUTPUT:
             status = 'ausgabe'
         out.seek(0)
