@@ -11,6 +11,7 @@
  *   SET LOCAL statement_timeout = <code_intel_statement_timeout_ms>  (PG bricht selbst ab, auch ohne Client)
  *   SET LOCAL lock_timeout      = <code_intel_lock_timeout_ms>       (kein langes Warten auf Schema-/Tabellensperren)
  *   SET LOCAL max_parallel_workers_per_gather = 0                     (keine Parallel-Worker, keine DSM-Segmente)
+ *   SET LOCAL jit = off                                               (P22-T316, ausser code_intel_jit = true)
  * und beendet sie per pg_cancel_backend, wenn das Abbruchsignal der Anfrage feuert (HTTP-Client weg, mitAnfrageAbbruch).
  * Eine abgebrochene Verbindung geht nicht zurueck in den Pool (release(true)), damit ein verspaeteter Cancel nie eine
  * fremde Abfrage trifft. connect() und alle anderen Pool-Methoden bleiben unveraendert (eigene Transaktionen der Dienste).
@@ -29,11 +30,13 @@ export interface CodeIntelGrenzen {
   lock_timeout_ms: number;
   /** P22-T314: hoechstens so lange wartet code_intel auf die kleine Typpruefung im Pruef-Container (ms). */
   typen_ms: number;
-  quelle: { statement_timeout_ms: string; lock_timeout_ms: string; typen_ms?: string };
+  /** P22-T316: JIT fuer code_intel-Abfragen zulassen (Standard false = SET LOCAL jit = off). Fehlt das Feld, gilt false. */
+  jit?: boolean;
+  quelle: { statement_timeout_ms: string; lock_timeout_ms: string; typen_ms?: string; jit?: string };
 }
 
 /** Code-Standard (gleich dem Katalog in runtime-ueberwachung.ts; dort Grenzen min/max). */
-export const CODE_INTEL_GRENZEN_STANDARD = { statement_timeout_ms: 25_000, lock_timeout_ms: 2_000, typen_ms: 5_000 } as const;
+export const CODE_INTEL_GRENZEN_STANDARD = { statement_timeout_ms: 25_000, lock_timeout_ms: 2_000, typen_ms: 5_000, jit: false } as const;
 
 const CACHE_MS = 30_000;
 let grenzenCache: { bis: number; wert: CodeIntelGrenzen } | null = null;
@@ -47,7 +50,7 @@ export function leereCodeIntelGrenzenCache(): void {
 export async function leseCodeIntelGrenzen(): Promise<CodeIntelGrenzen> {
   if (grenzenCache && grenzenCache.bis > Date.now()) return grenzenCache.wert;
   let wert: CodeIntelGrenzen = {
-    ...CODE_INTEL_GRENZEN_STANDARD, quelle: { statement_timeout_ms: 'standard', lock_timeout_ms: 'standard', typen_ms: 'standard' },
+    ...CODE_INTEL_GRENZEN_STANDARD, quelle: { statement_timeout_ms: 'standard', lock_timeout_ms: 'standard', typen_ms: 'standard', jit: 'standard' },
   };
   try {
     // Dynamisch: runtime-ueberwachung.ts zieht viele Dienste nach; code_intel soll davon nicht abhaengen.
@@ -60,8 +63,9 @@ export async function leseCodeIntelGrenzen(): Promise<CodeIntelGrenzen> {
       statement_timeout_ms: Number.isFinite(st) && st > 0 ? st : CODE_INTEL_GRENZEN_STANDARD.statement_timeout_ms,
       lock_timeout_ms: Number.isFinite(lt) && lt > 0 ? lt : CODE_INTEL_GRENZEN_STANDARD.lock_timeout_ms,
       typen_ms: Number.isFinite(ty) && ty > 0 ? ty : CODE_INTEL_GRENZEN_STANDARD.typen_ms,
+      jit: e.code_intel_jit?.wert === true,
       quelle: { statement_timeout_ms: e.code_intel_statement_timeout_ms?.quelle ?? 'standard', lock_timeout_ms: e.code_intel_lock_timeout_ms?.quelle ?? 'standard',
-        typen_ms: e.code_intel_typen_ms?.quelle ?? 'standard' },
+        typen_ms: e.code_intel_typen_ms?.quelle ?? 'standard', jit: e.code_intel_jit?.quelle ?? 'standard' },
     };
   } catch { /* Lesefehler -> Code-Standard */ }
   grenzenCache = { bis: Date.now() + CACHE_MS, wert };
@@ -112,7 +116,8 @@ async function begrenzteAbfrage(pool: Pool, g: CodeIntelGrenzen, signal: AbortSi
   };
   try {
     await client.query('BEGIN; SET LOCAL statement_timeout = ' + ganz(g.statement_timeout_ms, 100)
-      + '; SET LOCAL lock_timeout = ' + ganz(g.lock_timeout_ms, 50) + '; SET LOCAL max_parallel_workers_per_gather = 0');
+      + '; SET LOCAL lock_timeout = ' + ganz(g.lock_timeout_ms, 50) + '; SET LOCAL max_parallel_workers_per_gather = 0'
+      + (g.jit === true ? '' : '; SET LOCAL jit = off'));
     signal?.addEventListener('abort', abbrechen, { once: true });
     // Pruefer-Fix: ein Abbruch waehrend connect/BEGIN kaeme beim once-Listener nie an (Signal schon abgebrochen) -> hier pruefen.
     if (signal?.aborted) { abgebrochen = true; throw new CodeIntelAbbruch(); }

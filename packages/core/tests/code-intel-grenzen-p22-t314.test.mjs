@@ -63,6 +63,20 @@ try {
     assert.equal(g.begrenzterPool(bp, grenzen(1, 1)), bp, 'zweites Umhuellen liefert dieselbe Huelle');
   });
 
+  // WARUM (P22-T316): Ghost-Schaetzungen liegen ohne Append-Statistik ueber jit_above_cost; JIT lohnt bei code_intel-Lookups nicht.
+  // Einstellwert code_intel_jit (Standard aus) -> SET LOCAL jit = off; nur mit code_intel_jit = true bleibt der Sitzungswert.
+  await check('P22-T316 code-intel-grenzen.ts begrenzterPool: jit off als Standard, code_intel_jit = true laesst JIT zu (runtime-ueberwachung.ts Katalog)', async () => {
+    const ru = await lade('services/runtime-ueberwachung.js');
+    assert.deepEqual(ru.RUNTIME_UEBERWACHUNG_EINSTELLUNGEN.code_intel_jit, { art: 'bool', standard: false }, 'Katalog: bool, Standard aus');
+    assert.equal(g.CODE_INTEL_GRENZEN_STANDARD.jit, false);
+    g.leereCodeIntelGrenzenCache();
+    assert.equal(typeof (await g.leseCodeIntelGrenzen()).jit, 'boolean', 'leseCodeIntelGrenzen liefert jit');
+    assert.equal((await g.begrenzterPool(pool, grenzen(1500, 300)).query('SHOW jit')).rows[0].jit, 'off', 'ohne Feld: jit off');
+    assert.equal((await g.begrenzterPool(pool, { ...grenzen(1500, 300), jit: false }).query('SHOW jit')).rows[0].jit, 'off');
+    const sitzung = (await pool.query('SHOW jit')).rows[0].jit;
+    assert.equal((await g.begrenzterPool(pool, { ...grenzen(1500, 300), jit: true }).query('SHOW jit')).rows[0].jit, sitzung, 'jit true: Sitzungswert bleibt');
+  });
+
   // WARUM (SOLL 5): die Abfrage muss in PG wirklich enden, nicht nur auf Client-Seite.
   await check('P22-T314 Zeitlimit bricht in PG ab: pg_sleep(5) mit 1000 ms -> 57014, pg_stat_activity leer', async () => {
     const bp = g.begrenzterPool(pool, grenzen(1000, 300));

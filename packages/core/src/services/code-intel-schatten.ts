@@ -172,16 +172,39 @@ async function lade(plan: Plan, nach?: number): Promise<Schatten> {
   return wert;
 }
 
+/**
+ * P22-T316: Spalten der Ghost-Tabellen (Reihenfolge wie r.*), damit die Ghost-CTE ohne die Kennspalte _synapse_g nach aussen geht.
+ * 60 s gepuffert (Migration zur Laufzeit), Lesefehler/unbekannte Tabelle -> null = bisherige CTE-Form.
+ */
+const GHOST_SPALTEN = new Map<string,{ bis: number; spalten: string[] }>();
+async function ghostSpalten(pool: Pool, tabellen: string[]): Promise<Record<string,string[]> | null> {
+  try {
+    const fehlt=tabellen.filter(t=>!((GHOST_SPALTEN.get(t)?.bis ?? 0) > Date.now()));
+    if(fehlt.length) {
+      const r=await pool.query<{ tabelle: string; spalten: string[] }>(
+        'SELECT t.tabelle, array_agg(a.attname::text ORDER BY a.attnum) AS spalten FROM unnest($1::text[]) AS t(tabelle)'
+        +' JOIN pg_attribute a ON a.attrelid=to_regclass(t.tabelle) AND a.attnum>0 AND NOT a.attisdropped GROUP BY t.tabelle',[fehlt]);
+      for(const z of r.rows) GHOST_SPALTEN.set(z.tabelle,{ bis: Date.now()+60_000, spalten: z.spalten });
+    }
+    const out: Record<string,string[]> = {};
+    for(const t of tabellen) { const e=GHOST_SPALTEN.get(t); if(!e?.spalten.length) return null; out[t]=e.spalten; }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
 /** Fixed service SQL only; user values remain bound parameters. */
 function lesePool(pool: Pool, project: string, stand: Schatten): Pool {
   return new Proxy(pool,{
     get(target,key) {
       if(key==='connect') return ()=>{throw new Error('Ghost-Lesekontext erlaubt keine Transaktionen');};
       if(key!=='query') { const wert=Reflect.get(target,key); return typeof wert==='function'?wert.bind(target):wert; }
-      return async (sql: string, werte: unknown[] = []) => {
+      const lauf = async (sql: string, werte: unknown[] = [], nochmal = true): Promise<unknown> => {
         if(typeof sql!=='string' || !/^\s*SELECT\b/i.test(sql)) throw new Error('Ghost-Lesekontext erlaubt nur SELECT');
         const benutzt=Object.keys(stand.tabellen).filter(table=>new RegExp('\\b'+table+'\\b').test(sql));
         if(!benutzt.length) return target.query(sql,werte);
+        const spalten=await ghostSpalten(target,benutzt);
         const params=[...werte,project,stand.dateien.map(f=>f.file_path),JSON.stringify(stand.umleitung)];
         const p=werte.length+1, files=p+1, map=p+2;
         const ctes=[ '_synapse_ghost_context AS (SELECT $'+p+'::text AS project, $'+files+'::text[] AS files, $'+map+'::jsonb AS map)', ...benutzt.map(table=>{
@@ -189,9 +212,13 @@ function lesePool(pool: Pool, project: string, stand: Schatten): Pool {
           const data=params.length;
           const where='r.project=$'+p+' AND NOT (r.file_path=ANY($'+files+'::text[]))';
           let real='SELECT r.* FROM '+table+' r WHERE '+where;
+          // P22-T316: Bestandsfilter am Elternteil, gilt per Kennspalte _synapse_g=false nur fuer Bestandszeilen.
+          let bestandFilter='u.project=$'+p+' AND NOT (u.file_path=ANY($'+files+'::text[]))', umgeleitet='';
           if((table==='code_references' || table==='code_call_edges') && Object.keys(stand.umleitung).length) {
             const col=table==='code_references'?'symbol_id':'target_symbol_id';
             const keys='ARRAY(SELECT jsonb_object_keys($'+map+'::jsonb))';
+            bestandFilter+=' AND (u.'+col+' IS NULL OR NOT (u.'+col+'=ANY('+keys+')))';
+            umgeleitet=" UNION ALL SELECT (jsonb_populate_record(NULL::"+table+",to_jsonb(r)||jsonb_build_object('"+col+"',$"+map+"::jsonb->>r."+col+"))).*, true FROM "+table+" r WHERE "+where+" AND r."+col+"=ANY("+keys+")";
             // Unveraenderte IDs bleiben nackte Spalten: JOINs nutzen ihre vorhandenen Indizes.
             // Nur betroffene Verweise werden umgeleitet, niemals der globale Bestand serialisiert.
             real+=' AND (r.'+col+' IS NULL OR NOT (r.'+col+'=ANY('+keys+')))'
@@ -200,6 +227,15 @@ function lesePool(pool: Pool, project: string, stand: Schatten): Pool {
           const virt=table==='code_files'
             ? "SELECT (jsonb_populate_record(NULL::code_files,j||jsonb_build_object('tsv',to_tsvector('english',j->>'content'),'tsv_zerlegt',to_tsvector('simple',regexp_replace(j->>'content','[^A-Za-z0-9]+',' ','g'))))).* FROM jsonb_array_elements($"+data+"::jsonb) j"
             : "SELECT * FROM jsonb_populate_recordset(NULL::"+table+",$"+data+"::jsonb)";
+          // P22-T316 (Messung bff52856: mit Ghost ~46x teurer, Parallel Hash ueber alle code_references/code_symbols des Projekts):
+          // PG flacht eine UNION ALL nur zur Append-Relation, wenn der Zweig KEIN WHERE hat (is_safe_append_member); nur dann
+          // landen Join-Bedingungen (cr.symbol_id = cs.id, parent.id = cs.parent_symbol) als Index-Scan je Zeile im Bestand.
+          // Darum: Bestand als nackte Tabelle, Filter am Elternteil (Kennspalte -> fuer Ghost-Zeilen konstant wahr, fuer den Bestand
+          // genau der alte Filter), virtueller Zweig als Subquery (OFFSET 0), damit Append parametrisierbar bleibt.
+          const liste=spalten?.[table];
+          if(liste) return '_synapse_ghost_'+table+' AS NOT MATERIALIZED (SELECT '+liste.map(c=>'u."'+c.replace(/"/g,'""')+'"').join(',')
+            +' FROM (SELECT r.*, false AS _synapse_g FROM '+table+' r'+umgeleitet+' UNION ALL SELECT v.*, true FROM ('+virt+' OFFSET 0) v) u'
+            +' WHERE u._synapse_g OR ('+bestandFilter+'))';
           return '_synapse_ghost_'+table+' AS NOT MATERIALIZED ('+real+' UNION ALL '+virt+')';
         })];
         // Nur im Schatten: die Definitionsabfrage darf keinen Import/Re-Export vorziehen.
@@ -210,8 +246,19 @@ function lesePool(pool: Pool, project: string, stand: Schatten): Pool {
         const definitionSort=sql.replace(defOrder,()=>prioritaet+
           "CASE WHEN symbol_type IN ('import','export') THEN 2 WHEN symbol_type = 'string' THEN 3 WHEN symbol_type = 'field' THEN 1 ELSE 0 END");
         const rewritten=definitionSort.replace(/\b(code_files|code_symbols|code_references|code_statements|code_call_edges)\b/g,table=>'_synapse_ghost_'+table);
-        return target.query('WITH '+ctes.join(',')+' '+rewritten,params);
+        try {
+          return await target.query('WITH '+ctes.join(',')+' '+rewritten,params);
+        } catch(err) {
+          // P22-T316 Gegenpruefung (claude-eiche): gepufferte Spaltenliste veraltet (Spalte zur Laufzeit entfernt/umbenannt -> 42703).
+          // Puffer der benutzten Tabellen sofort verwerfen und EINMAL frisch wiederholen, statt bis zu 60 s Fehler zu liefern.
+          if(nochmal && spalten && (err as { code?: string })?.code==='42703') {
+            for(const t of benutzt) GHOST_SPALTEN.delete(t);
+            return lauf(sql,werte,false);
+          }
+          throw err;
+        }
       };
+      return lauf;
     }
   });
 }

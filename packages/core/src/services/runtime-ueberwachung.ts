@@ -148,6 +148,9 @@ export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
   // P22-T314: Grenzen jeder code_intel-Abfrage in PG (SET LOCAL je Abfrage, code-intel-grenzen.ts); unter dem Client-/Cloudflare-Timeout.
   code_intel_statement_timeout_ms: { art: 'zahl', standard: 25000, min: 1000, max: 600000 },
   code_intel_lock_timeout_ms: { art: 'zahl', standard: 2000, min: 100, max: 60000 },
+  // P22-T316: JIT fuer code_intel-Abfragen (Standard aus = SET LOCAL jit = off). Ghost-Schaetzungen liegen ohne Append-Statistik ueber
+  // jit_above_cost, die Kompilierung lohnt bei diesen Index-Lookups nicht.
+  code_intel_jit: { art: 'bool', standard: false },
   // P22-T314 (Pruefer-Fix): Schonfrist, bevor eine Datei mit parsed_at < updated_at als GEAENDERT faellig wird (code.ts).
   parse_geaendert_schonfrist_s: { art: 'zahl', standard: 120, min: 0, max: 3600 },
   // P22-T312: Persona-Generator (persona-generator.ts) - Modell (Registry-Alias, Standard guenstig) und Ausgabelimit des einen Aufrufs.
