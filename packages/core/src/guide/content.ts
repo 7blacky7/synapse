@@ -107,16 +107,18 @@ Notizbuch + Code-Editor + Sub-Hilfsagenten.
 **Projekt-Management:**
   admin, project
 
-**Shell & Runtime** (Auto-Routing local/workspace):
+**Shell & Runtime** (Routing local/workspace):
   shell — laeuft auf dem Ziel-PC ein FileWatcher-Daemon (Heartbeat <30s), geht
-  exec via PG-Queue lokal (echtes FS, native Tools); sonst automatisch im
-  Docker-Workspace-Container der synapse-api (isoliert, Source read-only).
-  executed_via in der Antwort zeigt den Pfad; isolated:true erzwingt den
-  Container, target:"local" erzwingt den Daemon.
+  exec via PG-Queue lokal (echtes FS, native Tools). Ohne Daemon: Fehler
+  kein_pc_daemon - Synapse startet KEINEN Workspace als Ersatz. Ein Workspace
+  (target:"workspace" bzw. isolated:true) nur mit Grund und Zustimmung des
+  Users oder vorab gesetzter Freigabe (workspace start). executed_via zeigt den
+  Pfad; target:"local" erzwingt den Daemon.
 
 **Sandbox & Multi-File:**
   workspace — Docker-Test-Container-Lifecycle (bis zu 3 benannte pro Projekt,
-  lazy erzeugt, Idle-Stop 10 Min, LRU-Cap). files_batch — atomare Multi-File-
+  Start nur durch einen Agenten mit Grund + User-Zustimmung/Freigabe,
+  Idle-Stop 10 Min, LRU-Cap). files_batch — atomare Multi-File-
   Edits (Alias fuer files plan/commit). skills — Skill-Bibliothek (Best Practices).
 
 **Agenten-Koordination** (PostgreSQL-basiert, ueberall verfuegbar):
@@ -149,7 +151,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   // shell — Queue-basierte Shell-Ausfuehrung mit History
   // -------------------------------------------------------------------------
   shell: {
-    summary: 'Fuehrt Shell-Kommandos aus — AUTO-ROUTING: laeuft auf dem Ziel-PC ein FileWatcher-Daemon (Heartbeat <30s), wird lokal via PostgreSQL-Queue ausgefuehrt (echtes FS, native Tools); sonst automatisch im Docker-Workspace-Container der synapse-api (isoliert, Source read-only). executed_via in der Antwort zeigt den Pfad; target/isolated steuern das Routing explizit, workspace waehlt den Ziel-Container (Multi-Workspace). Voller Output in PG persistiert — Logs koennen Stunden spaeter abgerufen werden. Fehlerinterpretation: error="project_inactive" → Projekt im Tray aktivieren. error="workspace_unavailable" → weder lokaler Daemon aktiv noch Docker-Workspace verfuegbar. Bei erzwungenem target:"local" bleibt ein Job auf "pending" haengen wenn der Daemon down ist. Sofortige Validierungs-Fehler (Syntax/Pfad) → eigene Eingabe pruefen.',
+    summary: 'Fuehrt Shell-Kommandos aus — AUTO-ROUTING: laeuft auf dem Ziel-PC ein FileWatcher-Daemon (Heartbeat <30s), wird lokal via PostgreSQL-Queue ausgefuehrt (echtes FS, native Tools); ohne Daemon Fehler kein_pc_daemon - Synapse startet KEINEN Workspace als Ersatz (Workspace nur mit Grund und Zustimmung des Users oder vorab gesetzter Freigabe, dann target:"workspace"). executed_via in der Antwort zeigt den Pfad; target/isolated steuern das Routing explizit, workspace waehlt den Ziel-Container (Multi-Workspace). Voller Output in PG persistiert — Logs koennen Stunden spaeter abgerufen werden. Fehlerinterpretation: error="project_inactive" → Projekt im Tray aktivieren. error="kein_pc_daemon" → kein lokaler Daemon aktiv; den User fragen, ob ein Workspace sinnvoll ist (nicht selbst starten). error="workspace_unavailable" → bei target:"workspace" ist kein Docker-Workspace verfuegbar. Bei erzwungenem target:"local" bleibt ein Job auf "pending" haengen wenn der Daemon down ist. Sofortige Validierungs-Fehler (Syntax/Pfad) → eigene Eingabe pruefen.',
     when_to_use: [
       'Ein-Zeilen-Commands fuer Status-Checks (git log, ls, pwd).',
       'Build-/Test-Ausfuehrung (pnpm build, pytest).',
@@ -1717,7 +1719,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   // workspace — Docker-Sandbox-Lifecycle (pro Projekt, Rollen + benannte Instanzen)
   // -------------------------------------------------------------------------
   workspace: {
-    summary: 'Lifecycle der pro-Projekt Docker-Sandbox-Container auf der synapse-api. NUR Lifecycle (list/start/stop/pin/unpin/configure/materialize/reset_home) — fuer Shell-Ausfuehrung IMMER shell (Auto-Routing bzw. isolated:true). Benannte Workspaces pro Projekt (Param name, Default "main"; Cap via ENV SYNAPSE_WS_PER_PROJECT_CAP, Default 6); WS4-ROLLEN: Rolle = editierbares Template (role_set/role_list/role_delete; project weglassen = global, projekt-scoped schlaegt global), Workspace = Instanz — jede Rolle ist beliebig oft instanziierbar (start/exec mit role + frei waehlbarem name: db-1, db-2, app, qa), init_command laeuft nach JEDEM Container-Start (Dienste-Bootstrap, Fehler -> last_error); /workspace (Source, read-only) ist geteilt, Home-Volume pro Workspace. WS5-CONTAINER-BUILDS: Rolle container-builder (Image synapse-workspace-podman:latest) baut/testet Dockerfiles + docker-compose der User-Projekte mit rootless Podman (docker = podman-Alias, daemonless, Storage im HOME-Volume); devices/security_opts am Rollen-Template wirken NUR wenn die Rolle in ENV SYNAPSE_WS_PRIVILEGED_ROLES allowlisted ist — sonst verweigert der Orchestrator den Start hart. Kein --privileged, kein docker.sock — existiert bewusst nicht. Container entstehen LAZY beim ersten Bedarf — nichts manuell vorstarten. Workspaces sind reine TEST-Sandboxen.',
+    summary: 'Lifecycle der pro-Projekt Docker-Sandbox-Container auf der synapse-api. NUR Lifecycle (list/start/stop/pin/unpin/configure/materialize/reset_home) — fuer Shell-Ausfuehrung IMMER shell (target:"workspace" bzw. isolated:true in einem freigegebenen Workspace). Benannte Workspaces pro Projekt (Param name, Default "main"; Cap via ENV SYNAPSE_WS_PER_PROJECT_CAP, Default 6); WS4-ROLLEN: Rolle = editierbares Template (role_set/role_list/role_delete; project weglassen = global, projekt-scoped schlaegt global), Workspace = Instanz — jede Rolle ist beliebig oft instanziierbar (start/exec mit role + frei waehlbarem name: db-1, db-2, app, qa), init_command laeuft nach JEDEM Container-Start (Dienste-Bootstrap, Fehler -> last_error); /workspace (Source, read-only) ist geteilt, Home-Volume pro Workspace. WS5-CONTAINER-BUILDS: Rolle container-builder (Image synapse-workspace-podman:latest) baut/testet Dockerfiles + docker-compose der User-Projekte mit rootless Podman (docker = podman-Alias, daemonless, Storage im HOME-Volume); devices/security_opts am Rollen-Template wirken NUR wenn die Rolle in ENV SYNAPSE_WS_PRIVILEGED_ROLES allowlisted ist — sonst verweigert der Orchestrator den Start hart. Kein --privileged, kein docker.sock — existiert bewusst nicht. START NUR AUF USER-ENTSCHEIDUNG: Ein Agent startet einen Workspace ueber workspace(start) nur mit Grund UND Zustimmung des Users im konkreten Fall oder vorab gesetzter Freigabe (hoechstens N); Synapse startet nie selbst einen - weder aus Diensten (Pruefungen, Hooks, Indexierung) noch als Ersatz bei fehlendem PC-Daemon (Regel regel-container-pruefcontainer-ein-container-workspace-nur-auf-anweisung). Workspaces sind reine TEST-Sandboxen.',
     when_to_use: 'Container-Status pruefen (list). Ressourcen anpassen (configure: cpu/mem/pids/tmpfs/image — greift beim naechsten Start). Vor Idle-Eviction schuetzen (pin). Kaputtes Home heilen (reset_home). Build-Pfad unter /workspace zum Schreiben freigeben: make_writable mit path (z.B. compiler/target oder build) — noetig weil der PG-Sync Source-Files als root/0444 anlegt, das /workspace-Volume selbst ist rw; fuer Build-Artefakte gedacht, Source-Edits weiter via files-Tool. Integrationstests zwischen Containern via proxynet-DNS http://synapse-ws-<projekt>[-<name>]:<port>. Rollen-Templates pflegen (role_set/role_list/role_delete) und Multi-Geraete-Setups bauen: db-1 (role db-postgres) + app (role server) + qa (role wine-qa) verhalten sich wie 3 Geraete im selben Netz — zweite DB? name db-2, gleiche Rolle.',
     when_not_to_use: 'Shell-Kommandos ausfuehren — nutze shell (die exec-Action hier ist deprecated). Dateien schreiben — nutze files (Auto-Sync in den Container). Dauerbetrieb — Idle-Stop nach 10 Min und LRU-Eviction sind gewollt.',
     param_tips: 'name: Ziel-Workspace (Default main; main behaelt den DNS-Namen ohne Suffix). configure wirkt erst beim naechsten Container-Start. Jede Antwort liefert dns_name — IMMER den DNS-Namen nutzen, NIE die Container-IP (wechselt bei Restart). role: wirkt nur bei ERST-Anlage einer Instanz (Template-Werte werden in die Row kopiert; danach configure nutzen); Template-Edits wirken ab dem naechsten Container-Start der Instanzen.',

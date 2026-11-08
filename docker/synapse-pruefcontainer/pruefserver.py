@@ -20,6 +20,8 @@ PROTOKOLL (eine JSON-Zeile je Nachricht, UTF-8):
          {"id": 9, "vorwaermen": ["jvm"]}   (E3b: JVM starten und anwaermen; Antwort erst, wenn sie bereit ist)
          {"id": 10, "build": {...}}         (P16-T16 E1: TS-Build-Pruefung projektweit, Modul pruefer_tsbuild.py;
                                             Antwort {"id", "ok": true, "build": {...}}; eigener Thread, einer zur Zeit)
+         {"id": 11, "typen": {...}}         (P16-T24: kleine Typpruefung je files-Plan, Modul pruefer_typen.py;
+                                            Antwort {"id", "ok": true, "typen": {TypPruefung}}; eigener Thread)
   raus:  {"id": 7, "ok": true, "meldungen": [{"zeile": 3, "spalte": 5, "code": null, "meldung": "..."}], "ms": 31.2}
          Eine Meldung kann "weich": true tragen (Hinweis, sperrt nie).
          {"id": 7, "ok": false, "fehler": "..."}
@@ -55,6 +57,7 @@ import pruefer_jvmprojekt  # P16-T19 E3b
 import pruefer_projekt
 import pruefer_dart_csharp
 import pruefer_cprojekt
+import pruefer_typen  # P16-T24
 
 # compile() meldet SyntaxWarnings (z. B. ungueltige Escapes) auf stderr - das sind keine Syntaxfehler und wuerden
 # nur das API-Log fuellen.
@@ -475,7 +478,8 @@ def info():
             'parallel': PARALLEL, 'timeout_s': TIMEOUT_S, 'rust_edition': RUST_EDITION,
             'python2_rueckfall': bool(_py2_driver()), 'jvm': pruefer_jvm.zustand(),
             'treesitter': pruefer_treesitter.info(), 'tsbuild': pruefer_tsbuild.version(), 'speicher': speicher(),
-            'projektpruefung': {'rust': pruefer_rustprojekt.info(), **pruefer_projekt.info(), 'c_cpp': pruefer_cprojekt.info(), 'dart_csharp': pruefer_dart_csharp.info(), 'jvm': pruefer_jvmprojekt.info()}}
+            'projektpruefung': {'rust': pruefer_rustprojekt.info(), **pruefer_projekt.info(), 'c_cpp': pruefer_cprojekt.info(), 'dart_csharp': pruefer_dart_csharp.info(), 'jvm': pruefer_jvmprojekt.info()},
+            'typen': pruefer_typen.info()}
 
 
 def bearbeite(auftrag):
@@ -486,6 +490,10 @@ def bearbeite(auftrag):
             return
         if auftrag.get('build') is not None:
             schreibe({'id': aid, 'ok': True, 'build': _mit_speicher(pruefer_tsbuild.pruefe(auftrag.get('build') or {}))})
+            return
+        # --- P16-T24 kleine Typpruefung je files-Plan (frueher im Projekt-Workspace) ---
+        if auftrag.get('typen') is not None:
+            schreibe({'id': aid, 'ok': True, 'typen': pruefer_typen.pruefe(auftrag.get('typen'))})
             return
         # --- P16-T18 E3a C/C++ ---
         for art in ('cbuild', 'cppbuild'):
@@ -540,7 +548,7 @@ def main():
         except Exception as e:  # noqa: BLE001
             schreibe({'id': None, 'ok': False, 'fehler': f'kein JSON: {e}'})
             continue
-        if isinstance(auftrag, dict) and any(auftrag.get(art) is not None for art in ('kotlinc', 'javac', 'rustcheck', 'build', 'gobuild', 'pyright', 'cbuild', 'cppbuild', 'dartbuild', 'csharpbuild')):
+        if isinstance(auftrag, dict) and any(auftrag.get(art) is not None for art in ('kotlinc', 'javac', 'rustcheck', 'build', 'gobuild', 'pyright', 'cbuild', 'cppbuild', 'dartbuild', 'csharpbuild', 'typen')):
             # P16-T16 E1: Build-Pruefung dauert Sekunden bis Minuten - eigener Thread, der Syntax-Pool bleibt frei.
             threading.Thread(target=bearbeite, args=(auftrag,), daemon=True).start()
             continue

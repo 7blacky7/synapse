@@ -260,8 +260,7 @@ export async function startServer(): Promise<void> {
     if (process.env.WORKSPACE_MAX_CONCURRENT) wsCfg.maxConcurrent = parseInt(process.env.WORKSPACE_MAX_CONCURRENT, 10);
     if (process.env.WORKSPACE_IDLE_MINUTES) wsCfg.idleStopMinutes = parseInt(process.env.WORKSPACE_IDLE_MINUTES, 10);
     await initWorkspaceOrchestrator(wsCfg);
-    const { installTypWorkspacePruefer } = await import('./services/typen-pruefung-workspace.js');
-    installTypWorkspacePruefer();
+    // P16-T24: die Plan-Typpruefung laeuft im Pruef-Container (pruef-container.ts), nie mehr im Projekt-Workspace.
   } else {
     console.log('[Synapse API] Workspace-Orchestrator per WORKSPACE_DISABLED=1 ausgeschaltet');
   }
@@ -300,7 +299,9 @@ export async function startServer(): Promise<void> {
   }
 
   // P16-T5: Pruef-Container (Stufe S3) fuer Sprachen ausserhalb des Node-Prozesses (E1: Rust). Die API verwaltet
-  // ihn selbst ueber docker.sock (Start bei Bedarf, Idle-Stop, Neustart nach Absturz), siehe services/pruef-container.ts.
+  // ihn selbst ueber docker.sock (laeuft dauerhaft: Start beim API-Start bzw. ersten Auftrag, kein Idle-Stop - P16-T24
+  // PRUEFCONTAINER_IDLE_MIN Standard 0 -, Neustart nach Absturz; innen schalten sich nur die Pruefer an/aus). EIN Container
+  // fuer alle Pruefarten inkl. Plan-Typpruefung (P16-T24), siehe services/pruef-container.ts.
   // Ohne Docker oder ohne Image (docker build -t synapse-pruefcontainer:latest docker/synapse-pruefcontainer) bleibt
   // es bei Stufe 1. Notaus: PRUEFCONTAINER=0. Limits: PRUEFCONTAINER_MEM_MB (256), PRUEFCONTAINER_CPUS (1).
   try {

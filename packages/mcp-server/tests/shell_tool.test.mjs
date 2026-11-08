@@ -91,11 +91,12 @@ function test(name, fn) {
 
 // ---------- Tests ----------
 
-// Negativkontrolle: Ohne Heartbeat muss Auto-Routing den Workspace-Pfad waehlen.
+// Negativkontrolle (P16-T24): Ohne Heartbeat startet Auto-Routing KEINEN Workspace, sondern meldet kein_pc_daemon.
 const ohneHeartbeat = parse(await shellTool.handler({
   action: 'exec', project: `shell-tool-no-heartbeat-${randomUUID()}`, command: 'echo x',
 }));
-assert.equal(ohneHeartbeat.error, 'workspace_unavailable');
+assert.equal(ohneHeartbeat.error, 'kein_pc_daemon');
+assert.equal(ohneHeartbeat.executed_via, 'keiner');
 console.error('PASS negative-control-without-heartbeat');
 
 await test('1-unknown_project', async () => {

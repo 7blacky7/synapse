@@ -276,7 +276,7 @@ COPY --from=jvm --chmod=0444 /out/versionen/jvmprojekt-sha256 /out/versionen/jvm
 COPY --chmod=0444 pruefer_jvmprojekt.py test_jvmprojekt.py /opt/pruef/
 COPY --from=jvm --chmod=0555 /out/jvm/ /opt/pruef/jvm/
 COPY --from=jvm --chmod=0444 /out/versionen/kotlin /out/versionen/java /out/versionen/scala /out/versionen/groovy /opt/pruef/versionen/
-COPY --chmod=0444 pruefserver.py pruefer_jvm.py pruefer_naga.py pruefer_build.py pruefer_tsbuild.py /opt/pruef/
+COPY --chmod=0444 pruefserver.py pruefer_jvm.py pruefer_naga.py pruefer_build.py pruefer_tsbuild.py pruefer_typen.py /opt/pruef/
 COPY --from=tsc --chmod=0555 /out/bin/node /opt/pruef/bin/node
 COPY --from=tsc --chmod=0555 /out/tsc/ /opt/pruef/tsc/
 COPY --from=tsc --chmod=0444 /out/versionen/tsc /opt/pruef/versionen/tsc

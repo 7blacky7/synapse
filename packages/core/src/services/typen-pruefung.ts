@@ -2,7 +2,6 @@
  * P16-T15: Code-Intel als erste Stufe, danach gezielte TypeScript-Diagnosen im Worker.
  * PG und Plan-Schatten sind die Quelle; Platte liefert nur installierte Abhängigkeiten.
  */
-import { Worker } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -29,6 +28,10 @@ export interface TypPruefung {
   vollstaendig: boolean;
   fehlende_module: string[];
   betroffene_aufrufer: string[];
+  /** P16-T24 Debug: wo die TS-Stufe lief (nur noch der Pruef-Container). */
+  ort?: 'pruefcontainer';
+  /** P16-T24 Debug: Dauer am Ausfuehrungsort inkl. Transport (ms). */
+  ort_ms?: number;
 }
 export interface TypAuftrag {
   project: string;
@@ -39,72 +42,19 @@ export interface TypAuftrag {
   budget_ms: number;
   basisvergleich: boolean;
 }
-interface Antwort {
-  id: number;
-  ergebnis: TypPruefung;
-}
 const istTs = (p: string) => /\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/.test(p);
-type WorkspacePruefer = (auftrag: TypAuftrag) => Promise<TypPruefung>;
-let workspacePruefer: WorkspacePruefer | null = null;
-/** API setzt nur den Abhängigkeits-Ausführungsort; Prüflogik bleibt derselbe Core-Worker. */
-export function registriereTypWorkspacePruefer(pruefer: WorkspacePruefer): void { workspacePruefer = pruefer; }
+type ContainerPruefer = (auftrag: TypAuftrag) => Promise<TypPruefung>;
+let containerPruefer: ContainerPruefer | null = null;
+/**
+ * P16-T24: Die API meldet den dauerhaften Pruef-Container als Ausfuehrungsort an (rest-api pruef-container.ts).
+ * Nie ein Projekt-Workspace (Regel regel-container-pruefcontainer-ein-container-workspace-nur-auf-anweisung).
+ * null = abmelden. Prueflogik bleibt derselbe Core-Worker (typen-pruefung-worker.ts).
+ */
+export function registriereTypContainerPruefer(pruefer: ContainerPruefer | null): void { containerPruefer = pruefer; }
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
-let worker: Worker | null = null;
-let naechsteId = 0;
-const offen = new Map<number, { resolve: (r: TypPruefung) => void; timer: NodeJS.Timeout }>();
 
 function leeresErgebnis(status: TypPruefung['status'], hinweis?: string): TypPruefung {
   return { status, dauer_ms: 0, befunde: [], altlasten: 0, dateien: [], vollstaendig: status === 'fertig', fehlende_module: [], betroffene_aufrufer: [], ...(hinweis ? { hinweis } : {}) };
-}
-
-/** Ein begrenzter Worker pro Prozess, Paket-Program-Cache im Worker, keine Blockade des API-Threads. */
-function imWorker(auftrag: TypAuftrag): Promise<TypPruefung> {
-  if (offen.size >= 16) return Promise.resolve(leeresErgebnis('nicht_verfuegbar', 'Typprüf-Warteschlange voll.'));
-  if (!worker) {
-    const w = new Worker(new URL('./typen-pruefung-worker.js', import.meta.url), {
-      execArgv: process.execArgv.filter(a => !/^--(input-type|eval|print)\b|^-[ep]$/.test(a)),
-      resourceLimits: { maxOldGenerationSizeMb: 512 },
-    });
-    worker = w;
-    w.on('message', (msg: Antwort) => {
-      const a = offen.get(msg.id);
-      if (!a) return;
-      offen.delete(msg.id);
-      clearTimeout(a.timer);
-      a.resolve(msg.ergebnis);
-      if (!offen.size) w.unref();
-    });
-    const ausgefallen = () => {
-      if (worker !== w) return;
-      worker = null;
-      for (const a of offen.values()) {
-        clearTimeout(a.timer);
-        a.resolve(leeresErgebnis('nicht_verfuegbar', 'Typprüf-Worker ausgefallen.'));
-      }
-      offen.clear();
-      void w.terminate();
-    };
-    w.on('error', ausgefallen);
-    w.on('exit', ausgefallen);
-    w.unref();
-  }
-  const w = worker;
-  w.ref();
-  return new Promise(resolve => {
-    const id = ++naechsteId;
-    const timer = setTimeout(() => {
-      if (worker === w) worker = null;
-      // Ein synchron rechnender TS-Checker wird wirklich beendet, nicht im Hintergrund weitergerechnet.
-      for (const a of offen.values()) {
-        clearTimeout(a.timer);
-        a.resolve(leeresErgebnis('zeitlimit', 'FEHLERPRUEFUNG_TYPEN_MS überschritten; keine Typ-Sperre.'));
-      }
-      offen.clear();
-      void w.terminate();
-    }, auftrag.budget_ms);
-    offen.set(id, { resolve, timer });
-    w.postMessage({ id, auftrag });
-  });
 }
 
 function opFuer(datei: PruefDatei, zeile: number): PruefDateiOp | undefined {
@@ -245,11 +195,13 @@ export async function pruefePlanTypen(project: string, dateien: PruefDatei[], ba
     const rest = ms - (Date.now()-start);
     if (rest <= 0) return { ...leeresErgebnis('zeitlimit'),befunde:intel.befunde,dateien:intel.ziele,dauer_ms:Date.now()-start };
     const roots = (await getPool().query<{path:string}>('SELECT path FROM projects WHERE name=$1 AND path IS NOT NULL',[project])).rows;
-    let root = roots.map(r=>r.path).find(p=>path.isAbsolute(p) && existsSync(path.join(p,'node_modules')));
-    const lokal = !!root;
-    root ??= path.resolve('/__synapse_typen__',sha(project).slice(0,16));
+    // P16-T24: root ist nur der Pfadanker der PG-Quellen im Auftrag; ausgefuehrt wird ausschliesslich im Pruef-Container.
+    const root = roots.map(r=>r.path).find(p=>path.isAbsolute(p) && existsSync(path.join(p,'node_modules')))
+      ?? path.resolve('/__synapse_typen__',sha(project).slice(0,16));
     const auftrag = {project,root,quellen:rows,dateien,ziele:intel.ziele,budget_ms:Math.max(1,ms-(Date.now()-start)),basisvergleich};
-    const ergebnis = !lokal && workspacePruefer ? await workspacePruefer(auftrag) : await imWorker(auftrag);
+    // P16-T24: nur der Pruef-Container (auch kein API-Worker mehr); nicht angemeldet -> nicht_verfuegbar, kein Ersatzweg.
+    const ergebnis: TypPruefung = containerPruefer ? await containerPruefer(auftrag)
+      : leeresErgebnis('nicht_verfuegbar', 'Pruef-Container nicht angemeldet; Typstufe ausgelassen (kein Ersatzweg, keine Sperre).');
     return {...ergebnis,dateien:intel.ziele,befunde:[...intel.befunde,...ergebnis.befunde],dauer_ms:Date.now()-start,
       betroffene_aufrufer:intel.ziele.filter(p=>!unterstuetzt.some(d=>d.file_path===p))};
   } catch (err) {

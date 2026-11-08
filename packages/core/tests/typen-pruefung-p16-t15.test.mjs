@@ -131,6 +131,9 @@ try{
   assert.equal(detected,4,'P16-T15 baseline erkennt vier W2-Typmuster noch nicht');
  }else{
   const typen=await lade('services/typen-pruefung.js'),engine=await lade('services/typen-pruefung-worker.js');
+  // P16-T24: die Typstufe laeuft nur noch im Pruef-Container; hier als In-Process-Fake mit derselben Core-Engine angemeldet.
+  const containerFake=async a=>({...engine.pruefeTypAuftrag(a),ort:'pruefcontainer',ort_ms:0});
+  typen.registriereTypContainerPruefer(containerFake);
   assert.deepEqual(golden,JSON.parse(readFileSync(join(hier,'fixtures/typen-pruefung-p16-t15.golden.json'),'utf8')));
   check('Golden 11 Defaults,6 NichtTS-Schatten,alte NichtTS-Prüfbefunde',()=>{});
   for(const [name,good,bad,code] of cases){
@@ -217,8 +220,17 @@ try{
   const measures=[];
   for(let i=0;i<5;i++){await seed(fixture+'enabled-sync.ts',enabledGood);const t=performance.now();const mp=await batch.planBatch({project,agent_id:agent,task_id:task,ops:[{action:'search_replace',file_path:fixture+'enabled-sync.ts',search:enabledGood,replace:'export const enabled:boolean = false;\n'}]});measures.push(performance.now()-t);await batch.cancelBatch(mp.plan_id,agent,'P16 Laufzeitprobe beendet');}
   console.log('MEDIAN_PLAN_MS='+[...measures].sort((a,b)=>a-b)[2].toFixed(2)+' SAMPLES='+JSON.stringify(measures.map(v=>+v.toFixed(2))));
-  const {pruefeWorkspaceTransport}=await import('../../rest-api/tests/typen-workspace-p16-t15.mjs');
-  await pruefeWorkspaceTransport({project,pool,typen,root,datei:fixture+'enabled-sync.ts',basis:enabledGood,ergebnis:enabledBad,check});
+  // P16-T24 (claude-linde): ohne lokalen Projektpfad laeuft die Typstufe nur im Pruef-Container (kein Workspace mehr).
+  // Nicht angemeldet -> nicht_verfuegbar ohne Sperre und ohne Ersatzweg; angemeldet -> Befund von dort (ort pruefcontainer).
+  typen.registriereTypContainerPruefer(null);
+  try{
+   const ohne=await typen.pruefePlanTypen(project,[typDatei(fixture+'enabled-sync.ts',enabledGood,enabledBad)]);
+   check('P16-T24 ohne Pruef-Container nicht_verfuegbar, keine Sperre',()=>{assert.equal(ohne.status,'nicht_verfuegbar',JSON.stringify(ohne));assert.equal(ohne.befunde.filter(b=>b.severity==='error').length,0);});
+   let imContainer=null;
+   typen.registriereTypContainerPruefer(async a=>{imContainer=a;return {...engine.pruefeTypAuftrag(a),ort:'pruefcontainer',ort_ms:1};});
+   const mit=await typen.pruefePlanTypen(project,[typDatei(fixture+'enabled-sync.ts',enabledGood,enabledBad)]);
+   check('P16-T24 Pruef-Container-Ort liefert Typbefund',()=>{assert.equal(mit.ort,'pruefcontainer',JSON.stringify(mit));assert(mit.befunde.some(b=>b.code==='TS2322'&&b.severity==='error'),JSON.stringify(mit));assert.equal(imContainer.project,project);});
+  }finally{typen.registriereTypContainerPruefer(containerFake);}
   console.log('TEST_GRUEN P16-T15 checks='+ok);
  }
 }finally{await cleanup();await db.closePool();}

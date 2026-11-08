@@ -142,7 +142,7 @@ export const shellTool: ConsolidatedTool = {
   definition: {
     name: 'shell',
     description:
-      'Projekt-scoped Shell. AUTO-ROUTING (Default): aktiver lokaler Daemon (Heartbeat <30s) → exec via shell-queue (echtes FS, native Tools, git/sudo/GPU). Sonst → exec im Workspace-Docker-Container auf der synapse-api (isoliert, Source read-only). Antwort hat executed_via: "local"|"workspace". target:"workspace" oder isolated:true erzwingt den Container fuer isolierte Tests / Build-Sandboxing. target:"local" erzwingt Daemon. Source-Files IMMER via files-Tool editieren (Auto-Versionierung; im Workspace ist Source mode 0444). shell ist fuer install/build/test/git/etc. Kommt waehrend des Wartens eine neue Nachricht in einem deiner Channels, kehrt exec sofort mit status \"running\" und unterbrochen_durch zurueck — der Job laeuft weiter. Actions: exec (default) | get_stream | history | get | log.',
+      'Projekt-scoped Shell. AUTO-ROUTING (Default): aktiver lokaler Daemon (Heartbeat <30s) → exec via shell-queue (echtes FS, native Tools, git/sudo/GPU). Ohne aktiven Daemon → Fehler kein_pc_daemon (KEIN automatischer Workspace-Start). Antwort hat executed_via: "local"|"workspace". target:"workspace" oder isolated:true erzwingt den Container fuer isolierte Tests / Build-Sandboxing. target:"local" erzwingt Daemon. Source-Files IMMER via files-Tool editieren (Auto-Versionierung; im Workspace ist Source mode 0444). shell ist fuer install/build/test/git/etc. Kommt waehrend des Wartens eine neue Nachricht in einem deiner Channels, kehrt exec sofort mit status \"running\" und unterbrochen_durch zurueck — der Job laeuft weiter. Actions: exec (default) | get_stream | history | get | log.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -363,7 +363,14 @@ export const shellTool: ConsolidatedTool = {
     else if (targetArg === 'local') target = 'local';
     else {
       const alive = await isDaemonAliveForProject(project).catch(() => false);
-      target = alive ? 'local' : 'workspace';
+      // P16-T24: auto startet nie einen Workspace als Ersatzweg (Regel regel-container-pruefcontainer-ein-container-workspace-nur-auf-anweisung).
+      if (!alive) {
+        return { content: [{ type: 'text', text: JSON.stringify({
+          success: false, executed_via: 'keiner', error: 'kein_pc_daemon',
+          message: 'Kein PC-Daemon erreichbar. Synapse startet keinen Workspace als Ersatz; ein Workspace nur auf Anweisung des Users (workspace start), danach target:"workspace".',
+        }, null, 2) }] };
+      }
+      target = 'local';
     }
 
     let result: Record<string, unknown>;

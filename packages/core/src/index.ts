@@ -182,7 +182,7 @@ export { mitUserHerkunft, aktuelleUserHerkunft, userHerkunftAusMetadata } from '
 // P6-T27: optionale Ghost-Schatten, Standardabfragen unveraendert.
 export { mitCodeIntelSchatten, schattenCacheStatistik } from './services/code-intel-schatten.js';
 // P16-T15: gemeinsame Typprüfung; API registriert nur den Projekt-Workspace als Abhängigkeitsort.
-export { registriereTypWorkspacePruefer } from './services/typen-pruefung.js';
+export { registriereTypContainerPruefer } from './services/typen-pruefung.js';
 export type { TypAuftrag, TypPruefung } from './services/typen-pruefung.js';
 // P16-T16 E1: projektweite Build-Pruefung; die rest-api meldet den Pruefcontainer an (registriereBuildPruefer).
 export { registriereBuildPruefer, synchronisiereBuildBudget, buildPruefungZustand, wirksamesBuildBudget, BUILD_ACTIONS } from './services/build-pruefung.js';

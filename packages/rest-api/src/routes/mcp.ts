@@ -1361,7 +1361,7 @@ export const MCP_TOOLS = [
   // 16. shell
   {
     name: 'shell',
-    description: 'Shell-Kommando im Projekt-Verzeichnis ausfuehren. AUTO-ROUTING (Default): laeuft ein lokaler FileWatcher-Daemon (frischer Heartbeat <30s) → Job geht via shell-queue an den Daemon (echtes FS, native Tools, git/sudo/GPU verfuegbar). Sonst → exec im Workspace-Docker-Container auf der synapse-api (isoliert, Source read-only). Antwort enthaelt executed_via: "local"|"workspace" damit die KI sieht wo es lief. EXPLIZIT erzwingen: isolated:true (oder target:"workspace") zwingt Container — sinnvoll fuer isolierte Tests, Build-Sandboxing, dependency-Experimente. target:"local" zwingt Daemon (Error wenn keiner aktiv). cwd ist auf das Projekt-Root + optional cwd_relative beschraenkt. WICHTIG: Source-Files in beiden Modi via files-Tool editieren (Auto-Versionierung; im Workspace ist Source mode 0444). shell ist fuer install/build/test/git/etc. Kommt waehrend des Wartens eine neue Nachricht in einem deiner Channels, kehrt exec sofort mit status "running" und unterbrochen_durch zurueck — der Job laeuft weiter (shell(get|log, id) oder shell(cancel, id)).',
+    description: 'Shell-Kommando im Projekt-Verzeichnis ausfuehren. AUTO-ROUTING (Default): laeuft ein lokaler FileWatcher-Daemon (frischer Heartbeat <30s) → Job geht via shell-queue an den Daemon (echtes FS, native Tools, git/sudo/GPU verfuegbar). Ohne aktiven Daemon → Fehler kein_pc_daemon (KEIN automatischer Workspace-Start). Antwort enthaelt executed_via: "local"|"workspace" damit die KI sieht wo es lief. EXPLIZIT erzwingen: isolated:true (oder target:"workspace") zwingt Container — sinnvoll fuer isolierte Tests, Build-Sandboxing, dependency-Experimente. target:"local" zwingt Daemon (Error wenn keiner aktiv). cwd ist auf das Projekt-Root + optional cwd_relative beschraenkt. WICHTIG: Source-Files in beiden Modi via files-Tool editieren (Auto-Versionierung; im Workspace ist Source mode 0444). shell ist fuer install/build/test/git/etc. Kommt waehrend des Wartens eine neue Nachricht in einem deiner Channels, kehrt exec sofort mit status "running" und unterbrochen_durch zurueck — der Job laeuft weiter (shell(get|log, id) oder shell(cancel, id)).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -5893,7 +5893,18 @@ async function handleToolCallKern(
         target = 'local';
       } else {
         const alive = await isDaemonAliveForProject(project).catch(() => false);
-        target = alive ? 'local' : 'workspace';
+        // P16-T24 (memory regel-container-pruefcontainer-ein-container-workspace-nur-auf-anweisung, User 08.11.2026):
+        // auto startet NIE einen Workspace als Ersatzweg. Ohne PC-Daemon klare Meldung; Workspace nur explizit
+        // (target:"workspace" / isolated:true) auf Anweisung des Users.
+        if (!alive) {
+          return {
+            success: false,
+            executed_via: 'keiner',
+            error: 'kein_pc_daemon',
+            message: 'Kein aktiver PC-Daemon fuer dieses Projekt. Synapse startet dafuer keinen Workspace automatisch. Daemon/Tray auf dem PC starten oder - nur auf Anweisung des Users - target:"workspace" angeben.',
+          };
+        }
+        target = 'local';
       }
 
       if (target === 'workspace') {

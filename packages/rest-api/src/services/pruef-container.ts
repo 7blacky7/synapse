@@ -25,7 +25,8 @@
  *   rein  {id, sprache, inhalt, pfad} | {id, info:true}
  *   raus  {id, ok:true, meldungen:[{zeile, spalte, code, meldung}], ms} | {id, ok:false, fehler} | {id, ok:true, info}
  *
- * LEBENSZYKLUS: Start bei Bedarf (erster Auftrag), bereit = Antwort auf info. Idle-Stop nach PRUEFCONTAINER_IDLE_MIN.
+ * LEBENSZYKLUS: Start bei Bedarf (erster Auftrag), bereit = Antwort auf info. Idle-Stop nach PRUEFCONTAINER_IDLE_MIN
+ * (P16-T24: Standard 0 = aus, der Container laeuft dauerhaft).
  * Absturz (Stream-Ende) -> offene Auftraege scheitern, der naechste startet neu. Mehr als PRUEFCONTAINER_MAX_STARTS
  * Starts in 5 min -> Pause PRUEFCONTAINER_PAUSE_MS, in der jeder Auftrag sofort 'nicht verfuegbar' ist.
  * Reissleine PRUEFCONTAINER_TIMEOUT_MS erst ab 'bereit' (das Aufwaermen hat PRUEFCONTAINER_START_MS);
@@ -53,6 +54,11 @@
  * (PRUEFCONTAINER_JVM_VORWAERMEN=1 stellt das alte Vorwaermen beim Containerstart wieder her) und beendet sich im
  * Container nach PRUEFCONTAINER_JVM_IDLE_S ohne Anfrage (Standard 600, an pruefserver als PRUEF_JVM_IDLE_S). Danach
  * gilt hier wieder das JVM-Kaltbudget. Diagnose: zustand().jvm, zustand().build.laeuft (laufender Projektauftrag).
+ *
+ * PLAN-TYPPRUEFUNG (P16-T24, 08.11.2026): die kleine Typpruefung je files-Plan (core typen-pruefung.ts, P16-T15) laeuft
+ * als eigene Nachricht {typen:{engine, diff, auftrag}} in DIESEM Container (pruefer_typen.py, Node/TypeScript des Images,
+ * Prozess nur fuer die Dauer des Auftrags). Frueher startete sie dafuer den Projekt-Workspace - verboten nach
+ * memory regel-container-pruefcontainer-ein-container-workspace-nur-auf-anweisung. Nicht erreichbar -> nicht_verfuegbar.
  */
 
 import Docker from 'dockerode';
@@ -61,6 +67,10 @@ import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
 import { registriereSyntaxPruefer, registriereWorker, workerPausiert, meldeWorkerArbeit, registriereInternQuelle, type SyntaxMeldung } from '@synapse/core';
 import { registriereBuildPruefer, synchronisiereBuildBudget, buildPruefungZustand, type BuildAuftrag, type BuildLaufErgebnis } from '@synapse/core';
+import { registriereTypContainerPruefer, type TypAuftrag, type TypPruefung } from '@synapse/core';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { TREESITTER_SPRACHEN } from './pruef-container-treesitter.js';
 
 /** Sprachen, die der Container prueft. sperrfaehig nur nach Falsch-Positiv-Test auf echten Index-Dateien. */
@@ -175,7 +185,9 @@ export function pruefContainerConfigAusEnv(): PruefContainerConfig {
     cpus: envZahl('PRUEFCONTAINER_CPUS', 1) || 1,
     pids: Math.max(16, envZahl('PRUEFCONTAINER_PIDS', 64)),
     tmpfsMb: Math.max(8, envZahl('PRUEFCONTAINER_TMPFS_MB', 64)),
-    idleMin: envZahl('PRUEFCONTAINER_IDLE_MIN', 10),
+    // P16-T24 (Regel regel-container-pruefcontainer-ein-container-workspace-nur-auf-anweisung): der Pruef-Container laeuft
+    // dauerhaft; Standard 0 = kein Ruhe-Stopp. Innen schalten sich nur die Pruefer an/aus (Unterprozess je Auftrag, JVM-Idle).
+    idleMin: envZahl('PRUEFCONTAINER_IDLE_MIN', 0),
     timeoutMs: envZahl('PRUEFCONTAINER_TIMEOUT_MS', 5000),
     startMs: envZahl('PRUEFCONTAINER_START_MS', 60_000) || 60_000,
     pauseMs: envZahl('PRUEFCONTAINER_PAUSE_MS', 60_000),
@@ -216,9 +228,26 @@ interface Offen {
   timer: NodeJS.Timeout | null;
 }
 
-type Antwort = { id?: number | null; ok?: boolean; meldungen?: SyntaxMeldung[]; fehler?: string; info?: PruefContainerInfo; bereit?: boolean; ms?: number; vorgewaermt?: Record<string, unknown>; rustcheck?: BuildLaufErgebnis; build?: BuildLaufErgebnis; kotlinc?: BuildLaufErgebnis; javac?: BuildLaufErgebnis; gobuild?: BuildLaufErgebnis; pyright?: BuildLaufErgebnis; cbuild?: BuildLaufErgebnis; cppbuild?: BuildLaufErgebnis; dartbuild?: BuildLaufErgebnis; csharpbuild?: BuildLaufErgebnis };
+type Antwort = { id?: number | null; ok?: boolean; meldungen?: SyntaxMeldung[]; fehler?: string; info?: PruefContainerInfo; bereit?: boolean; ms?: number; vorgewaermt?: Record<string, unknown>; rustcheck?: BuildLaufErgebnis; build?: BuildLaufErgebnis; kotlinc?: BuildLaufErgebnis; javac?: BuildLaufErgebnis; gobuild?: BuildLaufErgebnis; pyright?: BuildLaufErgebnis; cbuild?: BuildLaufErgebnis; cppbuild?: BuildLaufErgebnis; dartbuild?: BuildLaufErgebnis; csharpbuild?: BuildLaufErgebnis; typen?: TypPruefung };
 
 const START_FENSTER_MS = 5 * 60_000;
+
+/** P16-T24: Core-Checker (typen-pruefung-worker.js + file-diff.js) einmal lesen; geht als Text an pruefer_typen.py. */
+let typEngine: Promise<{ engine: string; diff: string }> | null = null;
+function ladeTypEngine(): Promise<{ engine: string; diff: string }> {
+  typEngine ??= (async () => {
+    const core = path.dirname(fileURLToPath(import.meta.resolve('@synapse/core')));
+    const [engine, diff] = await Promise.all([
+      readFile(path.join(core, 'services/typen-pruefung-worker.js'), 'utf8'),
+      readFile(path.join(core, 'services/file-diff.js'), 'utf8'),
+    ]);
+    return { engine, diff };
+  })().catch((err) => { typEngine = null; throw err; });
+  return typEngine;
+}
+function leereTypPruefung(status: TypPruefung['status'], hinweis: string, ortMs: number): TypPruefung {
+  return { status, dauer_ms: 0, befunde: [], altlasten: 0, dateien: [], vollstaendig: false, fehlende_module: [], betroffene_aufrufer: [], hinweis, ort: 'pruefcontainer', ort_ms: ortMs };
+}
 const MAX_TIMEOUTS_IN_FOLGE = 3;
 /** Diagnose: so viele Auftragsdauern fuer p50/p95, so viele letzte Fehler. */
 const DAUERN_MAX = 200;
@@ -662,6 +691,49 @@ export class PruefContainer {
     }
   }
 
+  /** P16-T24: Zaehler der Plan-Typpruefung (Diagnose). */
+  private typZ = { auftraege: 0, fehler: 0, zeitlimit: 0, letzte_ms: null as number | null, letzter_status: null as string | null };
+
+  /**
+   * P16-T24: kleine Typpruefung je files-Plan im Pruef-Container. Wirft nie: Container nicht erreichbar/Pause/altes
+   * Image -> nicht_verfuegbar, Budget gerissen -> zeitlimit (beides sperrt nicht). Kein Workspace, kein eigener Container.
+   */
+  async pruefeTypen(auftrag: TypAuftrag): Promise<TypPruefung> {
+    const t0 = Date.now();
+    this.typZ.auftraege++;
+    let timer: NodeJS.Timeout | undefined;
+    const ende = (r: TypPruefung): TypPruefung => {
+      this.typZ.letzte_ms = Date.now() - t0;
+      this.typZ.letzter_status = r.status;
+      if (r.status === 'zeitlimit') this.typZ.zeitlimit++;
+      return r;
+    };
+    if (Date.now() < this.pauseBis) return ende(leereTypPruefung('nicht_verfuegbar', `Pruef-Container pausiert: ${this.pauseGrund}`, 0));
+    this.letzteAktivitaet = Date.now();
+    const lauf = (async (): Promise<TypPruefung> => {
+      const [engine] = await Promise.all([ladeTypEngine(), this.bereitMachen()]);
+      const rest = auftrag.budget_ms - (Date.now() - t0);
+      if (rest <= 0) return leereTypPruefung('zeitlimit', 'Pruef-Container nicht innerhalb des Typbudgets bereit.', Date.now() - t0);
+      const antwort = await this.schicke({ typen: { ...engine, auftrag: { ...auftrag, budget_ms: rest } } }, rest + 2000) as Antwort;
+      this.letzteAktivitaet = Date.now();
+      if (!antwort.typen) return leereTypPruefung('nicht_verfuegbar', 'Antwort ohne typen (Image ohne P16-T24? neu bauen: docker/synapse-pruefcontainer)', Date.now() - t0);
+      return { ...antwort.typen, ort: 'pruefcontainer', ort_ms: Date.now() - t0 };
+    })();
+    try {
+      return ende(await Promise.race([lauf, new Promise<TypPruefung>((resolve) => {
+        timer = setTimeout(() => resolve(leereTypPruefung('zeitlimit', 'Typbudget im Pruef-Container ueberschritten; keine Typ-Sperre.', Date.now() - t0)), auftrag.budget_ms + 2000);
+        timer.unref();
+      })]));
+    } catch (err) {
+      this.typZ.fehler++;
+      this.merkeFehler(`Typpruefung: ${(err as Error).message}`);
+      return ende(leereTypPruefung('nicht_verfuegbar', (err as Error).message, Date.now() - t0));
+    } finally {
+      if (timer) clearTimeout(timer);
+      lauf.catch(() => {});
+    }
+  }
+
   /** P16-T16 E1: Zaehler der Build-Pruefung (Diagnose). */
   private buildZ = { auftraege: 0, fehler: 0, letzte_ms: null as number | null, letzter_status: null as string | null, budget_neustarts: 0 };
 
@@ -767,6 +839,8 @@ export class PruefContainer {
         // P16-T16 E2: Go-/Pyright-Versionen und Grenzen, nur wenn das Image sie meldet (sonst wie in E1).
         ...((this.info as { projektpruefung?: unknown } | null)?.projektpruefung ? { projektpruefung: (this.info as { projektpruefung?: unknown }).projektpruefung } : {}),
       },
+      // P16-T24: Plan-Typpruefung im selben Container (Ort/Dauer der letzten Pruefung).
+      typen: { ort: 'pruefcontainer', ...this.typZ, werkzeug: (this.info as { typen?: unknown } | null)?.typen ?? null },
       zaehler: { ...this.z },
     };
   }
@@ -847,6 +921,8 @@ export async function registriereContainerSyntaxPruefer(opt: { docker?: Docker; 
     budget: () => ({ speicher_mb: pc.cfg.memMb, tmpfs_mb: pc.cfg.tmpfsMb }),
   });
   registriereInternQuelle('build_pruefung', () => buildPruefungZustand());
+  // P16-T24: Plan-Typpruefung ueber denselben Container (nie mehr Projekt-Workspace).
+  registriereTypContainerPruefer((a) => pc.pruefeTypen(a));
   await synchronisiereBuildBudget(true).catch(() => false);
   if (opt.takt !== false) pc.starteTakt();
   instanz = pc;
@@ -865,5 +941,6 @@ export async function beendePruefContainer(): Promise<void> {
   const p = instanz;
   instanz = null;
   registriereBuildPruefer(null);
+  registriereTypContainerPruefer(null);
   if (p) await p.beenden();
 }
