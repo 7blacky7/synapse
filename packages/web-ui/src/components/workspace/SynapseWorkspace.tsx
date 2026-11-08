@@ -7,6 +7,8 @@ import { ChannelSuche } from '../../components/ChannelSuche';
 // P22-T270: Agententeam als Suche + Ausweis-Fenster (Schalter web_ui_agententeam_suche, Standard AUS = bisheriger Knopf/Seite).
 import { AusweisFensterProvider } from '../../components/AusweisFenster';
 import { AgentenTeamSuche } from '../../components/AgentenTeamSuche';
+// P22-T289: Agentenfenster fuer jeden Agenten (Channel, Agententeam-Suche), Schalter web_ui_agentfenster_alle, Standard AUS.
+import { AgentFensterProvider, useAgentFensterKontext } from '../../components/AgentFenster';
 import { leseArbeitsbereichSchalter, type ArbeitsbereichSchalter } from '../../api/arbeitsbereich-schalter';
 import { MeineInbox } from '../../components/MeineInbox';
 import { AnmerkungSammelkorb } from '../../components/QuellenAnmerkungen';
@@ -44,7 +46,8 @@ import '../../ui-version.css';
 import '../../workspace-mobil.css';
 
 export default function SynapseWorkspace(props: Props) {
-  return <ChannelFensterProvider><AusweisFensterProvider><Arbeitsraum {...props} /></AusweisFensterProvider></ChannelFensterProvider>;
+  // P22-T289: AgentFensterProvider innerhalb des Ausweis-Providers (Knopf „Ausweis“) und ausserhalb der Channel-Fenster (Klick im Channel-Fenster).
+  return <AusweisFensterProvider><AgentFensterProvider><ChannelFensterProvider><Arbeitsraum {...props} /></ChannelFensterProvider></AgentFensterProvider></AusweisFensterProvider>;
 }
 function Arbeitsraum({ project: initialProject, onLogout }: Props) {
   const [theme, setTheme] = useState<Theme>('dark');
@@ -99,6 +102,14 @@ function Arbeitsraum({ project: initialProject, onLogout }: Props) {
   useEffect(() => { let aktiv=true; void leseArbeitsbereichSchalter(selectedProject,'editor_modul').then(s=>{if(aktiv)setEditorSchalter(s);}); return()=>{aktiv=false;}; },[selectedProject]);
   const [agententeamSuche, setAgententeamSuche] = useState<ArbeitsbereichSchalter | null>(null);
   useEffect(() => { let aktiv=true; const lesen=()=>void leseArbeitsbereichSchalter(selectedProject,'web_ui_agententeam_suche').then(s=>{if(aktiv)setAgententeamSuche(s);}); lesen(); const t=window.setInterval(lesen,60000); return()=>{aktiv=false;window.clearInterval(t);}; },[selectedProject]);
+  // P22-T280: Hauptagent-/Koordinatorfenster ueber dem HUD (Schalter web_ui_agentfenster, Standard AUS, nur ausdruecklich).
+  const [agentfenster, setAgentfenster] = useState<ArbeitsbereichSchalter | null>(null);
+  useEffect(() => { let aktiv=true; const lesen=()=>void leseArbeitsbereichSchalter(selectedProject,'web_ui_agentfenster').then(s=>{if(aktiv)setAgentfenster(s);}); lesen(); const t=window.setInterval(lesen,60000); return()=>{aktiv=false;window.clearInterval(t);}; },[selectedProject]);
+  // P22-T289: Agentenfenster fuer jeden Agenten (Schalter web_ui_agentfenster_alle, Standard AUS, nur ausdruecklich); Stand an den Provider.
+  const agentFensterKontext = useAgentFensterKontext();
+  const [agentfensterAlle, setAgentfensterAlle] = useState<ArbeitsbereichSchalter | null>(null);
+  useEffect(() => { let aktiv=true; const lesen=()=>void leseArbeitsbereichSchalter(selectedProject,'web_ui_agentfenster_alle').then(s=>{if(aktiv)setAgentfensterAlle(s);}); lesen(); const t=window.setInterval(lesen,60000); return()=>{aktiv=false;window.clearInterval(t);}; },[selectedProject]);
+  useEffect(() => { agentFensterKontext?.setzeSchalter(agentfensterAlle); }, [agentfensterAlle]);
   const [channelSuche, setChannelSuche] = useState<ArbeitsbereichSchalter | null>(null);
   useEffect(() => { let aktiv=true; const lesen=()=>void leseArbeitsbereichSchalter(selectedProject,'web_ui_channel_suche').then(s=>{if(aktiv)setChannelSuche(s);}); lesen(); const t=window.setInterval(lesen,60000); return()=>{aktiv=false;window.clearInterval(t);}; },[selectedProject]);
   useEffect(() => { const navigiere=(e:Event)=>{const d=(e as CustomEvent<{project:string;area:Area}>).detail;if(d?.project)setSelectedProject(d.project);if(d?.area)setArea(d.area);}; window.addEventListener('synapse:channel-navigation',navigiere);return()=>window.removeEventListener('synapse:channel-navigation',navigiere);},[]);
@@ -316,6 +327,8 @@ function Arbeitsraum({ project: initialProject, onLogout }: Props) {
       data-channel-suche={channelSuche?.aktiv ? 'ein' : 'aus'} data-channel-suche-quelle={channelSuche?.quelle ?? 'laden'} data-channel-suche-fehler={channelSuche?.fehler ?? undefined}
       data-agententeam-suche={agententeamSuche?.aktiv ? 'ein' : 'aus'} data-agententeam-suche-quelle={agententeamSuche?.quelle ?? 'laden'} data-agententeam-suche-fehler={agententeamSuche?.fehler ?? undefined}
       data-animations={settings.animationsEnabled ? 'on' : 'off'}
+      data-agentfenster={agentfenster?.aktiv ? 'ein' : 'aus'} data-agentfenster-quelle={agentfenster?.quelle ?? 'laden'} data-agentfenster-fehler={agentfenster?.fehler ?? undefined}
+      data-agentfenster-alle={agentfensterAlle?.aktiv ? 'ein' : 'aus'} data-agentfenster-alle-quelle={agentfensterAlle?.quelle ?? 'laden'} data-agentfenster-alle-fehler={agentfensterAlle?.fehler ?? undefined}
       style={{
         '--accent': settings.accentColor,
         '--accent-soft': `color-mix(in srgb, ${settings.accentColor} 12%, transparent)`,
@@ -384,8 +397,8 @@ function Arbeitsraum({ project: initialProject, onLogout }: Props) {
           <div><strong>{area === 'settings' ? 'Einstellungen' : nav.flatMap((group) => group.items).find((item) => item.area === area)?.label ?? 'Synapse'}</strong><small>{selectedProject || 'Projekt wählen'}</small></div>
         </header>
         <div className="control-content">{renderArea()}</div>
-        {arbeitsbereich && <MainAgentView theme={theme} project={selectedProject} showDashboard={area === 'main-agent'} nurKnopf={arbeitsbereich.aktiv} />}
-        <ProjectCoordinatorDock />
+        {arbeitsbereich && <MainAgentView theme={theme} project={selectedProject} showDashboard={area === 'main-agent'} nurKnopf={arbeitsbereich.aktiv} ueberHud={agentfenster?.aktiv === true} />}
+        <ProjectCoordinatorDock ueberHud={agentfenster?.aktiv === true} />
         <MainAgentAssistantDock />
       </main>
     </div>
