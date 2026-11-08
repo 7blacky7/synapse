@@ -27,6 +27,8 @@
  *   POST /profile/:identity_id/rollback     {ziel_revision, erwartete_revision, grund}
  *   GET  /persona?ziel_identity_id=         persona_liste (+ aktuelle Zuweisung)
  *   POST /persona                           {profil_scope?, persona_name, persona_inhalt, user_auftrag?}
+ *   POST /persona/generieren                persona_generieren {persona_beschreibung, persona_aufgabe?, persona_vorschau?, ziel_identity_id?,
+ *                                           persona_zuweisen?, persona_kostentraeger_id?, persona_name?, user_auftrag?} (P22-T312)
  *   GET  /persona/:vorlage_id/versionen
  *   POST /persona/:vorlage_id/versionen     {persona_inhalt, user_auftrag?}
  *   PUT  /profile/:identity_id/persona      {persona_vorlage_id, persona_version, user_auftrag?}
@@ -92,6 +94,8 @@ const ROUTEN: RouteDef[] = [
   { methode: 'POST', pfad: '/profile/:identity_id/rollback', action: 'profil_rollback', quelle: req => ({ ...body(req), ziel_identity_id: params(req).identity_id }) },
   { methode: 'GET', pfad: '/persona', action: 'persona_liste', quelle: req => ({ ziel_identity_id: query(req).ziel_identity_id }) },
   { methode: 'POST', pfad: '/persona', action: 'persona_anlegen', quelle: body },
+  // P22-T312: Persona-Generator (Beschreibung -> Persona; persona_vorschau, persona_zuweisen, persona_kostentraeger_id, user_auftrag?).
+  { methode: 'POST', pfad: '/persona/generieren', action: 'persona_generieren', quelle: body },
   { methode: 'GET', pfad: '/persona/:vorlage_id/versionen', action: 'persona_versionen', quelle: req => ({ persona_vorlage_id: params(req).vorlage_id }) },
   { methode: 'POST', pfad: '/persona/:vorlage_id/versionen', action: 'persona_neue_version', quelle: req => ({ ...body(req), persona_vorlage_id: params(req).vorlage_id }) },
   { methode: 'PUT', pfad: '/profile/:identity_id/persona', action: 'persona_zuweisen', quelle: req => ({ ...body(req), ziel_identity_id: params(req).identity_id }) },

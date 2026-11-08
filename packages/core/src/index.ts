@@ -813,6 +813,8 @@ export * from './services/agent-profil-vertrag.js';
 export * from './services/tool-gate.js';
 export * from './services/agent-selbstfelder.js';
 export * from './services/agent-profil-schalter.js';
+// P22-T312: Persona-Generator nach der agent-hub-Vorlage (Generator, System-Prompt, Praxis-Skill, Startkontext).
+export * from './services/persona-generator.js';
 // P23-T5: Fall-Skills (kurze Tool-Beschreibungen, Fall-Skill-Hinweis bei Fehlbedienung je Weg).
 export * from './services/fall-skills.js';
 // P23-T3: schlanke Tool-Antworten (Produkt-Schalter tool_antworten_schlank, Standard AUS).

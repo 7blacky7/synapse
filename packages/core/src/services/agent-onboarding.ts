@@ -415,6 +415,8 @@ export async function holeAgentOnboarding(e: {
   }
   // P22-T53 (3): per Name im Profil verwiesene Memories/Tasks als EINE Zeile (ohne Volltext).
   const kontextVerweise = w12 ? await kontextVerweiseFuer(w12.identity_id, project).catch(() => null) : null;
+  // P22-T312 (SOLL 2): zugewiesene Persona als System-Prompt in den Start des Laufs (nur Schalter persona EIN; wirft nie).
+  const personaTeil = w12 ? await (await import('./persona-generator.js')).personaStartTeil(w12.identity_id, agentId, project) : null;
   // P22-T141: eine Zeile zu den Design-Vorlieben des Users (Schalter artefakt_bewertung, nur mit Eintraegen; sonst nichts).
   const design = await import('./artefakt-bewertung.js').then((m) => m.designVorliebenZeile()).catch(() => null);
   // P22-T49: Koordinator mit Ausweis bei chat(anmelden) -> kurze Ausgabe (Handoff, aktiver Plan, Top 3, Regelnamen).
@@ -433,7 +435,7 @@ export async function holeAgentOnboarding(e: {
         ...(kurz.top3.length ? { top3: kurz.top3 } : {}),
         regeln: kurz.regeln,
         ...(kurz.channels ? { channels: kurz.channels } : {}),
-        ...profilErg.teil,
+        ...profilErg.teil, ...(personaTeil ? { persona: personaTeil } : {}),
         ...(skills ? { skills } : {}), ...(kontextVerweise ? { kontext_verweise: kontextVerweise } : {}),
         ...(kurz.skills_andere.length ? { skills_andere: kurz.skills_andere } : {}),
         ...(design ? { design_vorlieben: design } : {}),
@@ -466,7 +468,7 @@ export async function holeAgentOnboarding(e: {
         rules: regelwerk.rules,
         regel_verzeichnis: { ...(namen.length ? { regeln: namen } : {}), abruf: regelwerk.regel_verzeichnis.abruf },
         ...(kurz.channels.length ? { channels: kurz.channels } : {}),
-        ...profilErg.teil,
+        ...profilErg.teil, ...(personaTeil ? { persona: personaTeil } : {}),
         ...(kurz.eigene_tasks.length ? { eigene_tasks: kurz.eigene_tasks } : {}),
         ...(skills ? { skills } : {}), ...(kontextVerweise ? { kontext_verweise: kontextVerweise } : {}),
         ...(faelle ? { erklaerung_faelle: faelle } : {}),
@@ -513,7 +515,7 @@ export async function holeAgentOnboarding(e: {
     ...(plaene.length ? { plaene } : {}),
     ...(design ? { design_vorlieben: design } : {}),
     // W12-B: nur fuer Token-Agenten mit Lauf bei Kern EIN (sonst Bestandsform unveraendert).
-    ...profilErg.teil,
+    ...profilErg.teil, ...(personaTeil ? { persona: personaTeil } : {}),
     ...(skills ? { skills } : {}), ...(kontextVerweise ? { kontext_verweise: kontextVerweise } : {}),
     ...(w12 ? { neuinstanz_hinweis: neuinstanzText, zustellung: { ...zustellAnzeige(w12.umfang), profilblock: profilErg.zugestellt, lauf_id: w12.lauf_id, ...regelDiagnose } } : {}),
   };

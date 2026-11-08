@@ -150,6 +150,9 @@ export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
   code_intel_lock_timeout_ms: { art: 'zahl', standard: 2000, min: 100, max: 60000 },
   // P22-T314 (Pruefer-Fix): Schonfrist, bevor eine Datei mit parsed_at < updated_at als GEAENDERT faellig wird (code.ts).
   parse_geaendert_schonfrist_s: { art: 'zahl', standard: 120, min: 0, max: 3600 },
+  // P22-T312: Persona-Generator (persona-generator.ts) - Modell (Registry-Alias, Standard guenstig) und Ausgabelimit des einen Aufrufs.
+  persona_generator_modell: { art: 'liste', standard: ['api-haiku'], erlaubt: ['api-haiku', 'api-sonnet', 'api-opus', 'api-fable', 'or-deepseek-chat', 'ds-flash', 'ds-v4-pro'] },
+  persona_generator_max_tokens: { art: 'zahl', standard: 2000, min: 500, max: 8000 },
   // P22-T314 (User-Vorgabe 7613eaee): code_intel wartet hoechstens so lange auf die kleine Typpruefung (files-Plan-Pruefung: typen_ms).
   code_intel_typen_ms: { art: 'zahl', standard: 5000, min: 500, max: 120000 },
   // P22-T192: User-Inbox; PG-Werte ueber bestehendes admin runtime_ueberwachung und Web-UI lesbar/setzbar.

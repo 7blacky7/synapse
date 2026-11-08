@@ -236,10 +236,12 @@ export function pflichtAnteil(schluessel: string, wert: unknown): unknown {
     case 'onboarding': {
       // P22-T313 B1: die eine Besuchszeile (Visum) ist schon minimal und bleibt erhalten.
       if (istObjekt(wert) && wert.besuch === true) return wert;
-      if (!istObjekt(wert) || !Array.isArray(wert.rules)) return undefined;
-      const rules = wert.rules.filter(r => istObjekt(r) && r.vollstaendig === true && typeof r.content === 'string');
-      if (!rules.length) return undefined;
-      return { isFirstVisit: wert.isFirstVisit, project: wert.project, rolle: wert.rolle, rules, nur_pflichtregeln: true,
+      if (!istObjekt(wert)) return undefined;
+      // P22-T312: eine zugewiesene Persona (nur auf User-Wunsch) gehoert zum Startkontext und bleibt auch im minimalen Profil.
+      const persona = istObjekt(wert.persona) ? { persona: wert.persona } : null;
+      const rules = Array.isArray(wert.rules) ? wert.rules.filter(r => istObjekt(r) && r.vollstaendig === true && typeof r.content === 'string') : [];
+      if (!rules.length && !persona) return undefined;
+      return { isFirstVisit: wert.isFirstVisit, project: wert.project, rolle: wert.rolle, rules, ...(persona ?? {}), nur_pflichtregeln: true,
         nachladen: 'admin(action:"index_stats", project, sitzung:"fortsetzung", onboarding:true) liefert das vollstaendige Onboarding' };
     }
     default:

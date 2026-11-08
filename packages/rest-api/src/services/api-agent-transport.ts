@@ -23,6 +23,24 @@ import {
   type ApiAnbieter, type ApiNachricht, type ApiWerkzeugDef, type ApiAnbieterAntwort, type ApiUsage, type ApiNutzung,
 } from '@synapse/core';
 
+import { registrierePersonaGenerator, leseProfilProduktSchalter } from '@synapse/core';
+
+/**
+ * P22-T312: der kurzlebige Persona-Generator-Lauf ist EIN Aufruf ueber diesen Transport (Schalter api_agenten, Freigabe der
+ * Kostentraeger-Identitaet, Budget-Reservierung und Buchung wie jeder API-Agent; keine neue Kostenquelle).
+ */
+registrierePersonaGenerator(async (g) => {
+  // Koordinator 08.11.2026: die Registrierung beim Import wirkt nie ohne Schalter - jede Ausfuehrung prueft persona im Projekt
+  // des Auftrags selbst (zusaetzlich zur Pruefung in generierePersona), vor Reservierung und Anbieteraufruf.
+  if (!(await leseProfilProduktSchalter('persona', g.schalter_project)).aktiv) {
+    throw new TransportFehler('funktion_aus', 403, 'Persona-Generator: Schalter persona im Projekt ist AUS');
+  }
+  const e = await rufeApiTransport({ kontext: { ...g.kontext, zugang: 'agent' }, modell: g.modell, system: g.system, max_tokens: g.max_tokens,
+    verlauf: [{ rolle: 'user', inhalt: [{ typ: 'text', text: g.nachricht }] }], werkzeuge: [] });
+  const text = e.antwort.inhalt.map((b) => (b.typ === 'text' ? b.text : '')).join('\n');
+  return { text, kosten_usd: typeof e.kosten?.usd === 'number' ? e.kosten.usd : null };
+});
+
 /** Ein Bild zaehlt fuer die Reservierung pauschal so viele Zeichen (statt seiner Base64-Laenge). */
 const BILD_ZEICHEN = 5_000;
 const ZEITLIMIT_MS = 30 * 60_000;

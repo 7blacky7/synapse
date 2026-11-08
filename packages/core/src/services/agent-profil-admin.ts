@@ -62,6 +62,8 @@ const W1B_KERN_AKTIONEN = [
   'typ_liste', 'typ_anlegen', 'typ_aendern', 'typ_revision_lesen',
   'profil_aendern', 'profil_historie', 'profil_rollback',
   'persona_liste', 'persona_versionen', 'persona_anlegen', 'persona_neue_version', 'persona_zuweisen', 'persona_entfernen',
+  // P22-T312: Persona-Generator (Beschreibung -> Persona nach agent-hub-Vorlage; Vorschau, Bibliothek, optional zuweisen).
+  'persona_generieren',
   'agent_vorbereiten', 'token_abrufen', 'token_loeschen', 'web_ui_koordinator_token',
   'task_bindung_lesen', 'task_bindung_festlegen', 'task_bindung_aendern', 'task_bindung_entblocken',
   // P22-T45: Ausweis-Fristen als Einstellung (modus status|setzen|entfernen).
@@ -97,6 +99,13 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   persona_inhalt: { type: 'object', additionalProperties: true, description: 'Persona (nur auf User-Wunsch): Inhalt der Vorlage/Version' },
   persona_vorlage_id: { type: 'string', description: 'Persona: Vorlagen-ID' },
   persona_version: { type: 'number', description: 'Persona: zugewiesene Bibliotheksversion' },
+  // P22-T312 (SOLL 4, Option beim Erstellen eines Agenten: Persona an/aus; Beschreibung oder Vorlage):
+  persona_beschreibung: { type: 'string', description: 'persona_generieren: kurze Beschreibung des Agenten (Generator nach agent-hub-Vorlage)' },
+  persona_aufgabe: { type: 'string', description: 'persona_generieren: Aufgabe/Einsatzzweck fuer den System-Prompt (Standard = Beschreibung)' },
+  persona_vorschau: { type: 'boolean', description: 'persona_generieren: true = nur Vorschau (Persona + System-Prompt), nichts gespeichert' },
+  persona_zuweisen: { type: 'boolean', description: 'persona_generieren: gespeicherte Vorlage gleich ziel_identity_id zuweisen' },
+  persona_an: { type: 'boolean', description: 'agent_vorbereiten: Persona beim Erstellen an (Standard aus); dazu persona_beschreibung (Generator) oder persona_vorlage_id (+persona_version), user_auftrag' },
+  persona_kostentraeger_id: { type: 'string', description: 'persona_generieren/agent_vorbereiten: Identitaet mit API-Freigabe, die den Generator-Aufruf traegt (User-Aufruf; Standard ziel_identity_id)' },
   user_auftrag: { type: 'string', description: 'Persona/Profil: dokumentierter User-Auftrag (Wortlaut) fuer Koordinator-Aufrufe' },
   user_zustimmung: { type: 'string', description: 'Schattenprofil: Nachweis der User-Zustimmung bzw. Freigabe zum Alleinbestaetigen' },
   anlass: { type: 'string', description: 'token_abrufen: Anlass des Abrufs (Audit, ohne Tokenwert)' },
@@ -148,7 +157,7 @@ const GRUPPE: Record<W1bAdminAction, ProfilProduktFunktion | null> = {
   profil_uebersicht: 'profilverwaltung', profil_aendern: 'profilverwaltung', profil_historie: 'profilverwaltung', profil_rollback: 'profilverwaltung',
   schattenprofil_liste: 'agenten_ausweis', schattenprofil_korrigieren: 'agenten_ausweis', schattenprofil_bestaetigen: 'agenten_ausweis', schattenprofil_ablehnen: 'agenten_ausweis',
   typ_liste: 'typkatalog', typ_anlegen: 'typkatalog', typ_aendern: 'typkatalog', typ_revision_lesen: 'typkatalog',
-  persona_liste: 'persona', persona_versionen: 'persona', persona_anlegen: 'persona', persona_neue_version: 'persona', persona_zuweisen: 'persona', persona_entfernen: 'persona',
+  persona_liste: 'persona', persona_versionen: 'persona', persona_anlegen: 'persona', persona_neue_version: 'persona', persona_zuweisen: 'persona', persona_entfernen: 'persona', persona_generieren: 'persona',
   // W12 V7: Ausweis-Aktionen haengen am Ausweis-Kern (leseAusweisKern), nicht mehr am Produkt-Schalter token_abruf.
   agent_vorbereiten: null, token_abrufen: null, token_loeschen: null, web_ui_koordinator_token: null,
   task_bindung_lesen: 'task_bindung', task_bindung_festlegen: 'task_bindung', task_bindung_aendern: 'task_bindung', task_bindung_entblocken: 'task_bindung',
@@ -307,12 +316,21 @@ async function fuehreAusweisAktionAus(action: AusweisAktion, args: Args, akteur:
   if (!wer) throw new ProfilVerwaltungFehler('recht_fehlt');
   switch (action) {
     case 'agent_vorbereiten': {
+      // P22-T312 SOLL 4 (User 08.11.2026 'beim Erstellen eines Agenten optional Persona an oder Persona aus'): Standard aus. Die Option
+      // wird VOR dem Anlegen geprueft (Schalter, Beschreibung XOR Vorlage, User-Auftrag) und NACH dem Anlegen angewendet (wirft nie).
+      const personaAn = args.persona_an === true;
+      const personaOpt = { beschreibung: s(args, 'persona_beschreibung'), aufgabe: s(args, 'persona_aufgabe'), name: s(args, 'persona_name'),
+        vorlage_id: s(args, 'persona_vorlage_id'), version: typeof args.persona_version === 'number' ? args.persona_version : null,
+        kostentraeger_identity_id: s(args, 'persona_kostentraeger_id') };
+      const pg = personaAn ? await import('./persona-generator.js') : null;
+      if (pg) await pg.pruefePersonaOption(personaOpt, project, wer, args.user_auftrag);
       const r = await W12_DIENSTE.ausweis.agentVorbereiten({
         project, name: s(args, 'agent_name'), identity_id: s(args, 'ziel_identity_id'), rolle: s(args, 'rolle'),
         typ_id: args.typ_id === null ? null : s(args, 'typ_id'), profil: o(args, 'profil_patch') as Partial<ProfilInhalt> | undefined,
         startart: s(args, 'startart') as Startart | undefined, grund: pflichtText(args.grund, 'grund_fehlt'), user_auftrag: s(args, 'user_auftrag'),
       }, wer);
-      return { ...r, hinweis: AUSWEIS_HINWEIS };
+      const persona = pg ? await pg.personaBeimErstellen({ ...personaOpt, project: r.project, identity_id: r.identity_id }, wer, s(args, 'user_auftrag')) : null;
+      return { ...r, ...(persona ? { persona } : {}), hinweis: AUSWEIS_HINWEIS };
     }
     case 'token_abrufen': {
       const ziel = pflicht(s(args, 'ziel_identity_id'), 'ziel_identity_id_fehlt');
@@ -537,6 +555,15 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
         scope, project: scope === 'projekt' ? project : null, name: s(a, 'persona_name') as string, inhalt: o(a, 'persona_inhalt') as Record<string, unknown>,
       }, akteur, a.user_auftrag as string);
       return { version };
+    }
+    case 'persona_generieren': {
+      // P22-T312: Rechte (User-Auftrag, global nur User), Schalter persona und Kostenweg in persona-generator.ts.
+      const { generierePersona } = await import('./persona-generator.js');
+      const ziel = s(a, 'ziel_identity_id') ? await zielIdentitaet(project, s(a, 'ziel_identity_id')) : null;
+      return { project, ...(await generierePersona({ project, beschreibung: s(a, 'persona_beschreibung') as string, aufgabe: s(a, 'persona_aufgabe'),
+        name: s(a, 'persona_name'), scope: (s(a, 'profil_scope') ?? 'projekt') as 'global' | 'projekt', vorschau: a.persona_vorschau === true,
+        ziel_identity_id: ziel, zuweisen: a.persona_zuweisen === true,
+        kostentraeger_identity_id: s(a, 'persona_kostentraeger_id') ? await zielIdentitaet(project, s(a, 'persona_kostentraeger_id')) : null }, akteur, a.user_auftrag as string)) };
     }
     case 'persona_neue_version': {
       const id = await vorlageImProjekt(project, s(a, 'persona_vorlage_id'));
