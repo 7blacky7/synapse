@@ -348,8 +348,8 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige, identity
                   <em>{[aktiv ? 'läuft' : '', grund ?? ''].filter(Boolean).join(' · ')}</em>
                 </button>
                 {gewaehltHier && <div className="effort-leiste"><div className="efforts" role="group" aria-label={'API-Wechsel zu ' + m.alias + ' bestätigen'}>
-                  <small>kostenpflichtig{rt || apiAktuell ? ' · der bisherige Lauf wird kontrolliert gestoppt' : ''}</small>
-                  <button type="button" className="effort an" disabled={busy} onClick={() => void starteApi(m)}>{busy ? 'startet …' : 'bestätigen'}</button>
+                  <small>Startet sofort einen kostenpflichtigen API-Lauf · {preisEtikett(m)} je 1 Mio Tokens (Ein / Aus){rt || apiAktuell ? ' · der bisherige Lauf wird kontrolliert gestoppt' : ''}</small>
+                  <button type="button" className="effort an" disabled={busy} onClick={() => void starteApi(m)}>{busy ? 'startet …' : 'kostenpflichtig starten'}</button>
                   <button type="button" className="effort" disabled={busy} onClick={() => setApiZiel(null)}>abbrechen</button>
                 </div></div>}
               </div>;
