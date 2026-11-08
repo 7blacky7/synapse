@@ -234,6 +234,8 @@ export function pflichtAnteil(schluessel: string, wert: unknown): unknown {
       return treffer.length ? { ...wert, anzahl: treffer.length, treffer, nur_pflichtanteil: true } : undefined;
     }
     case 'onboarding': {
+      // P22-T313 B1: die eine Besuchszeile (Visum) ist schon minimal und bleibt erhalten.
+      if (istObjekt(wert) && wert.besuch === true) return wert;
       if (!istObjekt(wert) || !Array.isArray(wert.rules)) return undefined;
       const rules = wert.rules.filter(r => istObjekt(r) && r.vollstaendig === true && typeof r.content === 'string');
       if (!rules.length) return undefined;

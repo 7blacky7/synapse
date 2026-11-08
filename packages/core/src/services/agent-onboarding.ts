@@ -288,6 +288,22 @@ const TEXT_FORTSETZUNG = '📋 FORTSETZUNG: Bestehende Identität, neuer Kontext
 /** P22-T50: chat(anmelden) mit Ausweis = Neuanmeldung (neuer Lauf), auch nach Kontextverlust. */
 const TEXT_ANMELDUNG = '📋 ANMELDUNG (Ausweis, neuer Lauf): Projekt-Regeln:';
 
+/** P22-T313 B1: eine Zeile fuer Besucher mit Ausweis (Visum) - Projekt, Koordinator, Regelnamen, Abrufzeile. */
+async function besuchsZeile(project: string, heimat: string, rolle: string): Promise<Record<string, unknown>> {
+  let koordinator: string | null = null;
+  try {
+    koordinator = (await getPool().query<{ agent_id: string }>(
+      `SELECT agent_id FROM agent_identitaeten WHERE project=$1 AND rolle='koordinator' AND status='aktiv'
+        ORDER BY zuletzt_aktiv DESC NULLS LAST LIMIT 1`, [project])).rows[0]?.agent_id ?? null;
+  } catch { /* Koordinator ist Zugabe */ }
+  const regelwerk = baueOnboardingRegelwerk(await getOnboardingMemories(project), project, rolle as Parameters<typeof baueOnboardingRegelwerk>[2]);
+  const namen = [...new Set(regelwerk.rules.map((r) => r.name))];
+  const zeile = 'BESUCH (Visum, Heimat ' + heimat + ') in ' + project + ': Koordinator ' + (koordinator ?? 'keiner') + '; Regeln (' + namen.length + '): '
+    + (namen.slice(0, 40).join(', ') || 'keine') + (namen.length > 40 ? ', ...' : '') + '. Abruf: memory(action:"read", project:"' + project
+    + '", name:"<regel>"); volles Onboarding nur ausdruecklich: admin(action:"index_stats", project:"' + project + '", onboarding:true).';
+  return { isFirstVisit: true, besuch: true, project, message: zeile };
+}
+
 export async function holeAgentOnboarding(e: {
   project: string; agentId: string; role?: string; serverInstanceId: string;
   explizit?: boolean; vorbereiten?: () => Promise<void>;
@@ -302,6 +318,22 @@ export async function holeAgentOnboarding(e: {
   // P22-T131: Neuinstanz-Hinweis nennt agent_kennung nur bei Schalter agent_kennung_werbung EIN.
   const neuinstanzText = await kennungsText(TEXT_NEUINSTANZ, project);
   const { rolle, quelle } = rolleFuerAgent(agentId, e.role);
+  // P22-T313 B1 (Befund 08.11.2026, ~50k Zeichen beim channel post per Visum): Besucher MIT Ausweis im fremden Projekt bekommen
+  // beim ersten Besuch hoechstens EINE Zeile (Projekt, Koordinator, Regelnamen, Abrufzeile), nie den Volltext; danach nichts.
+  // Volles Onboarding nur ausdruecklich (admin index_stats onboarding:true bzw. explizit).
+  if (!e.explizit) {
+    const { aktuellerAgentPrincipal, aktuellerAgentAufruf } = await import('./agent-bezug.js');
+    const p = aktuellerAgentPrincipal();
+    // Gegenpruefung (claude-buche): im ECHTEN Visum-Weg ist der principal 'legacy' im Projekt B und die Heimat steht in
+    // aufruf.fremdprojekt (P22-T44, agent-bezug.ts:32-33). Der identity-Fall bleibt fuer Wege, die den Heimat-principal tragen.
+    const fremd = aktuellerAgentAufruf()?.fremdprojekt;
+    const heimat = fremd && fremd.project === project && fremd.heimat !== project ? fremd.heimat
+      : p?.art === 'identity' && p.project && p.project !== project ? p.project : null;
+    if (heimat) {
+      const geliefert = await registerAgent(project, agentId, e.serverInstanceId, rolle, quelle, false);
+      return geliefert ? await besuchsZeile(project, heimat, rolle).catch(() => null) : null;
+    }
+  }
   // W12-B: null = Bestandsverhalten (kein Token-Agent mit Lauf, Kern AUS oder Lesefehler).
   const w12 = await w12ZustellKontext(project, agentId, !!e.explizit).catch(() => null);
   const folge = w12 && !e.explizit ? w12 : null;

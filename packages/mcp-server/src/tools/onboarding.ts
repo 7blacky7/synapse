@@ -167,11 +167,20 @@ export async function checkAgentOnboarding(
         }
       },
     });
-    return block ? { ...block, ...(setupHinweis ? { setup_hinweis: setupHinweis } : {}) } : { isFirstVisit: false };
+    return block ? { ...alsOnboardingErgebnis(block), ...(setupHinweis ? { setup_hinweis: setupHinweis } : {}) } : { isFirstVisit: false };
   } catch (error) {
     console.error('[Synapse MCP] Onboarding-Aufbereitung fehlgeschlagen:', error);
     return { isFirstVisit: false };
   }
+}
+
+/**
+ * P22-T313: holeAgentOnboarding liefert auch die Besuchszeile (Visum) als Record<string, unknown>. isFirstVisit wird hier
+ * geprueft statt ungeprueft geglaubt; fehlt es, gilt false (wie ohne Block).
+ */
+function alsOnboardingErgebnis(block: object): OnboardingResult {
+  const erster = (block as { isFirstVisit?: unknown }).isFirstVisit;
+  return (typeof erster === 'boolean' ? block : { ...block, isFirstVisit: false }) as OnboardingResult;
 }
 
 /** Name der auto-injizierten Handoff-Regel */

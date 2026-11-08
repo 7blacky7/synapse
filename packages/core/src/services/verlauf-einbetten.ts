@@ -523,10 +523,12 @@ async function leseVerlaufUmfeld(wer: VerlaufSucher, verlaufId: string, umfeld: 
   const { rows } = await getPool().query<{ id: string; rolle: string; weg: string; lauf_id: string | null; erstellt_am: Date; text: string; meta: Record<string, unknown> }>(
     `SELECT * FROM (
        (SELECT id::text AS id, rolle, weg, lauf_id, erstellt_am, text, meta, id AS ord FROM hauptagent_verlauf
-         WHERE identity_id = $1 AND id <= $2::bigint ORDER BY id DESC LIMIT $3)
+         WHERE identity_id = $1 AND id <= $2::bigint ORDER BY ord DESC LIMIT $3)
        UNION ALL
        (SELECT id::text AS id, rolle, weg, lauf_id, erstellt_am, text, meta, id AS ord FROM hauptagent_verlauf
-         WHERE identity_id = $1 AND id > $2::bigint ORDER BY id LIMIT $4)) u ORDER BY ord`,
+         WHERE identity_id = $1 AND id > $2::bigint ORDER BY ord LIMIT $4)) u ORDER BY ord`,
+    // P22-T313 B2: ORDER BY id griff auf die Textspalte id::text (Ausgabename vor Tabellenspalte) und sortierte '9999' vor '76137'
+    // -> die eigene Zeile fehlte im Umfeld (verlauf_id_unbekannt, jeder Lauf betroffen). Jetzt numerisch ueber ord.
     [wer.identity_id, verlaufId, umfeld + 1, umfeld]);
   if (!rows.some((r) => r.id === verlaufId)) {
     return { success: false, error: 'verlauf_id_unbekannt', hinweis: 'verlauf_id gehoert nicht zum eigenen Verlauf (oder existiert nicht). Nachlesen geht nur im eigenen Verlauf.' };
