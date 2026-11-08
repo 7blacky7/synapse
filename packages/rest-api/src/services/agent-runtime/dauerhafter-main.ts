@@ -9,6 +9,7 @@ import {
   leseHauptagentSchalter, hauptagentIdentitaetsId, leseMainLaufOptionen, runtimeDaemonAngemeldet, stelleMainLaufSicher,
   sendeMainTurn, MainLaufFehler, leseMainLauf, standardModellFuerRuntime, warteschlangeAktiv, type SpecialistZielRuntime,
   getPool, HAUPTAGENT_PROJEKT, apiProviderFuerModell, leseApiLaufSchalter, legeApiLaufAn, legeApiEingangAn, leseApiLaufWahl,
+  leseApiVerlaufHauptverlaufSchalter,
 } from '@synapse/core';
 import type { MainAgentSession, RuntimeMessageResult, RuntimeStreamEvent } from './types.js';
 import { merkeMainTurnSession, vergissMainTurnSession } from './artifact-stream.js';
@@ -26,7 +27,14 @@ const API_MAIN_WARTE_MS = 10 * 60_000;
 const RUECKFALL_WECHSEL_WARTE_MS = 90_000;
 
 /** P22-T278 P2-1: Ausgabe von apiLaufMainTurn an den Aufrufer, wenn der Turn in den Rueckfall ging (null = kein Auftrag offen). */
-export interface ApiMainTurnInfo { rueckfall?: { modell: string | null } }
+export interface ApiMainTurnInfo {
+  rueckfall?: { modell: string | null };
+  /** P22-T286/N2: Verlaufs-Schreiber der Route (Antwortzeile offen halten, echte Antwort nachtragen). */
+  verlauf_schreiber?: { ereignis(event: string, data: Record<string, unknown>): void;
+    abschliessen(status: 'fertig' | 'fehler' | 'abgebrochen', extra?: Record<string, unknown>): Promise<void> };
+  /** P22-T286: Route schliesst die Antwortzeile NICHT ab (der Turn schreibt sie zu Ende). */
+  zeit?: boolean;
+}
 
 /**
  * P22-T278 P2-1: Nach dem Rueckfall startet der Runtime-Daemon den Main ueber den Modellwechsel-Auftrag (stop + spawn). Der Chat-Turn
@@ -76,6 +84,11 @@ export async function apiLaufMainTurn(
     gestartet_von: 'user' });
   emit({ event: 'runtime', data: { hauptagent: { weg: 'api_lauf', identity_id: identityId, modell, anbieter, schritt: 'arbeitet' } } });
   const eingang = await legeApiEingangAn({ identity_id: identityId, text: message, quelle: 'main_chat', absender: 'user' });
+  // P22-T286: nur bei Schalter EIN uebernimmt der Turn die Antwortzeile (sonst Bestand: die Route schreibt).
+  const hauptAn = (await leseApiVerlaufHauptverlaufSchalter(HAUPTAGENT_PROJEKT)).aktiv;
+  const schreiber = info?.verlauf_schreiber ?? null;
+  if (hauptAn && schreiber) verwaltung.setzeMainSchreiber(identityId, schreiber);
+  try {
   const r = await verwaltung.warteAufEingang(eingang.id, API_MAIN_WARTE_MS);
   if (r.art === 'nicht_begonnen' && r.code === 'rueckfall_container') {
     // Tageslimit gerade erschoepft: Rueckfall, diese Nachricht geht genau einmal ueber den Container-Main (Bestand) des Aufrufers.
@@ -94,12 +107,21 @@ export async function apiLaufMainTurn(
     throw Object.assign(new Error('Hauptagent per API-Lauf nicht moeglich (' + r.code + ')'), { code: r.code, meldung: null });
   }
   if (r.art === 'zeit') {
-    emit({ event: 'delta', data: { content: 'Der Hauptagent arbeitet noch (API-Lauf); die Antwort folgt, sobald der Turn endet.' } });
+    // P22-T286/N2: bei Schalter EIN schreibt der Turn die echte Antwort in dieselbe Zeile; AUS = Bestand.
+    if (hauptAn && schreiber) { if (info) info.zeit = true; verwaltung.setzeMainSchreiber(identityId, schreiber, true); }
+    else emit({ event: 'delta', data: { content: 'Der Hauptagent arbeitet noch (API-Lauf); die Antwort folgt, sobald der Turn endet.' } });
+    emit({ event: 'runtime', data: { hauptagent: { weg: 'api_lauf', schritt: 'wartet' } } });
   } else {
-    if (r.text) emit({ event: 'delta', data: { content: r.text } });
-    emit({ event: 'usage', data: { input_tokens: r.input_tokens, output_tokens: r.output_tokens, kosten_usd: r.kosten_usd, ende: r.ende } });
+    // P22-T286/K5b: Text kam bei Uebernahme schon gestreamt; usage sendet dieser Weg immer, die Route schliesst ab.
+    if (!(hauptAn && schreiber) && r.text) emit({ event: 'delta', data: { content: r.text } });
+    emit({ event: 'usage', data: { inputTokens: r.input_tokens, outputTokens: r.output_tokens, kontextTokens: r.kontext_tokens,
+      input_tokens: r.input_tokens, output_tokens: r.output_tokens, kosten_usd: r.kosten_usd, ende: r.ende } });
   }
   return { runtimeSessionId: session.runtimeSessionId, context: { ...(session.context ?? {}), hauptagent_weg: 'api_lauf' } };
+  } finally {
+    // P22-T286/K7: Registrierung loesen; im 'zeit'-Fall gehoert die Zeile dem Turn.
+    if (!(info?.zeit)) verwaltung.setzeMainSchreiber(identityId, null);
+  }
 }
 
 export async function dauerhafterMainTurn(

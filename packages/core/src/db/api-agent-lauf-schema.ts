@@ -83,6 +83,17 @@ CREATE TABLE IF NOT EXISTS api_agent_rueckfall (
   gesetzt_von TEXT NOT NULL,
   gesetzt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- P22-T286: einmal gebauter Sitzungs-Prompt je (Identitaet, Sitzung); Wiederverwendung nach einem Neustart des API-Prozesses.
+-- Additiv/idempotent. Der Prompt wird so gespeichert, wie er gebaut wird (User-Entscheidung 08.11.: Ausweis ist kein Geheimnis).
+CREATE TABLE IF NOT EXISTS api_agent_sitzung_prompt (
+  identity_id TEXT NOT NULL REFERENCES agent_identitaeten(id) ON DELETE CASCADE,
+  sitzung UUID NOT NULL,
+  system_prompt TEXT NOT NULL,
+  erstellt_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  aktualisiert_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (identity_id, sitzung)
+);
+CREATE INDEX IF NOT EXISTS idx_api_agent_sitzung_prompt_identity ON api_agent_sitzung_prompt (identity_id);
 CREATE TABLE IF NOT EXISTS api_agent_lauf_einstellungen (
   name TEXT PRIMARY KEY CHECK (name IN ('api_laeufe_max','buendel_sekunden','neustart_schwelle_prozent','lease_sekunden')),
   wert NUMERIC(18,6) NOT NULL CHECK (wert > 0),

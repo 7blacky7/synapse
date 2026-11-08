@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS api_agent_turns (
 CREATE INDEX IF NOT EXISTS idx_api_agent_turns_identity ON api_agent_turns (identity_id, gestartet_am DESC);
 -- api_agent_lauf_einstellungen: Einstellwerte der Lauf-Verwaltung (Regel 7: Code-Standard + PG-Wert, Quelle in der Antwort).
 --   api_laeufe_max Standard 3, 1..10 (Entscheid F5, nur User); buendel_sekunden Standard 10 (O3); neustart_schwelle_prozent
---   Standard 85 (Neustart mit Uebergabe); lease_sekunden Standard 900.
+--   Standard 80 (Neustart mit Uebergabe); lease_sekunden Standard 120.
 -- P22-T278 C: Rueckfall-Kette bei erreichtem Tageslimit (core api-rueckfall.ts); keine Zeile = Standard haiku -> codex/gpt-6.1-terra -> codex/gpt-6.1-luna.
 CREATE TABLE IF NOT EXISTS api_agent_rueckfall (
   id SMALLINT PRIMARY KEY CHECK (id = 1),
@@ -94,6 +94,17 @@ CREATE TABLE IF NOT EXISTS api_agent_rueckfall (
   gesetzt_von TEXT NOT NULL,
   gesetzt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- P22-T286: einmal gebauter Sitzungs-Prompt je (Identitaet, Sitzung); Wiederverwendung nach einem Neustart des API-Prozesses.
+-- Additiv/idempotent. Der Prompt wird so gespeichert, wie er gebaut wird (User-Entscheidung 08.11.: Ausweis ist kein Geheimnis).
+CREATE TABLE IF NOT EXISTS api_agent_sitzung_prompt (
+  identity_id TEXT NOT NULL REFERENCES agent_identitaeten(id) ON DELETE CASCADE,
+  sitzung UUID NOT NULL,
+  system_prompt TEXT NOT NULL,
+  erstellt_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  aktualisiert_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (identity_id, sitzung)
+);
+CREATE INDEX IF NOT EXISTS idx_api_agent_sitzung_prompt_identity ON api_agent_sitzung_prompt (identity_id);
 CREATE TABLE IF NOT EXISTS api_agent_lauf_einstellungen (
   name TEXT PRIMARY KEY CHECK (name IN ('api_laeufe_max','buendel_sekunden','neustart_schwelle_prozent','lease_sekunden')),
   wert NUMERIC(18,6) NOT NULL CHECK (wert > 0),

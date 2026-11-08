@@ -49,6 +49,11 @@ import { verlaufZitatAnhang, type VerlaufZitatAnhang } from './chat-zitate.js';
 export const HAUPTAGENT_VERLAUF_FUNKTION = 'hauptagent_verlauf' as const;
 /** P22-T81: Verlauf aller aktiven Identitaeten (Produkt-Schalter global, Standard EIN). */
 export const AGENT_VERLAUF_ALLE_FUNKTION = 'agent_verlauf_alle' as const;
+/**
+ * P22-T286: API-Laufzeiten (api-agent-lauf.ts) schreiben ihren Turn in hauptagent_verlauf. PRODUKT-Schalter, Standard AUS
+ * bis zur Abnahme; AUS = Bestand (nur api_agent_verlauf und die bisherigen zwei api:turn-/api:rueckfall-Zeilen).
+ */
+export const API_VERLAUF_HAUPTVERLAUF_FUNKTION = 'api_verlauf_hauptverlauf' as const;
 /** Abstand der Zwischenstaende einer laufenden Antwort (andere Geraete sehen sie nach hoechstens Drossel + Poll). */
 export const VERLAUF_DROSSEL_MS = 1_000;
 /** Seitengroesse beim Laden (Standard/Obergrenze). Betrifft nur das Lesen, gespeichert wird immer alles. */
@@ -95,6 +100,17 @@ export async function leseVerlaufSchalter(): Promise<VerlaufSchalter> {
   return { ...basis, letzter_fehler: letzter ?? p.letzter_fehler };
 }
 
+/**
+ * P22-T286: Schalter des API-Verlaufs in hauptagent_verlauf (frisch je Aufruf, Standard AUS, Lesefehler -> AUS mit letzter_fehler).
+ * Debug: quelle/standard/letzter_fehler wie die uebrigen Produkt-Schalter (admin profil_schalter_status).
+ */
+export async function leseApiVerlaufHauptverlaufSchalter(project: string | null = null): Promise<{
+  aktiv: boolean; quelle: string; standard: boolean; letzter_fehler: string | null;
+}> {
+  const p = await leseProfilProduktSchalter(API_VERLAUF_HAUPTVERLAUF_FUNKTION, project);
+  return { aktiv: p.aktiv, quelle: p.quelle, standard: p.quelle === 'standard', letzter_fehler: p.letzter_fehler };
+}
+
 /** REST-Weg der Web-UI (nur User, ebene global). Gleicher Speicher wie admin profil_schalter_setzen. */
 export async function setzeVerlaufSchalter(akteur: AusweisAkteur | null, e: { aktiv: unknown; grund: unknown }): Promise<VerlaufSchalter> {
   if (!akteur || akteur.art !== 'user') fehler('recht_fehlt', { grund: 'Dieser Weg ist der User-Eingang; Koordinatoren nutzen admin profil_schalter_setzen' });
@@ -137,7 +153,7 @@ export type VerlaufRichtung = 'ein' | 'aus' | 'intern';
 export type VerlaufWeg = 'webui' | 'inbox' | 'chat' | 'channel' | 'event' | 'heartbeat' | 'werkzeug' | 'lauf' | 'wechsel';
 
 /** Gemessene Tokens eines Zugs (CLI usage, letzte Meldung des Zugs). kontext (P22-T70): Kontextstand des Wrappers (dauerhafter Weg). */
-export interface VerlaufGemessen { input: number; output: number; cache_read: number; cache_creation: number; quelle: 'cli_usage'; kontext?: number }
+export interface VerlaufGemessen { input: number; output: number; cache_read: number; cache_creation: number; quelle: 'cli_usage' | 'anbieter_gemessen'; kontext?: number }
 export interface VerlaufKontext {
   tokens: number;
   quelle: 'gemessen' | 'berechnet' | 'max';
@@ -783,6 +799,11 @@ export interface SitzungsEintragEingabe {
   fehler?: boolean;
   /** P22-T67: Bilder eines Werkzeug-Ergebnisses als Asset-Verweis; uebernommen nur ueber bilderAusStrom (nie Daten). */
   bilder?: unknown;
+  /**
+   * P22-T286: vom Anbieter GEMESSENE Werte eines API-Turns. Sind sie gesetzt, gehen sie unveraendert nach tokens.gemessen;
+   * sonst bleibt es bei der eigenen Schaetzung (tokens.berechnet).
+   */
+  tokens_gemessen?: { input?: unknown; output?: unknown; cache_read?: unknown; cache_creation?: unknown; kontext?: unknown } | null;
 }
 
 const SITZUNGS_ABBILD: Record<SitzungsEintragEingabe['art'], { rolle: VerlaufRolle; richtung: VerlaufRichtung; weg: VerlaufWeg; zaehlt: boolean }> = {
@@ -817,30 +838,39 @@ export function cliEingabeAbsender(text: string): { agent_id: string; herkunft: 
  * grund nicht_main (der Wrapper meldet dann nicht mehr).
  */
 export async function importiereSitzungsEintraege(identity_id: string | null, eintraege: unknown[], o: { runtime?: string | null; herkunft?: 'cli' | 'api' } = {}):
-  Promise<{ aufgenommen: number; grund: string | null }> {
+  Promise<{ aufgenommen: number; uebersprungen: number; grund: string | null }> {
   const main = await hauptagentIdentitaetsId().catch(() => null);
-  if (!identity_id) return { aufgenommen: 0, grund: 'nicht_main' };
+  if (!identity_id) return { aufgenommen: 0, uebersprungen: 0, grund: 'nicht_main' };
   const istMain = !!main && identity_id === main;
   if (!istMain) {
-    if (!(await leseProfilProduktSchalter(AGENT_VERLAUF_ALLE_FUNKTION, null)).aktiv) return { aufgenommen: 0, grund: 'nicht_main' };
+    if (!(await leseProfilProduktSchalter(AGENT_VERLAUF_ALLE_FUNKTION, null)).aktiv) return { aufgenommen: 0, uebersprungen: 0, grund: 'nicht_main' };
     const aktiv = await getPool().query("SELECT 1 FROM agent_identitaeten WHERE id = $1 AND status = 'aktiv'", [identity_id]);
-    if (!aktiv.rows.length) return { aufgenommen: 0, grund: 'nicht_main' };
+    if (!aktiv.rows.length) return { aufgenommen: 0, uebersprungen: 0, grund: 'nicht_main' };
   } else if (!(await leseVerlaufSchalter()).aktiv || (o.herkunft !== 'api' && !(await leseVerlaufStufe2Schalter('verlauf_alle_richtungen')).aktiv)) {
     // P22-T202: der erste API-Auftrag hat noch keinen SSE-Spiegel; normale Main-Verlauf-Freigabe reicht.
-    return { aufgenommen: 0, grund: 'funktion_aus' };
+    return { aufgenommen: 0, uebersprungen: 0, grund: 'funktion_aus' };
   }
   const lauf = await aktuellerMainLauf(identity_id);
   const zaehlen = (await leseTokenZaehlSchalter()).aktiv;
   let aufgenommen = 0;
+  let uebersprungen = 0;
   for (const roh of eintraege) {
     const e = (roh ?? {}) as Partial<SitzungsEintragEingabe>;
-    if (typeof e.ref !== 'string' || !e.ref || !e.art || !(e.art in SITZUNGS_ABBILD)) continue;
+    if (typeof e.ref !== 'string' || !e.ref || !e.art || !(e.art in SITZUNGS_ABBILD)) { uebersprungen += 1; continue; }
+    // P22-T286: gemessene Werte des Anbieters (API-Lauf) gehen der eigenen Schaetzung vor.
     const abbild = SITZUNGS_ABBILD[e.art];
     const text = typeof e.inhalt === 'string' ? e.inhalt : JSON.stringify(e.inhalt ?? null);
     const bilder = e.art === 'werkzeug_ergebnis' ? bilderAusStrom(e.bilder) : [];
     const modell = typeof e.modell === 'string' ? e.modell : await aktuellesMainModell(identity_id);
+    const gemessen = e.tokens_gemessen && typeof e.tokens_gemessen === 'object' ? {
+      input: zahl(e.tokens_gemessen.input), output: zahl(e.tokens_gemessen.output),
+      ...(zahl(e.tokens_gemessen.cache_read) ? { cache_read: zahl(e.tokens_gemessen.cache_read) } : {}),
+      ...(zahl(e.tokens_gemessen.cache_creation) ? { cache_creation: zahl(e.tokens_gemessen.cache_creation) } : {}),
+      ...(zahl(e.tokens_gemessen.kontext) ? { kontext: zahl(e.tokens_gemessen.kontext) } : {}),
+      quelle: 'anbieter_gemessen',
+    } : null;
     let berechnet: Record<string, unknown> | null = null;
-    if (zaehlen) {
+    if (!gemessen && zaehlen) {
       const familie = modellFamilie(o.runtime, modell);
       const faktor = (await leseKalibrierung(identity_id, familie))?.faktor ?? null;
       berechnet = zaehlungJson(await zaehleTokens(text, familie, faktor));
@@ -856,12 +886,58 @@ export async function importiereSitzungsEintraege(identity_id: string | null, ei
         JSON.stringify({ quelle: o.herkunft === 'api' ? 'api' : 'jsonl', art: e.art, ...(e.name ? { name: e.name } : {}), ...(e.werkzeug_id ? { werkzeug_id: e.werkzeug_id } : {}),
           ...(e.fehler ? { fehler: true } : {}), ...(bilder.length ? { bilder } : {}),
           ...(typeof e.inhalt === 'string' ? {} : { inhalt: e.inhalt ?? null }) }),
-        JSON.stringify(berechnet ? { berechnet } : {}), abbild.zaehlt, lauf, o.runtime ?? null, modell,
+        JSON.stringify(gemessen ? { gemessen } : berechnet ? { berechnet } : {}), abbild.zaehlt, lauf, o.runtime ?? null, modell,
         typeof e.zeit === 'string' && !Number.isNaN(Date.parse(e.zeit)) ? e.zeit : null, istMain ? 'dauerhaft' : null]);
     aufgenommen += r.rowCount ?? 0;
   }
   if (aufgenommen > 0) verlaufGeschrieben(identity_id);
-  return { aufgenommen, grund: null };
+  return { aufgenommen, uebersprungen, grund: null };
+}
+
+/**
+ * P22-T286: generische Wechsel-Zeile fuer JEDE Identitaet (Nicht-Main-Rueckfall/-Uebergabe), meta wie erzeugeVerlaufUebergabe:
+ * thought_id, von, nach, anlass — baueStartkontext liest meta->>'thought_id' der juengsten weg='wechsel'-Zeile. Wirft nie.
+ */
+export async function schreibeWechselZeile(identity_id: string, e: { von?: string | null; nach?: string | null; anlass: string;
+  thought_id?: string | null; runtime?: string | null; modell?: string | null }): Promise<string | null> {
+  try {
+    const r = await getPool().query<{ id: string }>(
+      `INSERT INTO hauptagent_verlauf (identity_id, rolle, richtung, weg, status, text, meta, zaehlt, runtime, modell)
+       VALUES ($1,'system','intern','wechsel','fertig',$2,$3::jsonb,false,$4,$5) RETURNING id::text AS id`,
+      [identity_id, `Wechsel ${e.von ?? '?'} -> ${e.nach ?? '?'} (${e.anlass})`,
+        JSON.stringify({ von: e.von ?? null, nach: e.nach ?? null, anlass: e.anlass, ...(e.thought_id ? { thought_id: e.thought_id } : {}) }),
+        e.runtime ?? null, e.modell ?? null]);
+    const id = r.rows[0]?.id ?? null;
+    if (id) verlaufGeschrieben(identity_id);
+    return id;
+  } catch (error) {
+    merkeFehler('wechsel_zeile', error);
+    return null;
+  }
+}
+
+/**
+ * P22-T286: gemessene Anbieterwerte (input/output/cache/kontext) an einer bereits geschriebenen Zeile nachtragen. Die Zeile
+ * entsteht live waehrend des Turns (ohne Messung), die Messung liegt erst am Turn-Ende vor. Idempotent je quelle_ref. Wirft nie.
+ */
+export async function setzeGemesseneTokens(identity_id: string, quelle_ref: string,
+  gemessen: { input?: unknown; output?: unknown; cache_read?: unknown; cache_creation?: unknown; kontext?: unknown }): Promise<boolean> {
+  try {
+    const wert = {
+      input: zahl(gemessen.input), output: zahl(gemessen.output),
+      ...(zahl(gemessen.cache_read) ? { cache_read: zahl(gemessen.cache_read) } : {}),
+      ...(zahl(gemessen.cache_creation) ? { cache_creation: zahl(gemessen.cache_creation) } : {}),
+      ...(zahl(gemessen.kontext) ? { kontext: zahl(gemessen.kontext) } : {}),
+      quelle: 'anbieter_gemessen',
+    };
+    const r = await getPool().query(
+      `UPDATE hauptagent_verlauf SET tokens = jsonb_build_object('gemessen', $3::jsonb), rev = nextval('hauptagent_verlauf_rev'), aktualisiert_am = NOW()
+        WHERE identity_id = $1 AND quelle_ref = $2`, [identity_id, quelle_ref, JSON.stringify(wert)]);
+    return (r.rowCount ?? 0) > 0;
+  } catch (error) {
+    merkeFehler('tokens_gemessen', error);
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -32,6 +32,8 @@ import { randomUUID } from 'node:crypto';
 import {
   getPool, fuehreApiNachrichtAus, leseApiEinstellungen, leseApiModelle, ausweisFuerStart, leseApiLaufSchalter, leseApiLaufEinstellungen,
   leseApiLaufWahl, mitApiWahlSperre, schreibeApiLaufWahl, importiereSitzungsEintraege,
+  schreibeWechselZeile, setzeGemesseneTokens, leseApiVerlaufHauptverlaufSchalter, baueStartkontext, baueUebergabeText,
+  type SitzungsEintragEingabe,
   type ApiLaufEinstellungen, type ApiNachricht, type ApiVerlaufSpeicher, type ApiWerkzeugAufruf, type ApiWerkzeugErgebnis, type ApiWerkzeugDef,
   type ApiAnbieterAdapter, type ApiNachrichtErgebnis,
 } from '@synapse/core';
@@ -71,11 +73,14 @@ export class VerlaufPg implements ApiVerlaufSpeicher {
   private nr = 0;
   private letzteNr: number | null = null;
 
-  private constructor(private readonly db: Db, readonly identity_id: string, readonly sitzung: string) {}
+  private constructor(private readonly db: Db, readonly identity_id: string, readonly sitzung: string,
+    private readonly schreibe?: (n: ApiNachricht, nr: number) => void,
+    private readonly loesche?: (nr: number) => void) {}
 
   /** Laedt die Sitzung und repariert offene Werkzeugaufrufe (Fehler-Ergebnis statt Wiederholung); schreibt die Reparatur sofort. */
-  static async oeffne(db: Db, identity_id: string, sitzung: string): Promise<VerlaufPg> {
-    const v = new VerlaufPg(db, identity_id, sitzung);
+  static async oeffne(db: Db, identity_id: string, sitzung: string,
+    schreibe?: (n: ApiNachricht, nr: number) => void, loesche?: (nr: number) => void): Promise<VerlaufPg> {
+    const v = new VerlaufPg(db, identity_id, sitzung, schreibe, loesche);
     const r = await db.query<{ nr: number; art: string; inhalt: unknown }>(
       'SELECT nr, art, inhalt FROM api_agent_verlauf WHERE identity_id = $1 AND sitzung = $2 ORDER BY nr', [identity_id, sitzung]);
     const vermerkt = new Set<string>();
@@ -111,9 +116,12 @@ export class VerlaufPg implements ApiVerlaufSpeicher {
     return nr;
   }
 
-  async fuegeHinzu(n: ApiNachricht): Promise<void> {
-    this.letzteNr = await this.zeile('nachricht', n);
+  /** P22-T286: haengt eine Nachricht an und schreibt sie LIVE nach hauptagent_verlauf (ref <sitzung>:<nr>:<block>). */
+  async fuegeHinzu(n: ApiNachricht, o: { marke?: 'uebergabe'; hauptverlauf?: boolean } = {}): Promise<void> {
+    const nr = await this.zeile('nachricht', o.marke === 'uebergabe' ? { ...n, meta: { uebergabe: true } } : n);
+    this.letzteNr = nr;
     this.liste.push(n);
+    if (o.hauptverlauf !== false) this.schreibe?.(n, nr);
   }
 
   async vermerkeAufruf(a: ApiWerkzeugAufruf): Promise<void> {
@@ -122,10 +130,12 @@ export class VerlaufPg implements ApiVerlaufSpeicher {
 
   /** Nur fuer "Turn nicht begonnen" (Fehler vor dem ersten Anbieteraufruf): nimmt die eben angehaengte Nachricht zurueck. */
   async entferneLetzte(): Promise<void> {
-    if (this.letzteNr === null) return;
-    await this.db.query('DELETE FROM api_agent_verlauf WHERE identity_id = $1 AND sitzung = $2 AND nr = $3', [this.identity_id, this.sitzung, this.letzteNr]);
+    const nr = this.letzteNr;
+    if (nr === null) return;
+    await this.db.query('DELETE FROM api_agent_verlauf WHERE identity_id = $1 AND sitzung = $2 AND nr = $3', [this.identity_id, this.sitzung, nr]);
     this.liste.pop();
     this.letzteNr = null;
+    this.loesche?.(nr);
   }
 }
 
@@ -165,6 +175,48 @@ function eingangText(z: EingangZeile[]): string {
 
 const text = (inhalt: Array<{ typ: string; text?: string }>): string => inhalt.filter(b => b.typ === 'text').map(b => b.text ?? '').join('\n');
 
+/** P22-T286/K1: Kontext EINES Turns (kein Instanzfeld - takt() faehrt mehrere Identitaeten parallel). */
+export interface TurnKontext { verlaufAn: boolean; mainChat: boolean; letzteTextRef: string | null }
+
+/** P22-T286/K4: mit Startkontext uebernimmt der Prompt aus der Anmeldung nur principal/lauf_id (kein zweites Onboarding). */
+export function anmeldeKurz(t: string): string {
+  try {
+    const o = JSON.parse(t) as Record<string, unknown>;
+    return JSON.stringify({ success: o.success ?? true, principal: o.principal ?? null, ...(typeof o.lauf_id === 'string' ? { lauf_id: o.lauf_id } : {}) });
+  } catch { return 'Anmeldung bestaetigt.'; }
+}
+
+/** P22-T286: Verlaufs-Schreiber der Web-UI-Route (strukturell, damit rest-api keinen core-Interna importiert). */
+export interface VerlaufsSchreiber {
+  ereignis(event: string, data: Record<string, unknown>): void;
+  abschliessen(status: 'fertig' | 'fehler' | 'abgebrochen', extra?: Record<string, unknown>): Promise<void>;
+}
+
+type VerlaufsBlock = { typ?: string; text?: string; id?: string; name?: string; eingabe?: unknown; aufruf_id?: string; inhalt?: unknown; fehler?: unknown };
+
+/**
+ * P22-T286/N1: Eintraege EINER Nachricht fuer hauptagent_verlauf. ref = '<sitzung>:<nr>:<blockindex>' (stabil und kollisionsfrei,
+ * auch bei Zwischentexten und mehreren Anbieteraufrufen). Die EINGABE des Turns schreibt der Aufrufer getrennt mit 'eingang:<ids>'.
+ */
+export function eintraegeAusNachricht(sitzung: string, nr: number, n: ApiNachricht, modell: string | null): SitzungsEintragEingabe[] {
+  const bloecke = (Array.isArray(n.inhalt) ? n.inhalt : []) as unknown as VerlaufsBlock[];
+  const out: SitzungsEintragEingabe[] = [];
+  bloecke.forEach((b, i) => {
+    const ref = sitzung + ':' + nr + ':' + i;
+    if (b.typ === 'text' && typeof b.text === 'string' && b.text) {
+      if (n.rolle !== 'assistant') return;
+      out.push({ ref, art: 'text', inhalt: b.text, modell });
+    } else if (b.typ === 'denken') {
+      out.push({ ref, art: 'denken', inhalt: String(b.text ?? ''), modell });
+    } else if (b.typ === 'werkzeug_aufruf') {
+      out.push({ ref, art: 'werkzeug_aufruf', name: b.name ?? null, werkzeug_id: b.id ?? null, inhalt: b.eingabe ?? null, modell });
+    } else if (b.typ === 'werkzeug_ergebnis') {
+      out.push({ ref, art: 'werkzeug_ergebnis', werkzeug_id: b.aufruf_id ?? null, inhalt: b.inhalt ?? null, fehler: b.fehler === true, modell });
+    }
+  });
+  return out;
+}
+
 export class LaufVerwaltung {
   private timer: NodeJS.Timeout | null = null;
   private taktLaeuft = false;
@@ -174,11 +226,102 @@ export class LaufVerwaltung {
     gestartet_am: new Date().toISOString(), takte: 0, turns: 0, letzter_takt: null as string | null, fehler_takt: null as string | null,
     schalter_aus: {} as Record<string, string>, letzte: [] as Array<Record<string, unknown>>, preisabgleich: null as unknown,
     ruckfall_container: { anzahl: 0, fehlgeschlagen: 0, letzter: null as Record<string, unknown> | null },
+    // P22-T286: Debug des API-Verlaufs in hauptagent_verlauf (Schalter, Zeilen, Gruende).
+    hauptverlauf: { zeilen: 0, uebersprungen: 0, anmeldung_lang: 0, letzter_grund: null as string | null,
+      letzter_fehler: null as string | null, main_schreiber_weg: 0 },
   };
 
   constructor(private readonly o: LaufVerwaltungOptionen = {}) {}
 
   private get db(): Db { return this.o.db ?? getPool(); }
+
+  /** P22-T286/K1: Schreibvorgaenge je Identitaet seriell (eine Kette); K5: Abschluss nur im 'zeit'-Fall. */
+  private readonly ketten = new Map<string, Promise<void>>();
+  private readonly mainSchreiber = new Map<string, { schreiber: VerlaufsSchreiber; abschluss: boolean }>();
+
+  setzeMainSchreiber(identity_id: string, schreiber: VerlaufsSchreiber | null, abschluss = false): void {
+    if (schreiber) this.mainSchreiber.set(identity_id, { schreiber, abschluss }); else this.mainSchreiber.delete(identity_id);
+  }
+
+  /** P22-T286/K2: Schreibvorgaenge je Identitaet seriell (kein paralleles Schreiben). */
+  private reihe(identity_id: string, aufgabe: () => Promise<void>): Promise<void> {
+    const vor = this.ketten.get(identity_id) ?? Promise.resolve();
+    const neu = vor.then(aufgabe).catch(() => undefined);
+    this.ketten.set(identity_id, neu);
+    void neu.finally(() => { if (this.ketten.get(identity_id) === neu) this.ketten.delete(identity_id); });
+    return neu;
+  }
+
+  /** P22-T286/K2: auf alle Schreibvorgaenge dieser Identitaet warten (vor dem Nachtrag der Messwerte). */
+  private async warteKette(identity_id: string): Promise<void> {
+    await (this.ketten.get(identity_id) ?? Promise.resolve());
+  }
+
+  /** P22-T286: eine Nachricht live nach hauptagent_verlauf. Wirft nie und bricht nie den Turn. */
+  private verlaufsNachricht(l: LaufZeile, ctx: TurnKontext, sitzung: string, nr: number, n: ApiNachricht): void {
+    try {
+      if (!ctx.verlaufAn) return;
+      if (ctx.mainChat) { this.mainEvents(l, n); return; }
+      const eintraege = eintraegeAusNachricht(sitzung, nr, n, l.modell);
+      if (!eintraege.length) return;
+      const antwort = eintraege.find(e => e.art === 'text');
+      if (antwort) ctx.letzteTextRef = antwort.ref;
+      void this.reihe(l.identity_id, () => this.schreibeHauptverlauf(l, eintraege));
+    } catch { /* Verlauf darf den Turn nie brechen */ }
+  }
+
+  /** P22-T286/N2: Text-/Werkzeugbloecke als Stromereignisse in die BESTEHENDE Antwortzeile (keine zweite Zeile). */
+  private mainEvents(l: LaufZeile, n: ApiNachricht): void {
+    const eintrag = this.mainSchreiber.get(l.identity_id);
+    if (!eintrag) { this.stat.hauptverlauf.main_schreiber_weg += 1; return; }
+    const bloecke = (Array.isArray(n.inhalt) ? n.inhalt : []) as unknown as VerlaufsBlock[];
+    for (const b of bloecke) {
+      if (b.typ === 'text' && n.rolle === 'assistant' && typeof b.text === 'string' && b.text) eintrag.schreiber.ereignis('delta', { content: b.text });
+      else if (b.typ === 'werkzeug_aufruf') eintrag.schreiber.ereignis('tool', { id: b.id, name: b.name, input: b.eingabe, phase: 'start' });
+      else if (b.typ === 'werkzeug_ergebnis') eintrag.schreiber.ereignis('tool', { id: b.aufruf_id, output: b.inhalt, isError: b.fehler === true, phase: 'end' });
+    }
+  }
+
+  /** P22-T286: Zeilen ueber die EINE Schreibstelle (importiereSitzungsEintraege, herkunft api). Wirft nie. */
+  private async schreibeHauptverlauf(l: LaufZeile, eintraege: SitzungsEintragEingabe[]): Promise<void> {
+    try {
+      const r = await importiereSitzungsEintraege(l.identity_id, eintraege, { runtime: l.anbieter, herkunft: 'api' });
+      this.stat.hauptverlauf.zeilen += r.aufgenommen;
+      this.stat.hauptverlauf.uebersprungen += r.uebersprungen;
+      if (r.grund) this.stat.hauptverlauf.letzter_grund = r.grund;
+    } catch (error) {
+      this.stat.hauptverlauf.letzter_fehler = String((error as Error)?.message ?? error).slice(0, 200);
+    }
+  }
+
+  /** P22-T286/N1+K2: zugehoerige Verlaufszeilen entfernen (erst nach dem INSERT, gleiche Kette). */
+  private loescheVerlauf(l: LaufZeile, sitzung: string, nr: number | null): void {
+    if (nr === null) return;
+    // P22-T286/N1: importiereSitzungsEintraege schreibt die Zeilen mit Herkunft api als 'api:<ref>' - der Praefix gehoert in den Vergleich.
+    const praefix = 'api:' + sitzung + ':' + nr + ':';
+    void this.reihe(l.identity_id, () => getPool().query('DELETE FROM hauptagent_verlauf WHERE identity_id = $1 AND LEFT(quelle_ref, $3::int) = $2',
+      [l.identity_id, praefix, praefix.length]).then(() => undefined).catch(() => undefined));
+  }
+
+  /** P22-T286/N1+K6: eine einzelne Zeile exakt entfernen (z. B. Eingabe eines nicht begonnenen Turns). */
+  private loescheRef(l: LaufZeile, ref: string): Promise<void> {
+    return this.reihe(l.identity_id, () => getPool().query('DELETE FROM hauptagent_verlauf WHERE identity_id = $1 AND quelle_ref = $2', [l.identity_id, 'api:' + ref])
+      .then(() => undefined).catch(() => undefined));
+  }
+
+  /** P22-T286/K5b: NUR im 'zeit'-Fall schliesst der Turn die Antwortzeile selbst (usage + fertig). */
+  private schliesseMainZeile(l: LaufZeile, a: Ausfuehrung): void {
+    try {
+      const eintrag = this.mainSchreiber.get(l.identity_id);
+      if (!eintrag || !eintrag.abschluss) return;
+      eintrag.schreiber.ereignis('usage', { inputTokens: a.input, outputTokens: a.output, ...(a.kontext ? { kontextTokens: a.kontext } : {}) });
+      void eintrag.schreiber.abschliessen('fertig').catch(() => undefined);
+      this.mainSchreiber.delete(l.identity_id);
+    } catch (error) {
+      // P22-T286/R2: ein Schreibfehler am Stream darf den Turn nicht in 'interner_fehler' kippen.
+      this.stat.hauptverlauf.letzter_fehler = String((error as Error)?.message ?? error).slice(0, 200);
+    }
+  }
 
   starte(): void {
     if (this.timer) return;
@@ -205,14 +348,14 @@ export class LaufVerwaltung {
    * fertig: Antwort des Turns; nicht_begonnen: Fachfehler vor dem Anbieter (Status fehler, Code); zeit: Turn laeuft weiter.
    */
   async warteAufEingang(eingangId: number, warteMs: number): Promise<
-    { art: 'fertig'; text: string; ende: string; kosten_usd: number; input_tokens: number; output_tokens: number }
+    { art: 'fertig'; text: string; ende: string; kosten_usd: number; input_tokens: number; output_tokens: number; kontext_tokens: number }
     | { art: 'nicht_begonnen'; code: string } | { art: 'zeit' }> {
     const bis = Date.now() + warteMs;
     while (true) {
       await this.takt();
       const r = await this.db.query<{ identity_id: string; erledigt: boolean; ende: string | null; antwort: string | null; kosten: number | null; i: string | null; o: string | null;
-        status: string | null; letzter_fehler: string | null; turn: string | null }>(
-        `SELECT e.identity_id, e.erledigt_am IS NOT NULL AS erledigt, e.turn_id AS turn, t.ende, t.antwort, t.kosten_usd::float8 AS kosten, t.input_tokens AS i, t.output_tokens AS o,
+        k: string | null; status: string | null; letzter_fehler: string | null; turn: string | null }>(
+        `SELECT e.identity_id, e.erledigt_am IS NOT NULL AS erledigt, e.turn_id AS turn, t.ende, t.antwort, t.kosten_usd::float8 AS kosten, t.input_tokens AS i, t.output_tokens AS o, t.kontext_tokens AS k,
                 l.status, l.letzter_fehler
            FROM api_agent_eingang e LEFT JOIN api_agent_turns t ON t.id = e.turn_id LEFT JOIN api_agent_laeufe l ON l.identity_id = e.identity_id
           WHERE e.id = $1`, [eingangId]);
@@ -228,7 +371,7 @@ export class LaufVerwaltung {
         continue;
       }
       if (z.erledigt) {
-        return { art: 'fertig', text: z.antwort ?? '', ende: z.ende ?? 'fertig', kosten_usd: z.kosten ?? 0, input_tokens: Number(z.i ?? 0), output_tokens: Number(z.o ?? 0) };
+        return { art: 'fertig', text: z.antwort ?? '', ende: z.ende ?? 'fertig', kosten_usd: z.kosten ?? 0, input_tokens: Number(z.i ?? 0), output_tokens: Number(z.o ?? 0), kontext_tokens: Number(z.k ?? 0) };
       }
       if (z.turn === null && (z.status === 'fehler' || z.status === 'gestoppt' || z.status === 'pausiert')) return { art: 'nicht_begonnen', code: z.letzter_fehler ?? 'lauf_' + z.status };
       if (Date.now() >= bis) return { art: 'zeit' };
@@ -344,17 +487,69 @@ export class LaufVerwaltung {
     const ausweis = this.o.ausweis ? await this.o.ausweis(l.project, l.identity_id)
       : (await ausweisFuerStart(l.project, l.identity_id, { art: 'daemon' })).token;
     const ausfuehrer = new WerkzeugeDirekt({ identity_id: l.identity_id, main: l.rolle === 'main', ausweis, liste: this.o.liste, aufruf: this.o.aufruf });
+    // P22-T286/K3: Startkontext/ungekuerzte Anmeldung/Prompt-Wiederverwendung NUR bei Schalter EIN.
+    const verlaufAn = (await leseApiVerlaufHauptverlaufSchalter(l.project)).aktiv;
+    const gespeichert = verlaufAn ? await this.promptAusSitzung(l) : null;
+    if (gespeichert) {
+      // P22-T286/K4 (Entscheid Koordinator): Anmeldung laeuft trotzdem (neuer Lauf, lauf_id); ihr Text kommt NICHT in den Prompt.
+      try { await ausfuehrer.rufe(WERKZEUG_PRAEFIX + 'chat', { action: 'anmelden', agent_kennung: ausweis }); } catch { /* Prompt bleibt gespeichert */ }
+      const s0: Sitzung = { sitzung: l.sitzung, system: gespeichert, werkzeuge: await ausfuehrer.liste(), ausfuehrer };
+      this.sitzungen.set(l.identity_id, s0);
+      return s0;
+    }
+    const startBlock = verlaufAn && (await this.istNeueSitzung(l)) ? await baueStartkontext(l.identity_id).catch(() => null) : null;
     let system = l.system_prompt ?? '';
     try {
       const anm = await ausfuehrer.rufe(WERKZEUG_PRAEFIX + 'chat', { action: 'anmelden', agent_kennung: ausweis });
       const t = text(anm.inhalt);
-      if (!anm.fehler && t) system += `\n\n# Synapse-Anmeldung (Ausweis bereits angemeldet)\n${t.slice(0, ANMELDUNG_MAX_ZEICHEN)}`;
+      if (!anm.fehler && t) {
+        // P22-T286/K3: AUS = Bestand mit Kappung; EIN = voll (Lauf-Nachweis verhindert Doppelzustellung).
+        const anmeldetext = verlaufAn ? t : t.slice(0, ANMELDUNG_MAX_ZEICHEN);
+        if (!verlaufAn && t.length > ANMELDUNG_MAX_ZEICHEN) this.stat.hauptverlauf.anmeldung_lang += 1;
+        system += `\n\n# Synapse-Anmeldung (Ausweis bereits angemeldet)\n${verlaufAn && startBlock ? anmeldeKurz(t) : anmeldetext}`;
+      }
     } catch { /* ohne Anmeldetext weiter; Werkzeuge pruefen den Ausweis selbst */ }
+    if (startBlock?.text) system = `${startBlock.text}\n\n${system}`;
     system += `\n\nDu laeufst als API-Agent direkt in der synapse-api (Modell ${l.modell}). Deine Agenten-Kennung: ${ausweis} - bei jedem `
       + 'Synapse-Aufruf als agent_kennung mitgeben. Du arbeitest ausschliesslich mit den angebotenen Synapse-Werkzeugen (kein Bash, kein lokales Dateisystem).';
     const s: Sitzung = { sitzung: l.sitzung, system: system.trim(), werkzeuge: await ausfuehrer.liste(), ausfuehrer };
     this.sitzungen.set(l.identity_id, s);
+    // P22-T286/K4: den gebauten Prompt an der Sitzung ablegen (einmaliges Onboarding, Wiederverwendung nach Prozessneustart).
+    // P22-T286/R4: bei Schalter EIN IMMER speichern (auch ohne startBlock), sonst onboardet ein Neustart wieder voll.
+    if (verlaufAn) await this.speicherePrompt(l, s.system);
     return s;
+  }
+
+  /**
+   * P22-T286/Auflage 1: neue Sitzung = in api_agent_verlauf liegt fuer diese Sitzung KEINE Nachricht ausser den 2 markierten
+   * Uebergabe-Nachrichten. Damit spielt ein API-Prozessneustart mit gleicher Sitzung (Map leer) NICHTS erneut ein.
+   */
+  private async istNeueSitzung(l: LaufZeile): Promise<boolean> {
+    try {
+      const r = await this.db.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM api_agent_verlauf WHERE identity_id = $1 AND sitzung = $2
+           AND NOT COALESCE((inhalt->'meta'->>'uebergabe')::boolean, false)`, [l.identity_id, l.sitzung]);
+      return (r.rows[0]?.n ?? 0) === 0;
+    } catch { return false; }
+  }
+
+  /** P22-T286/K4: einmal gebauten Sitzungs-Prompt ablegen (eigene, additive Tabelle; additiv/idempotent). */
+  private async speicherePrompt(l: LaufZeile, system: string): Promise<void> {
+    try {
+      await this.db.query(
+        `INSERT INTO api_agent_sitzung_prompt (identity_id, sitzung, system_prompt) VALUES ($1,$2,$3)
+         ON CONFLICT (identity_id, sitzung) DO UPDATE SET system_prompt = EXCLUDED.system_prompt, aktualisiert_am = NOW()`,
+        [l.identity_id, l.sitzung, system]);
+    } catch { /* ohne Prompt-Wiederverwendung weiter */ }
+  }
+
+  /** P22-T286/K4: gebauten Sitzungs-Prompt nach einem Prozessneustart wiederfinden. */
+  private async promptAusSitzung(l: LaufZeile): Promise<string | null> {
+    try {
+      const r = await this.db.query<{ system_prompt: string | null }>(
+        'SELECT system_prompt FROM api_agent_sitzung_prompt WHERE identity_id = $1 AND sitzung = $2', [l.identity_id, l.sitzung]);
+      return r.rows[0]?.system_prompt ?? null;
+    } catch { return null; }
   }
 
   private async fuehreAus(l: LaufZeile, s: Sitzung, verlauf: VerlaufPg, signal: AbortSignal, toolrunden?: number): Promise<Ausfuehrung> {
@@ -383,11 +578,31 @@ export class LaufVerwaltung {
   private async rueckfallContainer(l: LaufZeile, s: Sitzung, code: string): Promise<void> {
     const offen = (await this.db.query<EingangZeile>(
       'SELECT id, text, quelle, absender, erstellt_am FROM api_agent_eingang WHERE identity_id = $1 AND erledigt_am IS NULL ORDER BY id', [l.identity_id])).rows;
-    const verlauf = await VerlaufPg.oeffne(this.db, l.identity_id, l.sitzung);
-    const stand = verlauf.nachrichten().slice(-6).map(n => {
-      const t = text(n.inhalt as Array<{ typ: string; text?: string }>).trim();
-      return t ? `${n.rolle}: ${t}` : '';
-    }).filter(Boolean).join('\n').slice(-6000) || '(kein Verlauf)';
+    const ctx: TurnKontext = { verlaufAn: (await leseApiVerlaufHauptverlaufSchalter(l.project).catch(() => ({ aktiv: false }))).aktiv, mainChat: false, letzteTextRef: null };
+    const verlauf = await VerlaufPg.oeffne(this.db, l.identity_id, l.sitzung, (n, nr) => this.verlaufsNachricht(l, ctx, l.sitzung, nr, n), (nr) => this.loescheVerlauf(l, l.sitzung, nr));
+    // P22-T286: Uebergabe aus dem gemeinsamen Verlauf, Ziel = Rueckfall-KANDIDAT (nicht das bisherige Modell).
+    let rueckfallZiel: { modell: string | null; runtime: string | null } = { modell: null, runtime: null };
+    if (l.rolle !== 'main') {
+      try {
+        for (const kandidat of (await leseApiRueckfall()).modelle) {
+          const p = await pruefeRueckfallModell(kandidat);
+          if (p.verfuegbar) { rueckfallZiel = { modell: kandidat, runtime: p.runtime }; break; }
+        }
+      } catch { /* Auszug unten */ }
+    }
+    let stand = '';
+    if (ctx.verlaufAn) {
+      try {
+        stand = (await baueUebergabeText(l.identity_id, { runtime: rueckfallZiel.runtime, modell: rueckfallZiel.modell }, 'api_rueckfall',
+          { von_modell: l.modell, von_runtime: l.anbieter })).text;
+      } catch { /* Auszug unten */ }
+    }
+    if (!stand) {
+      stand = verlauf.nachrichten().slice(-6).map(n => {
+        const t = text(n.inhalt as Array<{ typ: string; text?: string }>).trim();
+        return t ? `${n.rolle}: ${t}` : '';
+      }).filter(Boolean).join('\n').slice(-6000) || '(kein Verlauf)';
+    }
     const offenText = offen.length ? eingangText(offen) : '(keine offenen Eingaenge)';
     // P22-T278 P3 c (Kanal 37424): Grenze nach Budget-Zeitraum (Tages-/Wochen-/Monatslimit) statt immer 'Tageslimit'.
     const limit = await rueckfallLimitName();
@@ -406,6 +621,12 @@ export class LaufVerwaltung {
       });
       thoughtId = /"id"\s*:\s*"([0-9a-f-]{36})"/.exec(text(r.inhalt))?.[1] ?? null;
     } catch { /* Uebergabe steht trotzdem im Auftrag des Container-Agenten */ }
+    // P22-T286/N4: Wechsel-Zeile fuer Nicht-Main (meta thought_id/von/nach/anlass).
+    if (ctx.verlaufAn && l.rolle !== 'main') {
+      await schreibeWechselZeile(l.identity_id, { von: `${l.anbieter}/${l.modell}`,
+        nach: `${rueckfallZiel.runtime ?? 'container'}/${rueckfallZiel.modell ?? '?'}`, anlass: 'api_rueckfall',
+        thought_id: thoughtId, runtime: rueckfallZiel.runtime, modell: rueckfallZiel.modell });
+    }
     // P22-T202 + P22-T278 P2-2: Anbieterturn ist beendet, Uebergabe vorbereitet. Erst die eigene Lease abgeben (und eine explizite
     // API-Wahl loesen), dann darf der vorhandene CLI-Start greifen. Jetzt fuer JEDEN Lauf: die CLI-Sperre (mitCliStartSperre) lehnt
     // CLI-Starts neben einem aktiven API-Lauf derselben Identitaet ab.
@@ -517,11 +738,19 @@ export class LaufVerwaltung {
       'SELECT id, text, quelle, absender, erstellt_am FROM api_agent_eingang WHERE identity_id = $1 AND erledigt_am IS NULL ORDER BY id', [l.identity_id]);
     if (!eing.rows.length) { await this.gibFrei(l, {}); return; }
     const ids = eing.rows.map(z => z.id);
+    // P22-T286/K1: Turn-Kontext je Turn (kein Instanzfeld); K3: Schalter je Turn.
+    const ctx: TurnKontext = { verlaufAn: (await leseApiVerlaufHauptverlaufSchalter(l.project)).aktiv,
+      mainChat: eing.rows.some(z => z.quelle === 'main_chat'), letzteTextRef: null };
     const s = await this.sitzung(l);
-    const verlauf = await VerlaufPg.oeffne(this.db, l.identity_id, l.sitzung);
+    const verlauf = await VerlaufPg.oeffne(this.db, l.identity_id, l.sitzung, (n, nr) => this.verlaufsNachricht(l, ctx, l.sitzung, nr, n), (nr) => this.loescheVerlauf(l, l.sitzung, nr));
     const turnId = await this.neuerTurn(l);
     await this.db.query('UPDATE api_agent_eingang SET turn_id = $2 WHERE id = ANY($1::bigint[])', [ids, turnId]);
-    await verlauf.fuegeHinzu({ rolle: 'user', inhalt: [{ typ: 'text', text: eingangText(eing.rows) }] });
+    // P22-T286/N1+K6: die Eingabe traegt die feste ref 'eingang:<sortierte ids>'; bei "nicht begonnen" wird sie wieder entfernt.
+    const eingangRef = 'eingang:' + [...ids].sort((a, b) => Number(a) - Number(b)).join('-');
+    await verlauf.fuegeHinzu({ rolle: 'user', inhalt: [{ typ: 'text', text: eingangText(eing.rows) }] }, { hauptverlauf: false });
+    if (ctx.verlaufAn && !ctx.mainChat) {
+      await this.schreibeHauptverlauf(l, [{ ref: eingangRef, art: 'eingabe', inhalt: eingangText(eing.rows), modell: l.modell }]);
+    }
     const a = await this.fuehreAus(l, s, verlauf, signal);
     this.stat.turns += 1;
 
@@ -530,6 +759,8 @@ export class LaufVerwaltung {
       const code = a.code ?? 'anbieter_fehler';
       const voruebergehend = VORUEBERGEHEND.has(code);
       await verlauf.entferneLetzte();
+      // P22-T286/K6: die live geschriebene Eingabezeile eines nicht begonnenen Turns wieder entfernen.
+      if (ctx.verlaufAn && !ctx.mainChat) await this.loescheRef(l, eingangRef);
       if (RUECKFALL_CODES.has(code)) {
         // Tageslimit erschoepft: Eingaenge gehen mit an den Container-Agenten.
         await this.db.query('UPDATE api_agent_eingang SET turn_id = NULL WHERE id = ANY($1::bigint[])', [ids]);
@@ -548,9 +779,16 @@ export class LaufVerwaltung {
 
     await this.db.query('UPDATE api_agent_eingang SET erledigt_am = NOW() WHERE id = ANY($1::bigint[])', [ids]);
     await this.schliesseTurn(turnId, a);
+    // P22-T286/K1+K2: erst alle Schreibvorgaenge dieses Turns abwarten, dann die Messwerte nachtragen.
+    if (ctx.verlaufAn && !ctx.mainChat) {
+      await this.warteKette(l.identity_id);
+      if (ctx.letzteTextRef) await setzeGemesseneTokens(l.identity_id, 'api:' + ctx.letzteTextRef, { input: a.input, output: a.output, kontext: a.kontext });
+    }
+    // P22-T286/K5b: nur im 'zeit'-Fall schliesst der Turn die Antwortzeile selbst.
+    if (ctx.verlaufAn && ctx.mainChat) this.schliesseMainZeile(l, a);
     // P22-T202: Antwort im bestehenden Identitaetschat sichtbar, keine zweite Kostenbuchung.
     // Main-Chat hat bereits seinen SSE-Verlauf; Startauftrag und Plattform-Chat dagegen nicht.
-    if (!eing.rows.some(z=>z.quelle==='main_chat') && (await leseApiLaufWahl(l.identity_id))?.phase==='aktiv') {
+    if (!ctx.verlaufAn && !eing.rows.some(z=>z.quelle==='main_chat') && (await leseApiLaufWahl(l.identity_id))?.phase==='aktiv') {
       const sichtbar=await importiereSitzungsEintraege(l.identity_id,[
         {ref:'turn:'+turnId+':eingabe',art:'eingabe',inhalt:eingangText(eing.rows),modell:l.modell},
         {ref:'turn:'+turnId+':antwort',art:'text',inhalt:a.ergebnis.text,modell:l.modell},
@@ -571,6 +809,8 @@ export class LaufVerwaltung {
     const schwelle = e.neustart_schwelle_prozent.wert / 100;
     if (a.anteil !== null && a.anteil >= schwelle && a.ergebnis.ende !== 'abgebrochen' && !signal.aborted) {
       turns += 1;
+      // P22-T286/R3: der Uebergabe-Turn laeuft NICHT als Chat-Antwort des Users - Uebergabe gehoert als api-Zeilen in den Verlauf.
+      ctx.mainChat = false;
       const f = await this.neustartMitUebergabe(l, s, verlauf, a, signal);
       // Erfolg: neue Sitzung, Kontext ist zurueckgesetzt und wird hier nicht wieder ueberschrieben.
       if (f) fehler = f; else kontext = null;
@@ -602,10 +842,17 @@ export class LaufVerwaltung {
       thoughtId = /"id"\s*:\s*"([0-9a-f-]{36})"/.exec(text(r.inhalt))?.[1] ?? null;
     } catch { /* Uebergabe steht trotzdem im neuen Verlauf */ }
     const neu = randomUUID();
-    const v2 = await VerlaufPg.oeffne(this.db, l.identity_id, neu);
+    // P22-T286/K1: Kontext dieses Uebergabe-Turns.
+    const ctx: TurnKontext = { verlaufAn: await leseApiVerlaufHauptverlaufSchalter(l.project).then(x => x.aktiv).catch(() => false), mainChat: false, letzteTextRef: null };
+    const v2 = await VerlaufPg.oeffne(this.db, l.identity_id, neu, (n, nr) => this.verlaufsNachricht(l, ctx, neu, nr, n), (nr) => this.loescheVerlauf(l, neu, nr));
     await v2.fuegeHinzu({ rolle: 'user', inhalt: [{ typ: 'text', text: `[Neustart der Sitzung bei Kontext ${prozent} %. Deine Uebergabe`
-      + `${thoughtId ? ' (thought ' + thoughtId + ')' : ''}:]\n${uebergabe}` }] });
-    await v2.fuegeHinzu({ rolle: 'assistant', inhalt: [{ typ: 'text', text: 'Uebergabe gelesen. Ich setze mit der naechsten Nachricht fort.' }] });
+      + `${thoughtId ? ' (thought ' + thoughtId + ')' : ''}:]\n${uebergabe}` }] }, { marke: 'uebergabe' });
+    await v2.fuegeHinzu({ rolle: 'assistant', inhalt: [{ typ: 'text', text: 'Uebergabe gelesen. Ich setze mit der naechsten Nachricht fort.' }] }, { marke: 'uebergabe' });
+    // P22-T286/N4: Nicht-Main bekommt eine generische Wechsel-Zeile (meta thought_id/von/nach/anlass).
+    if (ctx.verlaufAn && l.rolle !== 'main') {
+      await schreibeWechselZeile(l.identity_id, { von: `${l.anbieter}/${l.modell}`, nach: `${l.anbieter}/${l.modell}`,
+        anlass: 'api_neustart', thought_id: thoughtId, runtime: l.anbieter, modell: l.modell });
+    }
     await this.db.query(
       `UPDATE api_agent_laeufe SET sitzung = $3, neustarts = neustarts + 1, kontext_tokens = NULL, kontext_fenster = NULL, kontext_anteil = NULL,
           aktualisiert_am = NOW() WHERE identity_id = $1 AND lease_token = $2`, [l.identity_id, l.lease_token, neu]);

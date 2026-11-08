@@ -96,36 +96,40 @@ export async function baueUebergabeText(identity_id: string, ziel: { runtime?: s
   // Zuege: Ausloeser (Web-UI-User oder Nachricht, nicht die Sitzungs-Eintraege) mit Antwort und Werkzeugschritten dazwischen.
   const ausloeser = (await pool.query<UebergabeZeile>(
     `SELECT id::text AS id, rolle, weg, quelle_ref, antwort_auf::text AS antwort_auf, text, werkzeuge, meta, absender, erstellt_am
-       FROM hauptagent_verlauf WHERE identity_id = $1 AND rolle IN ('user','nachricht') AND (quelle_ref IS NULL OR quelle_ref NOT LIKE 'jsonl:%')
+       FROM hauptagent_verlauf WHERE identity_id = $1 AND rolle IN ('user','nachricht')
+         AND (quelle_ref IS NULL OR (quelle_ref NOT LIKE 'jsonl:%' AND quelle_ref NOT LIKE 'api:%'))
       ORDER BY hauptagent_verlauf.id DESC LIMIT 200`, [identity_id])).rows;
   // P22-T81: Identitaeten ohne Web-UI-/Zustellzeilen (Spezialisten, Koordinatoren) haben nur ihre Sitzungszeilen (jsonl).
-  const sitzung = ausloeser.length ? [] : await sitzungsZuege(identity_id);
+  // P22-T286: gemischter Verlauf - bei vorhandenen Web-UI-Ausloesern zusaetzlich die api-Zuege mitgeben (sonst fehlen sie).
+  const sitzung = ausloeser.length ? await sitzungsZuege(identity_id, true) : await sitzungsZuege(identity_id);
   const bloecke: string[] = [];
   const verwiesen: string[] = [];
   let summe = 0;
+  // P22-T286/B1: Ausloeser-Bloecke und Sitzungs-/api-Zuege nach id zusammenfuehren und von NEU nach ALT ins Budget fuellen
+  // (nicht api-Zuege pauschal vorne und nur mit Restbudget).
+  const kandidaten: Array<{ id: string; text: string; tokens: number }> = [];
   for (const a of ausloeser) {
     const antwort = (await pool.query<UebergabeZeile>(
       `SELECT id::text AS id, rolle, weg, quelle_ref, antwort_auf::text AS antwort_auf, text, werkzeuge, meta, absender, erstellt_am
          FROM hauptagent_verlauf WHERE antwort_auf = $1::bigint`, [a.id])).rows[0];
     const schritte = antwort ? (await pool.query<UebergabeZeile>(
       `SELECT id::text AS id, rolle, weg, quelle_ref, antwort_auf::text AS antwort_auf, text, werkzeuge, meta, absender, erstellt_am
-         FROM hauptagent_verlauf WHERE identity_id = $1 AND quelle_ref LIKE 'jsonl:%' AND weg = 'werkzeug'
+         FROM hauptagent_verlauf WHERE identity_id = $1 AND (quelle_ref LIKE 'jsonl:%' OR quelle_ref LIKE 'api:%') AND weg = 'werkzeug'
           AND id > $2::bigint AND id < $3::bigint ORDER BY hauptagent_verlauf.id`, [identity_id, a.id, antwort.id])).rows : [];
     const teile = [`### Zug ${a.id} · ${a.weg} · ${a.erstellt_am.toISOString()}${a.absender?.agent_id ? ' · von ' + String(a.absender.agent_id) : ''}`, a.text];
     for (const c of antwort?.werkzeuge?.calls ?? []) teile.push(werkzeugText(c.name, c.input, c.output));
     for (const sz of schritte) teile.push(sz.rolle === 'ausgabe' ? werkzeugText(sz.meta.name, sz.meta.inhalt ?? sz.text, undefined) : '[Ergebnis] ' + sz.text);
     teile.push('--- Antwort ---', antwort?.text ?? '(keine Antwort)');
     const block = teile.join('\n');
-    const t = (await zaehleTokens(block, familie, faktor)).tokens;
-    if (summe + t > budget || verwiesen.length) { verwiesen.push(a.id); continue; }
-    bloecke.unshift(block);
-    summe += t;
+    kandidaten.push({ id: a.id, text: block, tokens: (await zaehleTokens(block, familie, faktor)).tokens });
   }
-  for (let k = sitzung.length - 1; k >= 0; k--) {
-    const t = (await zaehleTokens(sitzung[k].text, familie, faktor)).tokens;
-    if (summe + t > budget || verwiesen.length) { verwiesen.push(sitzung[k].id); continue; }
-    bloecke.unshift(sitzung[k].text);
-    summe += t;
+  for (const sz of sitzung) kandidaten.push({ id: sz.id, text: sz.text, tokens: (await zaehleTokens(sz.text, familie, faktor)).tokens });
+  kandidaten.sort((x, y) => Number(x.id) - Number(y.id));
+  for (let k = kandidaten.length - 1; k >= 0; k--) {
+    const kandidat = kandidaten[k];
+    if (summe + kandidat.tokens > budget || verwiesen.length) { verwiesen.push(kandidat.id); continue; }
+    bloecke.unshift(kandidat.text);
+    summe += kandidat.tokens;
   }
   const kurz = [
     '## Kurzstand',
@@ -167,10 +171,11 @@ const SITZUNG_ZEILEN_MAX = 400;
  * P22-T81: Zuege aus den Sitzungszeilen (quelle jsonl, meta.art): ein Zug beginnt mit einer Eingabe (Spawn-Aufgabe, Weckruf, Inbox)
  * und enthaelt Werkzeug-Aufrufe/-Ergebnisse und Antworten bis zur naechsten Eingabe. Denkphasen bleiben draussen. Nichts gekuerzt.
  */
-async function sitzungsZuege(identity_id: string): Promise<Array<{ id: string; text: string }>> {
+async function sitzungsZuege(identity_id: string, nurApi = false): Promise<Array<{ id: string; text: string }>> {
   const r = await getPool().query<{ id: string; rolle: string; text: string; meta: Record<string, unknown>; erstellt_am: Date }>(
-    `SELECT * FROM (SELECT id::text AS id, rolle, text, meta, erstellt_am FROM hauptagent_verlauf WHERE identity_id = $1
-        ORDER BY hauptagent_verlauf.id DESC LIMIT ${SITZUNG_ZEILEN_MAX}) x ORDER BY x.id::bigint`, [identity_id]);
+    `SELECT * FROM (SELECT id::text AS id, rolle, text, meta, erstellt_am FROM hauptagent_verlauf
+        WHERE identity_id = $1 AND ($2::boolean IS FALSE OR quelle_ref LIKE 'api:%')
+        ORDER BY hauptagent_verlauf.id DESC LIMIT ${SITZUNG_ZEILEN_MAX}) x ORDER BY x.id::bigint`, [identity_id, nurApi]);
   const zuege: Array<{ id: string; teile: string[] }> = [];
   for (const z of r.rows) {
     const art = typeof z.meta?.art === 'string' ? z.meta.art : null;

@@ -6,7 +6,7 @@ import type { MainAgentSession, RuntimeName, RuntimeStreamEvent } from '../servi
 import { countArtifacts, registerArtifactStream, unregisterArtifactStream } from '../services/agent-runtime/artifact-stream.js';
 import { agentApiRoutes, apiAuswahlAgentAkteur } from './agent-api.js';
 import { leseApiLaufWahl } from '@synapse/core';
-import { apiLaufMainTurn } from '../services/agent-runtime/dauerhafter-main.js';
+import { apiLaufMainTurn, type ApiMainTurnInfo } from '../services/agent-runtime/dauerhafter-main.js';
 import { userInboxRoutes } from './user-inbox.js';
 import { quellenanmerkungenRoutes } from './quellenanmerkungen.js';
 import {
@@ -1482,8 +1482,16 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
         sse(reply,item.event,item.data);
       };
       const apiWahl = session.identityId ? await leseApiLaufWahl(session.identityId) : null;
+      // P22-T286/N2: beim API-Turn den Verlaufs-Schreiber uebergeben (Antwort/Werkzeuge in diese Zeile).
+      const apiInfo: ApiMainTurnInfo = {};
+      if (verlauf) apiInfo.verlauf_schreiber = { ereignis: (e, d) => {
+        // P22-T286/R1: emit() schreibt Verlauf UND SSE - kein zweites verlauf.ereignis (sonst doppelter Text).
+        // P22-T286/R2: nach dem Stream-Ende (z. B. 'zeit') nur noch den Verlauf schreiben, nie mehr auf die Antwort.
+        if (!reply.raw.writableEnded && !reply.raw.destroyed) emit({ event: e, data: d } as RuntimeStreamEvent);
+        else verlauf.ereignis(e, d);
+      }, abschliessen: (s, x) => verlauf.abschliessen(s, x) };
       const result = apiWahl
-        ? await apiLaufMainTurn(session,eingang.modellText,apiWahl.modell,emit)
+        ? await apiLaufMainTurn(session,eingang.modellText,apiWahl.modell,emit,apiInfo)
         : await manager.driver(runtime).sendMessage(session,eingang.modellText,emit,controller.signal);
       if (!result) throw new Error('api_lauf_aus');
       // P22-T73: Main beschaeftigt -> Einwurf; die Antwort schreibt die Zustellung dieser Inbox-Nachricht in dieselbe Zeile.
@@ -1496,7 +1504,8 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
         await bucheMainChatVerbrauch(session, modell, letzteUsage, referenz);
         if (referenz) verlauf?.verbrauchReferenz(referenz);
       }
-      await verlauf?.abschliessen(controller.signal.aborted ? 'abgebrochen' : 'fertig', { laufkontext: result.context });
+      // P22-T286/N2: bei 'zeit' schliesst der Turn die Zeile selbst ab.
+      if (!apiInfo.zeit) await verlauf?.abschliessen(controller.signal.aborted ? 'abgebrochen' : 'fertig', { laufkontext: result.context });
       if (!controller.signal.aborted) {
         sse(reply, 'done', {
           sessionId: session.id,
