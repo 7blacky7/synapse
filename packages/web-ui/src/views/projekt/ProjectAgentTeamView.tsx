@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 
+import { ApiAgentLaufwahl } from '../../components/ApiAgentLaufwahl';
 import { AktuelleTaskAbsatz, AgentTaskMarke } from '../../components/AgentTaskMarke';
 import { LaufHerkunftMarke } from '../../components/LaufHerkunftMarke';
 import { RuntimeAgentenPanel } from '../../components/RuntimeAgentenPanel';
@@ -72,6 +73,7 @@ export function ProjectAgentTeamView({ project }: { project: string }) {
         {current.art !== 'wrapper' && <TeamAusweisKarte key={current.identityId || current.name} zustand={current.ausweis}
           stand={teamAusweis?.identityId === current.identityId ? teamAusweis : null}
           onVerwalten={() => oeffneAusweisVerwaltung({ project, agentId: current.agentId || current.name })} />}
+        {current.identityId && <ApiAgentLaufwahl key={current.identityId} identityId={current.identityId} project={project} name={current.name} />}
         <AktuelleTaskAbsatz project={project} identityId={current.identityId} name={current.agentId || current.name} rueckfall={current.currentTask} />
         <dl>
           <div><dt>Rolle</dt><dd>{current.rolle || '–'}</dd></div>

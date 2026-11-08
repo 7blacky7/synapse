@@ -39,6 +39,7 @@ import { agentVorbereiten, ausweisFuerStart } from './agent-ausweis-dienst.js';
 import { ProfilVerwaltungFehler, aktuellerW1bAkteur, pflichtText, pruefeProfilVerwalter } from './agent-profil-verwalter.js';
 import { AUSWEIS_IM_TEXT } from './agent-ausweis-format.js';
 import { AUSFUEHRBARE_AUFTRAG_ARTEN } from './runtime-auftraege-ausfuehrung.js';
+import { apiBelegteIdentitaeten, mitApiWahlSperre, OHNE_API_SPERRE_ARTEN } from './api-wahl-sperre.js';
 import { identitaetAudit, schreibeProfilRevision, spaltenAusInhalt } from './agent-profil-dienst-a.js';
 import { setzeHeartbeatKonfiguration } from './wrapper-status.js';
 import { leseAgentVerbrauch } from './agent-verbrauch.js';
@@ -379,10 +380,20 @@ export async function legeRuntimeAuftragAn(akteur: AusweisAkteur | null, e: Auft
   }
   const id = randomUUID();
   try {
-    const r = await getPool().query<AuftragZeile>(
-      `INSERT INTO agent_runtime_auftraege (id, identity_id, art, status, gewuenscht, hands_off, grund, erstellt_von, actor_identity_id, idempotenz_schluessel)
-       VALUES ($1,$2,$3,'pending',$4::jsonb,$5::jsonb,$6,$7,$8,$9) RETURNING ${AUFTRAG_SPALTEN}`,
-      [id, ziel.id, art, JSON.stringify(gewuenscht), handsOff ? JSON.stringify(handsOff) : null, grund, b.wer, b.actor, schluessel]);
+    // P22-T202 P1 (Abnahme d317829a): gemeinsame CLI/API-Grenze. Anlegen nur unter der Laufwahl-Sperre der Identitaet; ist sie
+    // als API gewaehlt (jede Phase) oder laeuft eine API-Lease, entsteht kein CLI-Auftrag (stop ausgenommen, startet nichts).
+    // Rueckrichtung: starteApiAuswahl sieht einen hier angelegten offenen Auftrag unter derselben Sperre (wechsel_offen).
+    const r = await mitApiWahlSperre([ziel.id], async db => {
+      if (!OHNE_API_SPERRE_ARTEN.includes(art)) {
+        const belegt = (await apiBelegteIdentitaeten(db, [ziel.id])).get(ziel.id);
+        if (belegt) fehler('api_lauf_gewaehlt', { identity_id: ziel.id, art, belegt,
+          hinweis: 'API-Lauf erst kontrolliert ueber die Laufwahl beenden (CLI waehlen), dann Neustart/Wechsel beauftragen.' });
+      }
+      return db.query<AuftragZeile>(
+        `INSERT INTO agent_runtime_auftraege (id, identity_id, art, status, gewuenscht, hands_off, grund, erstellt_von, actor_identity_id, idempotenz_schluessel)
+         VALUES ($1,$2,$3,'pending',$4::jsonb,$5::jsonb,$6,$7,$8,$9) RETURNING ${AUFTRAG_SPALTEN}`,
+        [id, ziel.id, art, JSON.stringify(gewuenscht), handsOff ? JSON.stringify(handsOff) : null, grund, b.wer, b.actor, schluessel]);
+    });
     await audit(ziel.id, b, 'runtime_auftrag_angelegt', { auftrag_id: id, art, gewuenscht }, grund);
     // P22-T63 D: Modellwechsel/Neustart startet einen neuen Lauf ohne --resume -> Uebergabe aus dem Verlauf (Schalter
     // verlauf_uebergabe; wirft nie). runtime_wechsel uebergibt der Ausfuehrer (wechsleRuntime).

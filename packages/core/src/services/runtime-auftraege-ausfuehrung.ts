@@ -19,6 +19,7 @@
 import { getPool } from '../db/client.js';
 import { AUSWEIS_IM_TEXT } from './agent-ausweis-format.js';
 import { istUserWahlAuftrag, leseCliModelleSchalter } from './hauptagent-modelle.js';
+import { apiBelegteIdentitaeten, OHNE_API_SPERRE_ARTEN, versucheApiWahlSperre } from './api-wahl-sperre.js';
 
 export const AUSFUEHRBARE_AUFTRAG_ARTEN = ['neustart', 'modellwechsel', 'stop'] as const;
 export type AusfuehrbareAuftragArt = typeof AUSFUEHRBARE_AUFTRAG_ARTEN[number] | 'runtime_wechsel';
@@ -67,25 +68,56 @@ export async function claimeRuntimeAuftraege(o: {
   if (o.projekte.length === 0) return [];
   const max = Math.max(1, Math.min(MAX_JE_ABRUF, o.max ?? MAX_JE_ABRUF));
   const lease = Math.max(10_000, Math.min(60 * 60_000, o.leaseMs ?? AUFTRAG_LEASE_MS));
-  const r = await getPool().query<Zeile>(
-    `WITH kandidaten AS (
-       SELECT a.id, a.status = 'accepted' AS war_accepted FROM agent_runtime_auftraege a
-         JOIN agent_identitaeten i ON i.id = a.identity_id
+  const db = await getPool().connect();
+  let r: { rows: Zeile[] } = { rows: [] };
+  try {
+    await db.query('BEGIN');
+    // P22-T202 P1 (Abnahme d317829a): Kandidaten zeilengesperrt holen, dann je Identitaet die Laufwahl-Sperre NICHT blockierend
+    // nehmen (kein Deadlock mit Anlegen/API-Wahl; eine gerade gehaltene Identitaet kommt beim naechsten Abruf dran) und unter ihr
+    // die API-Belegung pruefen. API-belegt: alte CLI-Auftraege (ausser stop) werden sichtbar abgelehnt statt ausgefuehrt.
+    const k = await db.query<{ id: string; identity_id: string; art: string; war_accepted: boolean }>(
+      `SELECT a.id::text AS id, a.identity_id::text AS identity_id, a.art, a.status = 'accepted' AS war_accepted
+         FROM agent_runtime_auftraege a JOIN agent_identitaeten i ON i.id = a.identity_id
         WHERE i.project = ANY($1::text[]) AND i.status = 'aktiv' AND a.art = ANY($2::text[])
           AND (a.status = 'pending' OR (a.status IN ('claimed','accepted') AND a.lease_bis < NOW()))
         ORDER BY a.erstellt_am
         LIMIT $3
-        FOR UPDATE OF a SKIP LOCKED)
-     UPDATE agent_runtime_auftraege a
-        SET status = CASE WHEN k.war_accepted THEN 'accepted' ELSE 'claimed' END,
-            claim_revision = a.claim_revision + 1, lease_bis = NOW() + ($4::integer * interval '1 millisecond'),
-            aktualisiert_am = NOW()
-       FROM kandidaten k, agent_identitaeten i
-      WHERE a.id = k.id AND i.id = a.identity_id
-      RETURNING a.id, a.identity_id, i.project, i.agent_id, a.art, a.status, a.gewuenscht, a.hands_off, a.claim_revision,
-                a.lease_bis, k.war_accepted, i.modell_bestaetigt,
-                i.startrezept->'effort_je_modell'->>i.modell_bestaetigt AS effort_konfiguriert`,
-    [o.projekte, [...(o.arten ?? AUSFUEHRBARE_AUFTRAG_ARTEN)], max, lease]);
+        FOR UPDATE OF a SKIP LOCKED`,
+      [o.projekte, [...(o.arten ?? AUSFUEHRBARE_AUFTRAG_ARTEN)], max]);
+    const frei = new Set<string>();
+    for (const id of [...new Set(k.rows.map(z => z.identity_id))].sort()) if (await versucheApiWahlSperre(db, id)) frei.add(id);
+    const belegt = await apiBelegteIdentitaeten(db, [...frei]);
+    const ablehnen = k.rows.filter(z => frei.has(z.identity_id) && belegt.has(z.identity_id) && !OHNE_API_SPERRE_ARTEN.includes(z.art));
+    const claimen = k.rows.filter(z => frei.has(z.identity_id) && !ablehnen.includes(z));
+    for (const z of ablehnen) {
+      const text = `api_lauf_gewaehlt: Identitaet laeuft als API (${belegt.get(z.identity_id)}); CLI-Auftrag ${z.art} nicht ausgefuehrt (P22-T202)`;
+      await db.query(
+        `UPDATE agent_runtime_auftraege SET status = 'rejected', letzter_fehler = $2, lease_bis = NULL, aktualisiert_am = NOW(),
+            abgeschlossen_am = NOW(), abgeschlossen_von = 'api-laufwahl-sperre' WHERE id::text = $1`, [z.id, text]);
+      await db.query(
+        `INSERT INTO agent_identitaet_audit (identity_id, wer, aktion, alt, neu, grund, actor_identity_id)
+         VALUES ($1,'api-laufwahl-sperre','runtime_auftrag_abgelehnt',NULL,$2::jsonb,$3,NULL)`,
+        [z.identity_id, JSON.stringify({ auftrag_id: z.id, art: z.art, fehler: text, war_accepted: z.war_accepted }),
+          'P22-T202 P1: CLI/API-Ausschluss beim Claim']);
+    }
+    if (claimen.length) r = await db.query<Zeile>(
+      `UPDATE agent_runtime_auftraege a
+          SET status = CASE WHEN k.war_accepted THEN 'accepted' ELSE 'claimed' END,
+              claim_revision = a.claim_revision + 1, lease_bis = NOW() + ($3::integer * interval '1 millisecond'),
+              aktualisiert_am = NOW()
+         FROM unnest($1::text[], $2::boolean[]) AS k(id, war_accepted), agent_identitaeten i
+        WHERE a.id::text = k.id AND i.id = a.identity_id
+        RETURNING a.id, a.identity_id, i.project, i.agent_id, a.art, a.status, a.gewuenscht, a.hands_off, a.claim_revision,
+                  a.lease_bis, k.war_accepted, i.modell_bestaetigt,
+                  i.startrezept->'effort_je_modell'->>i.modell_bestaetigt AS effort_konfiguriert`,
+      [claimen.map(z => z.id), claimen.map(z => z.war_accepted), lease]);
+    await db.query('COMMIT');
+  } catch (err) {
+    await db.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    db.release();
+  }
   return r.rows.map(z => ({
     auftrag_id: z.id, identity_id: z.identity_id, project: z.project, agent_id: z.agent_id, art: z.art, status: z.status,
     gewuenscht: z.gewuenscht ?? {}, hands_off: z.hands_off, claim_revision: z.claim_revision,

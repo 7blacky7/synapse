@@ -7,6 +7,7 @@ import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
 import { ProfilVerwaltungFehler } from './agent-profil-verwalter.js';
+import { mitApiWahlSperre } from './api-wahl-sperre.js';
 
 export const API_AUSWAHL_FUNKTION = 'api_agenten_auswahl' as const;
 export interface ApiLaufWahl {
@@ -30,18 +31,8 @@ export async function leseApiLaufWahl(identityId: string): Promise<ApiLaufWahl |
     "SELECT startrezept->'api_lauf_wahl' AS w FROM agent_identitaeten WHERE id=$1", [identityId]);
   return r.rows[0]?.w ?? null;
 }
-export async function mitApiWahlSperre<T>(ids: string[], arbeit: (db: PoolClient) => Promise<T>): Promise<T> {
-  const db = await getPool().connect();
-  try {
-    await db.query('BEGIN');
-    for (const id of [...new Set(ids)].sort())
-      await db.query("SELECT pg_advisory_xact_lock(hashtextextended('api-lauf-wahl:' || $1,0))", [id]);
-    const r = await arbeit(db);
-    await db.query('COMMIT');
-    return r;
-  } catch (e) { await db.query('ROLLBACK'); throw e; }
-  finally { db.release(); }
-}
+// P22-T202 P1 (d317829a): Sperre und API-Belegung liegen im Blattmodul; Runtime-Auftraege nutzen dieselbe Grenze.
+export { mitApiWahlSperre, versucheApiWahlSperre, apiBelegteIdentitaeten, OHNE_API_SPERRE_ARTEN, type ApiBelegung } from './api-wahl-sperre.js';
 export async function schreibeApiLaufWahl(db: PoolClient, id: string, w: ApiLaufWahl | null): Promise<void> {
   await db.query(`UPDATE agent_identitaeten SET startrezept = CASE WHEN $2::jsonb IS NULL
     THEN COALESCE(startrezept,'{}'::jsonb) - 'api_lauf_wahl'
