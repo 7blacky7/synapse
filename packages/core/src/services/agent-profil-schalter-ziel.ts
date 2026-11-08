@@ -69,6 +69,9 @@ export const ZIEL_FAEHIGE_FUNKTIONEN: readonly string[] = [
   // P22-T287 Paket 0: api_tool_ausgabe - Lesestelle rest-api api-agent-lauf.ts fuehreAus (leseApiToolAusgabeGrenze, Ziel = die LAUFENDE
   //   API-Identitaet des Turns, nicht der Aufrufkontext).
   'api_tool_ausgabe',
+  // P22-T310: tool_ausgabe_seiten - Lesestelle rest-api mcp.ts fuehreToolsCallAus -> begrenzeAntwortFuerAgent (leseToolAusgabeSeitenGrenze,
+  //   Ziel = die AUFRUFENDE Identitaet des Principals).
+  'tool_ausgabe_seiten',
   // S4b: Hintergrund-/Empfaengerpfade mit ausdruecklichem Ziel (agent-profil-schalter.ts zielTrefferFuer; ohne Regel je Agent gilt die
   //   bisherige Aufloesung der Lesestelle):
   //   startkontext       agent-verlauf.ts baueStartkontext -> leseMainSchalter(funktion, Ziel = GESTARTETE Identitaet)

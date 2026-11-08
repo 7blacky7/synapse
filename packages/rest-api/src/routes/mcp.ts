@@ -17,6 +17,8 @@ import {refVergleich,REF_VERGLEICH_PARAMETER} from '@synapse/core';
 import { fuehreRuntimeAgentenAktion, RUNTIME_TOOL_AKTIONEN, RUNTIME_TOOL_PROPERTIES, findeWrapperStatusPerName, leseRuntimeUebersicht } from '@synapse/core';
 // P22-T157: search(action:'verlauf') - Sitzungsverlauf je Ausweis semantisch (verlauf-einbetten.ts).
 import { sucheVerlaufTool, VERLAUF_SUCHE_PROPERTIES } from '@synapse/core';
+// P22-T310: Seitengroesse fuer MCP-Antworten aller Agenten aus dem Modellfenster (gleicher Ueberlauf wie P22-T287 Paket 0).
+import { begrenzeAntwortFuerAgent } from '@synapse/core';
 import { getProjectRecordById, mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools } from '@synapse/core';
 // P22-T56: tools/list je Verbindung (Ausweis im Header / Legacy-Connector / gemeinsame Verbindung).
 import { entscheideToolListeVerbindung, toolListeMeta } from '@synapse/core';
@@ -6632,7 +6634,20 @@ async function fuehreToolsCallAus(
     // projiziert (neues Objekt; ohne Snapshot/Schalter antwortanpassung identisch = t109).
     const agentErgebnis = projiziereToolAntwort(await haengeFallSkillHinweisAn(toolResult, toolName, fallOpt), toolName, typeof toolArgs.action === 'string' ? toolArgs.action : undefined);
     // OpenAI-Empfehlung: strukturierte Ausgabe zusaetzlich zum Text (muss zum outputSchema passen).
-    result = haengeMcpBilderAn(baueToolErgebnis(await begrenzeArtefaktWerkzeugAntwort(agentErgebnis,toolArgs,toolName,typeof toolArgs.action==='string'?toolArgs.action:undefined), { tool: toolName, strukturiert: true }), bilder);
+    // P22-T310: dieselbe Seitengroesse (Modellfenster) und derselbe Ueberlauf/Weiterlese-Aufruf fuer ALLE Agenten. Nur mit
+    // geprueftem Principal (Modell/Projekt bekannt); Schalter tool_ausgabe_seiten AUS oder unbekanntes Fenster = Bestand.
+    // Pruefer-Fix: bei aktiver Seitengrenze gilt NUR sie (auf der ungeschnittenen Antwort). Der T191-Ueberlauf (antwort_max_bytes)
+    // laeuft nur, wenn sie aus ist (debug null = Bestand byte-gleich) oder nicht greifen konnte (nicht_moeglich); sonst schnitte T191
+    // zuerst mit seinem Budget und T310 saehe nur noch eine Seite ohne seiten_bytes.
+    const p310Aktion = typeof toolArgs.action === 'string' ? toolArgs.action : undefined;
+    const p310Projekt = kontext.principal?.project ?? (typeof toolArgs.project === 'string' && toolArgs.project ? toolArgs.project : null);
+    const p310 = kontext.principal && p310Projekt
+      ? await begrenzeAntwortFuerAgent(agentErgebnis, { identity_id: kontext.principal.identitaet.id, agent_id: kontext.principal.agent_id ?? null,
+        project: p310Projekt, main: access.profile === 'main-synapse' }, toolName, p310Aktion ?? null)
+      : null;
+    const p310Greift = !!p310?.debug && p310.debug.art !== 'nicht_moeglich';
+    const p310Antwort = p310Greift && p310 ? p310.ergebnis : await begrenzeArtefaktWerkzeugAntwort(agentErgebnis, toolArgs, toolName, p310Aktion);
+    result = haengeMcpBilderAn(baueToolErgebnis(p310Antwort, { tool: toolName, strukturiert: true }), bilder);
   } catch (toolErr) {
     // Tool-Fehler (z.B. fehlender Pflicht-Parameter wie file_path) als
     // MCP tool-result mit isError zurueckgeben — NICHT als HTTP 500.

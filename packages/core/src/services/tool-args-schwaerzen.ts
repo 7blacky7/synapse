@@ -362,7 +362,7 @@ const STARK_SKALAR = /^(?:true|false|-?\d+(?:\.\d+)?)$/;
 // "schluessel": 123456 / true (JSON-Text, auch abgeschnitten) — nur bei starken Schluesseln.
 const JSON_SKALAR = /("([^"\\\n]{1,80})"\s*:\s*)(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false)(?=\s*(?:[,}\]\n]|$))/g;
 const BEARER = /\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi;
-const URL_OHNE_USER = /([a-z][a-z0-9+.-]*:\/\/)[^/@?#\s:]*:[^/@?#\s]+@/gi;
+const URL_OHNE_USER = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)[^/@?#\s:]*:[^/@?#\s]+@/gi;
 const CLI_LANG = /(--(?:password|passwort|passwd|pass|pwd)(?:=|\s+))("[^"]*"|'[^']*'|[^\s"']+)/gi;
 const CLI_MYSQL = /(\b(?:mysql|mariadb|mysqldump|mysqladmin|mariadb-dump)\b[^\n|;&]*?\s-p)("[^"]*"|'[^']*'|[^\s"']+)/g;
 const SSHPASS = /(\bsshpass\s+-p\s*)("[^"]*"|'[^']*'|[^\s"']+)/g;
@@ -552,7 +552,8 @@ export function schwaerzeToolText(text: string): string {
     const neu = maskiereUrl(aus);
     if (neu !== aus) { zaehle('url', undefined, Math.max(1, (aus.match(URL_ZUGANGSDATEN) ?? []).length)); aus = neu; }
   }
-  if (aktiv('url_ohne_user')) aus = aus.replace(URL_OHNE_USER, (_t, vor: string) => { zaehle('url_ohne_user'); return vor + TOOL_LOG_PLATZHALTER + '@'; });
+  // Pruefer-Fix P22-T310: nur mit '://' im Text (wie 'url'); URL_OHNE_USER beginnt nur am Anfang eines Schema-Laufs.
+  if (aktiv('url_ohne_user') && aus.includes('://')) aus = aus.replace(URL_OHNE_USER, (_t, vor: string) => { zaehle('url_ohne_user'); return vor + TOOL_LOG_PLATZHALTER + '@'; });
   if (aktiv('bearer')) aus = aus.replace(BEARER, (_t, vor: string) => { zaehle('bearer'); return vor + TOOL_LOG_PLATZHALTER; });
   if (aktiv('cli_lang')) aus = aus.replace(CLI_LANG, ersetzeWert('cli_lang'));
   if (aktiv('cli_mysql')) aus = aus.replace(CLI_MYSQL, ersetzeWert('cli_mysql'));

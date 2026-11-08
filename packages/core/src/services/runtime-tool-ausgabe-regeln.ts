@@ -90,6 +90,19 @@ export function claudeToolAusgabe(env: NodeJS.ProcessEnv, container: boolean): {
       read: aktiv ? TOOL_RESULTS_READ_REGEL : 'gesperrt', guard: aktiv ? 'PreToolUse Read, onFailure=block (Claude >=2.1.295)' : 'aus',
       messaging_hooks: false, hinweis: 'Aenderungen gelten ab dem naechsten Wrapper-Start; grosse Antworten koennen weiterhin als Datei landen.' } };
 }
+/**
+ * P22-T310: EINE Kernregel fuer die Groesse einer Werkzeug-Antwort: Tokens = min(Wunsch, Modellfenster * Prozent / 100),
+ * Prozent hoechstens 50. Genutzt von der Codex-Umgebung (codexToolAusgabe), vom API-Lauf (api-tool-ausgabe.ts) und von der
+ * allgemeinen Seitengrenze aller Agenten (tool_ausgabe_seiten). Keine zweite Rechnung.
+ */
+export function toolAusgabeTokens(o: { wunsch: number | null; prozent: number | null; freigegeben: boolean; kontext: number | null | undefined }):
+  { tokens: number | null; debug: Record<string, unknown> } {
+  const kontext = typeof o.kontext === 'number' && Number.isFinite(o.kontext) && o.kontext > 0 ? Math.floor(o.kontext) : null;
+  const tokens = o.freigegeben && o.wunsch && o.prozent && o.prozent <= 50 && kontext
+    ? Math.max(1, Math.min(o.wunsch, Math.floor(kontext * o.prozent / 100))) : null;
+  return { tokens, debug: { aktiv: tokens !== null, angefragt: o.wunsch, tool_output_token_limit: tokens, kontext, kontext_prozent: o.prozent,
+    letzter_fehler: o.freigegeben && !tokens ? 'tool_ausgabe_wert_oder_modellkontext_fehlt' : null } };
+}
 /** Ein Ergebnis darf hoechstens den konfigurierten Anteil des bekannten Modellkontexts verbrauchen. */
 export function codexToolAusgabe(env: NodeJS.ProcessEnv, contextWindow: number | null | undefined): {
   tokens: number | null; debug: Record<string, unknown>;
@@ -97,8 +110,7 @@ export function codexToolAusgabe(env: NodeJS.ProcessEnv, contextWindow: number |
   const wunsch = positive(env, 'SYNAPSE_CODEX_TOOL_OUTPUT_TOKENS'), prozent = positive(env, 'SYNAPSE_TOOL_AUSGABE_KONTEXT_PROZENT');
   const freigegeben = env.SYNAPSE_TOOL_AUSGABE_AKTIV === '1';
   const kontext = typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0 ? Math.floor(contextWindow) : null;
-  const tokens = freigegeben && wunsch && prozent && prozent <= 50 && kontext
-    ? Math.max(1, Math.min(wunsch, Math.floor(kontext * prozent / 100))) : null;
+  const tokens = toolAusgabeTokens({ wunsch, prozent, freigegeben, kontext }).tokens;
   return { tokens, debug: { aktiv: tokens !== null, quelle: env.SYNAPSE_TOOL_AUSGABE_QUELLE ?? 'standard', angefragt: wunsch,
     tool_output_token_limit: tokens, kontext, kontext_prozent: prozent,
     letzter_fehler: freigegeben && !tokens ? 'tool_ausgabe_wert_oder_modellkontext_fehlt' : null } };

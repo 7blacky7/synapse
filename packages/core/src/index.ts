@@ -939,12 +939,13 @@ export { leseRuntimeSynapseMods, runtimeModsUmgebung, RUNTIME_SYNAPSE_MODS_FUNKT
 export type { RuntimeModStand } from './services/runtime-synapse-mods.js';
 export { baueRuntimeModPolicy, runtimeModStartStand, RUNTIME_MOD_PLUGIN } from './services/runtime-mod-policy.js';
 export { leseRuntimeToolAusgabe, RUNTIME_TOOL_AUSGABE_FUNKTION } from './services/runtime-tool-ausgabe.js';
-export { toolAusgabeUmgebung, claudeToolAusgabe, codexToolAusgabe, toolResultsGuardQuelle, TOOL_RESULTS_READ_REGEL, pruefeToolAusgabeClaudeVersion } from './services/runtime-tool-ausgabe-regeln.js';
+export { toolAusgabeUmgebung, claudeToolAusgabe, codexToolAusgabe, toolAusgabeTokens, toolResultsGuardQuelle, TOOL_RESULTS_READ_REGEL, pruefeToolAusgabeClaudeVersion } from './services/runtime-tool-ausgabe-regeln.js';
 export type { ToolAusgabeStand, ToolAusgabeWerte } from './services/runtime-tool-ausgabe-regeln.js';
 // P22-T287 Paket 0: Werkzeugergebnisse im API-Lauf kuerzen (Schalter api_tool_ausgabe, Regel codexToolAusgabe, Wert je Identitaet).
 export { API_TOOL_AUSGABE_FUNKTION, API_TOOL_AUSGABE_HINWEIS, API_TOOL_AUSGABE_ZEICHEN_JE_TOKEN, leseApiToolAusgabeGrenze, kuerzeApiWerkzeugInhalt,
-  ueberlaufApiWerkzeugErgebnis, apiUeberlaufBudget, meldeWerkzeugGekuerzt, API_TOOL_AUSGABE_EREIGNIS, API_TOOL_AUSGABE_ABLAGE_FEHLER } from './services/api-tool-ausgabe.js';
-export type { ApiToolAusgabeGrenze, ApiMcpErgebnis, ApiUeberlaufArt } from './services/api-tool-ausgabe.js';
+  ueberlaufApiWerkzeugErgebnis, apiUeberlaufBudget, meldeWerkzeugGekuerzt, API_TOOL_AUSGABE_EREIGNIS, API_TOOL_AUSGABE_ABLAGE_FEHLER,
+  TOOL_AUSGABE_SEITEN_FUNKTION, leseToolAusgabeSeitenGrenze, kontextFensterFuerIdentitaet, begrenzeAntwortFuerAgent } from './services/api-tool-ausgabe.js';
+export type { ApiToolAusgabeGrenze, ApiMcpErgebnis, ApiUeberlaufArt, ToolAusgabeSeitenGrenze } from './services/api-tool-ausgabe.js';
 export { RUNTIME_UEBERWACHUNG_SCHEMA_SQL } from './db/runtime-ueberwachung-schema.js';
 export { AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL } from './db/agent-runtime-auftraege-schema.js';
 // P22-T5 (W2b): Runtime-Daemon-Zugang (Service-Token je Runtime, Hostbindung wie Tray), Projekte des Container-Hosts.

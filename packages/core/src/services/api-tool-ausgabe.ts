@@ -25,9 +25,9 @@
  * DEBUG: leseApiToolAusgabeGrenze().debug (Schalter, Quelle, Ziel-Ebene, Werte-Quellen, Tokens, Zeichen, letzter_fehler);
  *   LaufVerwaltung.zustand().tool_ausgabe (rest-api api-agent-lauf.ts).
  */
-import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
+import { leseProfilProduktSchalter, leseProfilProduktSchalterGepuffert } from './agent-profil-schalter.js';
 import { leseRuntimeToolAusgabe } from './runtime-tool-ausgabe.js';
-import { codexToolAusgabe, toolAusgabeUmgebung } from './runtime-tool-ausgabe-regeln.js';
+import { codexToolAusgabe, toolAusgabeTokens, toolAusgabeUmgebung } from './runtime-tool-ausgabe-regeln.js';
 import type { TextBlock, BildBlock } from './api-agent-schleife.js';
 import { begrenzeArtefaktAntwort } from './artefakt-ueberlauf.js';
 import { begrenzeArtefaktSeite, istArtefaktSeitenAntwort } from './artefakt-dateien.js';
@@ -167,7 +167,8 @@ function seiteMitHinweis(seite: Record<string, unknown>, r: ApiMcpErgebnis, gren
  * Wirft nie.
  */
 export async function ueberlaufApiWerkzeugErgebnis(r: ApiMcpErgebnis, grenze: { zeichen: number; tokens: number | null },
-  zugang: { identity_id: string; agent_id: string | null; project: string; main: boolean }, werkzeug: string, action: string | null):
+  zugang: { identity_id: string; agent_id: string | null; project: string; main: boolean }, werkzeug: string, action: string | null,
+  o: { schalter?: string } = {}):
   Promise<{ ergebnis: ApiMcpErgebnis; art: ApiUeberlaufArt; debug: Record<string, unknown> }> {
   const laenge = mcpTextLaenge(r);
   const sc = r.structuredContent && typeof r.structuredContent === 'object' && !Array.isArray(r.structuredContent)
@@ -186,7 +187,7 @@ export async function ueberlaufApiWerkzeugErgebnis(r: ApiMcpErgebnis, grenze: { 
     const texte = mcpBloecke(r).map(c => (typeof c.text === 'string' ? c.text : '')).filter(t => t.length > 0);
     const wert = sc ?? { success: r.isError !== true, werkzeug, action, text: texte.join('\n') };
     const b = { art: 'agent' as const, identity_id: zugang.identity_id, agent_id: zugang.agent_id, project: zugang.project, main: zugang.main };
-    const erste = await begrenzeArtefaktAntwort(wert, b, werkzeug, action ?? undefined, { budget_bytes: budget, eigener_schalter: API_TOOL_AUSGABE_FUNKTION });
+    const erste = await begrenzeArtefaktAntwort(wert, b, werkzeug, action ?? undefined, { budget_bytes: budget, eigener_schalter: o.schalter ?? API_TOOL_AUSGABE_FUNKTION });
     if (erste === wert || !erste || typeof erste !== 'object' || (erste as Record<string, unknown>).ueberlauf !== true) {
       return { ergebnis: r, art: 'nicht_moeglich', debug: { laenge, grund: 'kein_projekt' } };
     }
@@ -196,4 +197,90 @@ export async function ueberlaufApiWerkzeugErgebnis(r: ApiMcpErgebnis, grenze: { 
   } catch (err) {
     return { ergebnis: r, art: 'nicht_moeglich', debug: { laenge, grund: 'ueberlauf_fehler', fehler: String((err as Error)?.message ?? err).slice(0, 200) } };
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// P22-T310: Seitengroesse fuer MCP-Antworten ALLER Agenten aus dem Modellfenster
+// ---------------------------------------------------------------------------------------------
+/** P22-T310: Produkt-Schalter der allgemeinen Seitengrenze (je Projekt/global, ziel-faehig, Standard AUS, nur ausdruecklich). */
+export const TOOL_AUSGABE_SEITEN_FUNKTION = 'tool_ausgabe_seiten' as const;
+
+/**
+ * P22-T310: Modellfenster der Identitaet (laufendes CLI-Modell > Startrezept > API-Lauf) aus der Modell-Registry.
+ * Keine geratenen Werte: fehlt Modell oder Fenster, bleibt es beim Bestand. Wirft nie.
+ */
+export async function kontextFensterFuerIdentitaet(identity_id: string): Promise<{ fenster: number | null; modell: string | null; quelle: string }> {
+  try {
+    const r = await getPool().query<{ modell: string | null }>(
+      `SELECT COALESCE(NULLIF(w.model, ''), NULLIF(i.startrezept->>'modell', ''), l.modell) AS modell
+         FROM agent_identitaeten i
+         LEFT JOIN agent_identitaet_wrapper_status w ON w.identity_id = i.id
+         LEFT JOIN api_agent_laeufe l ON l.identity_id = i.id
+        WHERE i.id = $1
+        ORDER BY w.last_activity DESC NULLS LAST
+        LIMIT 1`, [identity_id]);
+    const modell = String(r.rows[0]?.modell ?? '').trim();
+    if (!modell) return { fenster: null, modell: null, quelle: 'kein_modell' };
+    const m = await getPool().query<{ context_window: number | null }>(
+      'SELECT context_window FROM model_registry WHERE alias = $1 OR full_id = $1 ORDER BY (alias = $1) DESC LIMIT 1', [modell]);
+    const fenster = Number(m.rows[0]?.context_window ?? 0) || null;
+    return { fenster, modell, quelle: m.rows[0] ? 'model_registry' : 'modell_unbekannt' };
+  } catch (e) {
+    return { fenster: null, modell: null, quelle: 'fehler: ' + String((e as Error)?.message ?? e).slice(0, 120) };
+  }
+}
+
+export interface ToolAusgabeSeitenGrenze { aktiv: boolean; tokens: number | null; zeichen: number | null; debug: Record<string, unknown> }
+
+/**
+ * P22-T310: Seitengrenze fuer MCP-Antworten jedes Agenten. Dieselbe Kernregel (toolAusgabeTokens) und dieselben Werte
+ * (runtime_tool_ausgabe mit Ziel = Identitaet, S4a-Rang-Helfer) wie der API-Lauf; eigener Schalter tool_ausgabe_seiten.
+ * AUS, Lesefehler oder unbekanntes Modellfenster = Bestand. Wirft nie.
+ */
+export async function leseToolAusgabeSeitenGrenze(project: string, identity_id: string, kontextFenster?: number | null): Promise<ToolAusgabeSeitenGrenze> {
+  const basis = { funktion: TOOL_AUSGABE_SEITEN_FUNKTION, project, identity_id };
+  try {
+    // Pruefer-Fix: Lesestelle JE TOOL-AUFRUF aller Agenten -> Prozess-Puffer (kernTtlMs; Schreiben leert ihn), Regel agent-profil-schalter.ts.
+    const s = await leseProfilProduktSchalterGepuffert(TOOL_AUSGABE_SEITEN_FUNKTION, project, { identity_id });
+    const an = s.aktiv === true && !s.letzter_fehler;
+    const schalter = { aktiv: an, quelle: s.quelle, ...(s.ziel_ebene ? { ziel_ebene: s.ziel_ebene } : {}), letzter_fehler: s.letzter_fehler ?? null };
+    if (!an) return { aktiv: false, tokens: null, zeichen: null, debug: { ...basis, schalter } };
+    const stand = await leseRuntimeToolAusgabe(project, { identity_id });
+    const f = kontextFenster ?? await kontextFensterFuerIdentitaet(identity_id);
+    const fenster = typeof f === 'number' ? f : f.fenster;
+    const r = toolAusgabeTokens({ wunsch: stand.werte.api_tool_output_tokens, prozent: stand.werte.tool_ausgabe_kontext_prozent,
+      freigegeben: true, kontext: fenster });
+    const zeichen = r.tokens !== null ? r.tokens * API_TOOL_AUSGABE_ZEICHEN_JE_TOKEN : null;
+    return { aktiv: zeichen !== null, tokens: r.tokens, zeichen, debug: { ...basis, schalter, werte_quellen: stand.quellen,
+      ...(stand.ziel_fehler ? { ziel_fehler: stand.ziel_fehler } : {}),
+      modellfenster: { fenster, quelle: typeof f === 'number' ? 'uebergeben' : f.quelle, modell: typeof f === 'number' ? null : f.modell },
+      regel: r.debug, zeichen_je_token: API_TOOL_AUSGABE_ZEICHEN_JE_TOKEN, zeichen } };
+  } catch (e) {
+    return { aktiv: false, tokens: null, zeichen: null, debug: { ...basis, schalter: { aktiv: false, quelle: 'fehler', letzter_fehler: String((e as Error)?.message ?? e).slice(0, 200) } } };
+  }
+}
+
+/**
+ * P22-T310: Antwort EINES tools/call gegen die Seitengrenze des Agenten. Reuse: derselbe Ueberlauf (begrenzeArtefaktAntwort,
+ * PG agent_artifacts ueberlauf=true, TTL) und dieselbe Weiterlese-Aktion (artefakt tool_antwort_weiterlesen) wie P22-T287 Paket 0.
+ * Nur bei Schalter EIN und bekanntem Modellfenster; sonst Bestand (unveraendert, kein Debug am Ergebnis). Debug je Antwort steht
+ * als tool_ausgabe_debug in der begrenzten Seite.
+ */
+export async function begrenzeAntwortFuerAgent(wert: unknown, zugang: { identity_id: string; agent_id: string | null; project: string; main: boolean },
+  werkzeug: string, action: string | null): Promise<{ ergebnis: unknown; debug: Record<string, unknown> | null }> {
+  const g = await leseToolAusgabeSeitenGrenze(zugang.project, zugang.identity_id);
+  if (!g.aktiv || g.zeichen === null) return { ergebnis: wert, debug: null };
+  const alsMcp: ApiMcpErgebnis = { content: [{ type: 'text', text: JSON.stringify(wert) }], structuredContent: wert, isError: false };
+  const u = await ueberlaufApiWerkzeugErgebnis(alsMcp, { zeichen: g.zeichen, tokens: g.tokens }, zugang, werkzeug, action,
+    { schalter: TOOL_AUSGABE_SEITEN_FUNKTION });
+  const debug = { ...g.debug, art: u.art, ...u.debug } as Record<string, unknown>;
+  if (u.art !== 'ueberlauf' && u.art !== 'seite' && u.art !== 'hinweis') return { ergebnis: wert, debug };
+  const inhalt = u.ergebnis.structuredContent;
+  // Pruefer-Fix: an der Seite nur ein kompakter Debug (die Seite ist schon gegen die Grenze geschnitten); voller Debug im Rueckgabewert.
+  const mf = g.debug.modellfenster as { fenster?: unknown; quelle?: unknown } | undefined;
+  const kurz = { art: u.art, zeichen: g.zeichen, tokens: g.tokens, modellfenster: { fenster: mf?.fenster ?? null, quelle: mf?.quelle ?? null },
+    schalter_quelle: (g.debug.schalter as { quelle?: unknown } | undefined)?.quelle ?? null, laenge: u.debug.laenge ?? null };
+  const neu = inhalt && typeof inhalt === 'object' && !Array.isArray(inhalt)
+    ? { ...(inhalt as Record<string, unknown>), tool_ausgabe_debug: kurz } : inhalt;
+  return { ergebnis: neu, debug };
 }
