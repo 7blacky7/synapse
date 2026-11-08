@@ -820,8 +820,11 @@ const SITZUNGS_ABBILD: Record<SitzungsEintragEingabe['art'], { rolle: VerlaufRol
 /**
  * P22-T135: Absender einer Eingabe aus einer lokalen CLI-Sitzung (CLI-Verlauf). Zugestellte Nachrichten tragen ihren Kopf im Text
  * ('[Synapse-Nachricht] ... Von: X' der Mod-Inbox, '[cc-send von X]'); alles andere hat der User an der CLI eingegeben. Rein.
+ * P22-T288 A3: Auftrag an einen Harness-Subagenten (Teammate) beginnt mit '<teammate-message teammate_id="X"' -> Absender X.
  */
-export function cliEingabeAbsender(text: string): { agent_id: string; herkunft: 'cli' | 'mod_inbox' | 'cc_send' } {
+export function cliEingabeAbsender(text: string): { agent_id: string; herkunft: 'cli' | 'mod_inbox' | 'cc_send' | 'teammate' } {
+  const tm = /^\s*<teammate-message teammate_id="([^"]+)"/.exec(text);
+  if (tm) return { agent_id: tm[1].trim(), herkunft: 'teammate' };
   if (/^\[Synapse-Nachricht\]$/m.test(text)) {
     const von = /^Von: ([^,\n]+)/m.exec(text);
     return { agent_id: von ? von[1].trim() : 'unbekannt', herkunft: 'mod_inbox' };
@@ -864,12 +867,13 @@ export async function importiereSitzungsEintraege(identity_id: string | null, ei
     const text = typeof e.inhalt === 'string' ? e.inhalt : JSON.stringify(e.inhalt ?? null);
     const bilder = e.art === 'werkzeug_ergebnis' ? bilderAusStrom(e.bilder) : [];
     const modell = typeof e.modell === 'string' ? e.modell : await aktuellesMainModell(identity_id);
-    const gemessen = e.tokens_gemessen && typeof e.tokens_gemessen === 'object' ? {
+    // P22-T288 W7: CLI-usage (Wrapper/Daemon) nur bei verlauf_token_zaehlung EIN, als cli_usage; der API-Weg wie bisher.
+    const gemessen = e.tokens_gemessen && typeof e.tokens_gemessen === 'object' && (o.herkunft === 'api' || zaehlen) ? {
       input: zahl(e.tokens_gemessen.input), output: zahl(e.tokens_gemessen.output),
       ...(zahl(e.tokens_gemessen.cache_read) ? { cache_read: zahl(e.tokens_gemessen.cache_read) } : {}),
       ...(zahl(e.tokens_gemessen.cache_creation) ? { cache_creation: zahl(e.tokens_gemessen.cache_creation) } : {}),
       ...(zahl(e.tokens_gemessen.kontext) ? { kontext: zahl(e.tokens_gemessen.kontext) } : {}),
-      quelle: 'anbieter_gemessen',
+      quelle: o.herkunft === 'api' ? 'anbieter_gemessen' : 'cli_usage',
     } : null;
     let berechnet: Record<string, unknown> | null = null;
     if (!gemessen && zaehlen) {

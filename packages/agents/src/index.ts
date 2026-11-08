@@ -17,5 +17,7 @@ export * from './start-fehler.js'
 export * from './modelle-api.js'
 // P22-T133: Sitzungs-JSONL -> Verlaufseintraege, auch fuer den Daemon (lokale CLI-Sitzungen).
 export * from './verlauf-melden.js'
+// P22-T288 W2: Codex-Rollouts -> Verlaufseintraege (Daemon, lokale Codex-Sitzungen).
+export * from './verlauf-melden-codex.js'
 // Note: wrapper.ts is a standalone binary (synapse-agent-wrapper), not re-exported here.
 // It runs as its own process via the "bin" entry in package.json.

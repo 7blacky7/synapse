@@ -555,14 +555,17 @@ async function meldeVerbrauch(zeilen: readonly string[]): Promise<void> {
 /**
  * P22-T63: vollstaendige Sitzung (Eingaben, Texte, Werkzeug-Aufrufe/-Ergebnisse) an den Verlauf des Hauptagenten melden,
  * aus derselben JSONL wie syncTokensFromHistory. Gemeldete refs merkt sich der Wrapper; der Server nimmt jede ref genau
- * einmal auf. grund nicht_main: dieser Wrapper fuehrt nicht den Hauptagenten -> nie wieder melden. funktion_aus: die
- * Eintraege gelten als erledigt (Schalter AUS heisst nicht aufnehmen). Transportfehler: naechster Abgleich versucht es erneut.
+ * einmal auf. Transportfehler: naechster Abgleich versucht es erneut.
+ * P22-T288 W3: grund nicht_main (Identitaet fehlt/inaktiv, Schalter agent_verlauf_alle AUS) bzw. funktion_aus (Main, Schalter AUS)
+ * pausiert das Melden nur VERLAUF_PAUSE_MS lang (vorher: bis zum Prozessende bzw. Eintraege verworfen). Gebucht als gemeldet wird
+ * ein Stapel erst, wenn der Server ihn ohne grund angenommen hat - nach dem Einschalten kommt der Bestand ohne Neustart nach.
  */
 const gemeldeteVerlaufsEintraege = new Set<string>()
 let verlaufMeldungLaeuft = false
-let verlaufNichtMain = false
+const VERLAUF_PAUSE_MS = 15 * 60_000
+let verlaufPauseBis = 0
 async function meldeVerlauf(zeilen: readonly string[]): Promise<void> {
-  if (verlaufNichtMain || verlaufMeldungLaeuft || !transport.meldeVerlauf || !PROJECT_NAME) return
+  if (Date.now() < verlaufPauseBis || verlaufMeldungLaeuft || !transport.meldeVerlauf || !PROJECT_NAME) return
   const offen = sitzungsEintraegeAus(zeilen).filter(e => !gemeldeteVerlaufsEintraege.has(e.ref))
   if (!offen.length) return
   const anbieter = resolveModel(AGENT_MODEL)?.provider
@@ -572,9 +575,12 @@ async function meldeVerlauf(zeilen: readonly string[]): Promise<void> {
     for (let i = 0; i < offen.length; i += 200) {
       const teil = offen.slice(i, i + 200)
       const r = await transport.meldeVerlauf(runtimeArt, teil)
+      if (r.grund === 'nicht_main' || r.grund === 'funktion_aus') {
+        verlaufPauseBis = Date.now() + VERLAUF_PAUSE_MS
+        log('verlauf: Server meldet %s, neuer Versuch in %d min', r.grund, Math.round(VERLAUF_PAUSE_MS / 60_000))
+        break
+      }
       for (const e of teil) gemeldeteVerlaufsEintraege.add(e.ref)
-      if (r.grund === 'nicht_main') { verlaufNichtMain = true; break }
-      if (r.grund === 'funktion_aus') { for (const e of offen) gemeldeteVerlaufsEintraege.add(e.ref); break }
       if (r.aufgenommen) log('verlauf: %d Eintrag/Eintraege aufgenommen', r.aufgenommen)
     }
   } catch (err) {

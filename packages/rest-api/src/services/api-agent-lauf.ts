@@ -30,7 +30,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import {
-  getPool, fuehreApiNachrichtAus, leseApiEinstellungen, leseApiModelle, ausweisFuerStart, leseApiLaufSchalter, leseApiLaufEinstellungen,
+  getPool, eintraegeAusNachricht, fuehreApiNachrichtAus, leseApiEinstellungen, leseApiModelle, ausweisFuerStart, leseApiLaufSchalter, leseApiLaufEinstellungen,
   leseApiLaufWahl, mitApiWahlSperre, schreibeApiLaufWahl, importiereSitzungsEintraege,
   schreibeWechselZeile, setzeGemesseneTokens, leseApiVerlaufHauptverlaufSchalter, baueStartkontext, baueUebergabeText,
   type SitzungsEintragEingabe,
@@ -197,27 +197,10 @@ export interface VerlaufsSchreiber {
 type VerlaufsBlock = { typ?: string; text?: string; id?: string; name?: string; eingabe?: unknown; aufruf_id?: string; inhalt?: unknown; fehler?: unknown };
 
 /**
- * P22-T286/N1: Eintraege EINER Nachricht fuer hauptagent_verlauf. ref = '<sitzung>:<nr>:<blockindex>' (stabil und kollisionsfrei,
- * auch bei Zwischentexten und mehreren Anbieteraufrufen). Die EINGABE des Turns schreibt der Aufrufer getrennt mit 'eingang:<ids>'.
+ * P22-T286/N1: Eintraege EINER Nachricht fuer hauptagent_verlauf (ref '<sitzung>:<nr>:<blockindex>'). P22-T288 W6: die Funktion liegt in
+ * core (api-verlauf-nachzug.ts) - eine Stelle fuer den Live-Weg hier und den Nachzug (admin verlauf_nachzug_api); Export bleibt.
  */
-export function eintraegeAusNachricht(sitzung: string, nr: number, n: ApiNachricht, modell: string | null): SitzungsEintragEingabe[] {
-  const bloecke = (Array.isArray(n.inhalt) ? n.inhalt : []) as unknown as VerlaufsBlock[];
-  const out: SitzungsEintragEingabe[] = [];
-  bloecke.forEach((b, i) => {
-    const ref = sitzung + ':' + nr + ':' + i;
-    if (b.typ === 'text' && typeof b.text === 'string' && b.text) {
-      if (n.rolle !== 'assistant') return;
-      out.push({ ref, art: 'text', inhalt: b.text, modell });
-    } else if (b.typ === 'denken') {
-      out.push({ ref, art: 'denken', inhalt: String(b.text ?? ''), modell });
-    } else if (b.typ === 'werkzeug_aufruf') {
-      out.push({ ref, art: 'werkzeug_aufruf', name: b.name ?? null, werkzeug_id: b.id ?? null, inhalt: b.eingabe ?? null, modell });
-    } else if (b.typ === 'werkzeug_ergebnis') {
-      out.push({ ref, art: 'werkzeug_ergebnis', werkzeug_id: b.aufruf_id ?? null, inhalt: b.inhalt ?? null, fehler: b.fehler === true, modell });
-    }
-  });
-  return out;
-}
+export { eintraegeAusNachricht };
 
 export class LaufVerwaltung {
   private timer: NodeJS.Timeout | null = null;

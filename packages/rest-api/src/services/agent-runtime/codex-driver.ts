@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { AgentRuntimeRepository } from './repository.js';
 import { dauerhafterMainTurn } from './dauerhafter-main.js';
+import { altwegStartkontext, mitStartkontext } from './altweg-startkontext.js';
 import { istAgentRuntimeImage, leseRuntimeContainerGrenzen, runtimeContainerSpez } from './runtime-container-spez.js';
 import { beobachteRuntimeContainer, fuehreCliUpdateImContainerAus } from './runtime-beobachtung.js';
 import { leseCliModelleImContainer, type CliModellListe } from './cli-modelle.js';
@@ -463,6 +464,8 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     const kontext = (await getModel('codex').catch(() => null))?.contextWindow;
     const toolAusgabe = codexToolAusgabe(toolEnv, kontext);
     emit({ event: 'runtime', data: { tool_ausgabe: toolAusgabe.debug } });
+    // P22-T288 W5: neue Sitzung der Main-Identitaet -> Startkontext aus dem Verlauf einmal vor die erste Nachricht (bei resume nie).
+    const startkontext = await altwegStartkontext(session, emit);
     const exec = await container.exec({
       Cmd: buildCodexCommand(session.runtimeSessionId, await this.altwegEffort(), toolAusgabe.tokens),
       AttachStdin: true,
@@ -521,7 +524,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     });
 
     try {
-      stream.write(message);
+      stream.write(mitStartkontext(message, startkontext));
       stream.end();
       await new Promise<void>((resolve, reject) => {
         stream.once('end', resolve);

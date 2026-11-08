@@ -891,6 +891,10 @@ export type {
   WerkzeugAusfuehrer as ApiWerkzeugAusfuehrer, VerlaufSpeicher as ApiVerlaufSpeicher, Grenzen as ApiGrenzen, NachrichtEnde as ApiNachrichtEnde,
   NachrichtErgebnis as ApiNachrichtErgebnis, SchleifenOptionen as ApiSchleifenOptionen, AnthropicBlock, OpenAiTeil, OpenAiWerkzeugAufruf, OpenAiNachricht,
 } from './services/api-agent-schleife.js';
+// P22-T288 W6: Nachzug api_agent_verlauf -> hauptagent_verlauf (admin verlauf_nachzug_api); eintraegeAusNachricht = eine Stelle fuer live und Nachzug.
+export { eintraegeAusNachricht, nachzugEintraegeAusNachricht, ermittleApiVerlaufNachzug, schreibeApiVerlaufNachzug, API_VERLAUF_NACHZUG_ADMIN_ACTIONS,
+  API_VERLAUF_NACHZUG_ADMIN_PARAMETER, istApiVerlaufNachzugAdminAction, fuehreApiVerlaufNachzugAdminAus } from './services/api-verlauf-nachzug.js';
+export type { ApiNachzugSitzung, ApiNachzugErmittlung } from './services/api-verlauf-nachzug.js';
 // P22-T178: Lauf-Herkunft je Agent (api/cli/codex + Modell) aus dem Wrapper-Status, Schalter agent_lauf_herkunft.
 export { AGENT_LAUF_HERKUNFT_FUNKTION, LAUF_ARTEN, kurzModell, laufHerkunftAus, ermittleLaufHerkunft } from './services/agent-lauf-herkunft.js';
 export type { LaufArt, LaufHerkunft, LaufHerkunftEintrag, LaufHerkunftStand } from './services/agent-lauf-herkunft.js';

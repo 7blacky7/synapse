@@ -10,6 +10,7 @@ import { leseMainProfil, mainProfileScope, hauptagentIdentitaetScope, type MainT
 import { bilderFeld, neuerBildVerweisMerker } from './werkzeug-bilder.js';
 import { leseHauptagentSchalter, hauptagentIdentitaetsId, ausweisFuerStart, HAUPTAGENT_PROJEKT } from '@synapse/core';
 import { dauerhafterMainTurn } from './dauerhafter-main.js';
+import { altwegStartkontext } from './altweg-startkontext.js';
 import { istAgentRuntimeImage, leseRuntimeContainerGrenzen, runtimeContainerSpez } from './runtime-container-spez.js';
 import { beobachteRuntimeContainer, fuehreCliUpdateImContainerAus } from './runtime-beobachtung.js';
 import { leseCliModelleImContainer, type CliModellListe } from './cli-modelle.js';
@@ -569,11 +570,14 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
       pruefeToolAusgabeClaudeVersion(version.stdout.trim());
     }
     emit({ event: 'runtime', data: { tool_ausgabe: toolAusgabe.debug } });
+    // P22-T288 W5: neue Sitzung der Main-Identitaet -> Startkontext aus dem Verlauf einmal an den System-Prompt (bei --resume nie).
+    const startkontext = await altwegStartkontext(session, emit);
+    const systemPrompt = [haupt ? HAUPTAGENT_SYSTEMPROMPT : null, startkontext].filter(Boolean).join('\n\n') || null;
     const command = [
       '/usr/bin/env',
       '-u',
       'ANTHROPIC_API_KEY',
-      ...buildClaudeCommand(session.runtimeSessionId, config.model ?? DEFAULT_MODEL, mcpConfig, profile, haupt ? HAUPTAGENT_SYSTEMPROMPT : null,
+      ...buildClaudeCommand(session.runtimeSessionId, config.model ?? DEFAULT_MODEL, mcpConfig, profile, systemPrompt,
         // P22-T65: gespeicherte Stufe bzw. standard_effort des Modells (Schalter AUS -> null).
         (await effortFuerStart('claude', config.model ?? DEFAULT_MODEL).catch(() => null))?.effort ?? null, toolEnv),
     ];

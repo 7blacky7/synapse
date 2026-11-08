@@ -38,6 +38,8 @@ import { KOORDINATOR_HEARTBEAT_ADMIN_ACTIONS, istKoordinatorHeartbeatAdminAction
 import { AGENT_ANMELDUNGEN_ADMIN_ACTIONS, AGENT_ANMELDUNGEN_ADMIN_PARAMETER, istAgentAnmeldungenAdminAction, fuehreAgentAnmeldungenAdminAus } from './agent-anmeldungen.js';
 // P10-T90: Zwangs-Pins verwalten (admin zwangs_pins; status/setzen/entfernen, eigener Rechtepfad in zwangs-pin.ts).
 import { ZWANGS_PIN_ADMIN_ACTIONS, ZWANGS_PIN_ADMIN_PARAMETER, istZwangsPinAdminAction, fuehreZwangsPinAdminAus } from './zwangs-pin.js';
+// P22-T288 W6: einmaliger Nachzug api_agent_verlauf -> hauptagent_verlauf (Vorschau Standard; User/Koordinator).
+import { API_VERLAUF_NACHZUG_ADMIN_ACTIONS, API_VERLAUF_NACHZUG_ADMIN_PARAMETER, istApiVerlaufNachzugAdminAction, fuehreApiVerlaufNachzugAdminAus } from './api-verlauf-nachzug.js';
 import { RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, RUNTIME_UEBERWACHUNG_ADMIN_PARAMETER, istRuntimeUeberwachungAdminAction, fuehreRuntimeUeberwachungAdminAus } from './runtime-ueberwachung.js';
 import { AUSWEIS_FRIST_NAMEN, AUSWEIS_FRIST_DEFINITIONEN, AusweisFristenFehler, leseAusweisFristen, setzeAusweisFristen } from './agent-ausweis-fristen.js';
 import { leseFilesPlanAblaufSchalter, setzeFilesPlanAblaufSchalter } from './files-plan-ablauf-schalter.js';
@@ -71,7 +73,7 @@ const W1B_KERN_AKTIONEN = [
   'identitaet_umbenennen',
 ] as const;
 /** P22-T36: hauptagent_* additiv im selben admin-Weg; eigene Rechtepruefung (User + Main selbst) in hauptagent-dienst.ts. */
-export const W1B_ADMIN_ACTIONS = ['artefakt_einstellungen', 'agentennetzwerk', ...HEX_ADMIN_ACTIONS, ...SHELL_AUSGABE_ADMIN_ACTIONS, ...REVERSE_ADMIN_ACTIONS, ...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...WS_ALTBESTAND_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS, ...AGENT_ANMELDUNGEN_ADMIN_ACTIONS, ...KOORDINATOR_HEARTBEAT_ADMIN_ACTIONS, ...ZWANGS_PIN_ADMIN_ACTIONS] as const;
+export const W1B_ADMIN_ACTIONS = ['artefakt_einstellungen', 'agentennetzwerk', ...HEX_ADMIN_ACTIONS, ...SHELL_AUSGABE_ADMIN_ACTIONS, ...REVERSE_ADMIN_ACTIONS, ...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...WS_ALTBESTAND_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS, ...AGENT_ANMELDUNGEN_ADMIN_ACTIONS, ...KOORDINATOR_HEARTBEAT_ADMIN_ACTIONS, ...ZWANGS_PIN_ADMIN_ACTIONS, ...API_VERLAUF_NACHZUG_ADMIN_ACTIONS] as const;
 export type W1bAdminAction = typeof W1B_KERN_AKTIONEN[number];
 
 /** Nur NEUE Parameternamen; bestehende (project, aktiv, grund, ebene, agent_id) bleiben byte-stabil unveraendert. */
@@ -117,6 +119,7 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   // P22-T287: Produkt-Schalter je Agent ueber projekt/global (nur mit Schalter schalter_identitaet; modus entfernen = wieder erben).
   ziel_ebene: { type: 'string', enum: ['identitaet', 'agent', 'typ'], description: 'profil_schalter_setzen/status, shell_ausgabe_einstellungen, runtime_ueberwachung, ausweis_fristen je Agent: identitaet (ziel_identity_id) | agent (ziel = agent_id oder Muster luna-*, ohne Ausweis) | typ (typ_id); modus entfernen = erben' },
   ...NETZWERK_ADMIN_PARAMETER,
+  ...API_VERLAUF_NACHZUG_ADMIN_PARAMETER,
   ...HEX_ADMIN_PARAMETER,
   ...SHELL_AUSGABE_ADMIN_PARAMETER,
   ...ARTEFAKT_ADMIN_PARAMETER,
@@ -703,6 +706,8 @@ export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteu
   if (istAgentAnmeldungenAdminAction(action)) return fuehreAgentAnmeldungenAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
   // P10-T90: Zwangs-Pins (status: User, Koordinator inkl. Legacy, Main; setzen/entfernen: User, Koordinator) – Rechtepfad in zwangs-pin.ts.
   if (istZwangsPinAdminAction(action)) return fuehreZwangsPinAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
+  // P22-T288 W6: Nachzug der API-Zuege in den Agenten-Verlauf (User, Koordinator inkl. Legacy des Projekts) - Rechtepfad in api-verlauf-nachzug.ts.
+  if (istApiVerlaufNachzugAdminAction(action)) return fuehreApiVerlaufNachzugAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
   if (istAusweisAktion(action)) {
     // Auch der Legacy-Koordinator ohne Ausweis darf vorbereiten/abrufen/loeschen (Vorgabe 27920).
     try {

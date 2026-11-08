@@ -101,6 +101,8 @@ export function herkunftKopf(a: MainAgentVerlaufEintrag['absender']): string | n
   const wer = !a.agent_id || a.agent_id === 'user' ? 'Du' : a.agent_id;
   if (a.herkunft === 'mod_inbox') return wer + ' · ' + (wer === 'Du' ? 'Web-UI' : 'Nachricht');
   if (a.herkunft === 'cc_send') return wer + ' · cc-send';
+  // P22-T288 A3: Auftrag des Koordinators an einen Harness-Subagenten (teammate_id, z. B. team-lead).
+  if (a.herkunft === 'teammate') return wer + ' · Auftrag';
   return null;
 }
 
