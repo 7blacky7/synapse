@@ -1236,9 +1236,10 @@ export {
   ZWANGS_PIN_FUNKTION, ZWANGS_PIN_FEHLER, ZWANGS_PIN_HINWEIS_FELD, ZWANGS_PIN_ADMIN_ACTIONS, ZWANGS_PIN_ADMIN_PARAMETER, ZWANGS_PIN_MODI,
   istZwangsPinAdminAction, fuehreZwangsPinAdminAus, pruefeZwangsPin, quittiereZwangsPinLesen, zwangsPinAntwortErfolgreich, zwangsPinGeltung,
   zwangsPinArt, sammleZwangsPinPfade, ladeZwangsPins, treffendeZwangsPins, stammRegex, stammPasst, stammSpezifitaet, normalisierePinPfad,
-  leereZwangsPinCache,
+  leereZwangsPinCache, initialisiereZwangsPinHinweise, zwangsPinHinweise, ermittleZwangsPinMerkmale, pinKurzfassung, PFLICHT_TAG, PFLICHT_KURZ_TAG,
+  ZWANGS_PIN_HINWEIS_QUELLE, pruefePflichtTagSchutz, PFLICHT_TAG_FEHLER,
 } from './services/zwangs-pin.js';
-export type { ZwangsPin, ZwangsPinAufrufer, ZwangsPinErgebnis, ZwangsPinGeltung, ZwangsPinGeltungsArt, ZwangsPinArt } from './services/zwangs-pin.js';
+export type { ZwangsPin, ZwangsPinAufrufer, ZwangsPinErgebnis, ZwangsPinGeltung, ZwangsPinGeltungsArt, ZwangsPinArt, ZwangsPinMerkmale } from './services/zwangs-pin.js';
 export { ZWANGS_PIN_SCHEMA_SQL } from './db/zwangs-pin-schema.js';
 export type { AnmeldungWeg, AnmeldungKontext, AnmeldungenAbfrage, AnmeldungenSchalter } from './services/agent-anmeldungen.js';
 export type { KorridorPruefung } from './services/specialist-respawn.js';

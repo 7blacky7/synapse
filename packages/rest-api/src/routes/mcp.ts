@@ -27,7 +27,7 @@ import { fuehreArtefaktAus, fuehreArtefaktDateiAufrufAus, begrenzeArtefaktWerkze
 import { ARTEFAKT_DEFINITION, ANMERKUNGEN_DEFINITION, fuehreAnmerkungenAus } from '@synapse/core';
 import { mainToolAccess, mainToolListeMitProfil, mainToolAblehnung, type MainToolAccess } from '../services/agent-runtime/main-tool-profile.js';
 import { leseW1bSchalter } from '@synapse/core';
-import { initialisiereW1bAnmeldungHinweise, herkunftsortAusKopf } from '@synapse/core';
+import { initialisiereW1bAnmeldungHinweise, herkunftsortAusKopf, initialisiereZwangsPinHinweise } from '@synapse/core';
 import { bearbeiterAusAufruf } from './task-bearbeiter.js';
 // P22-T13 Paket C: gemeinsame Agentenprojektion (K16.4 Schritt 6) nach dem vollstaendigen Audit.
 import { projiziereToolAntwort } from '@synapse/core';
@@ -5901,7 +5901,7 @@ async function handleToolCallKern(
             success: false,
             executed_via: 'keiner',
             error: 'kein_pc_daemon',
-            message: 'Kein aktiver PC-Daemon fuer dieses Projekt. Synapse startet dafuer keinen Workspace automatisch. Daemon/Tray auf dem PC starten oder - nur auf Anweisung des Users - target:"workspace" angeben.',
+            message: 'Kein PC-Daemon erreichbar. Synapse startet keinen Workspace als Ersatz; ein Workspace nur auf Anweisung des Users (workspace start), danach target:"workspace".',
           };
         }
         target = 'local';
@@ -6701,6 +6701,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
   initialisiereAssetKonfliktHinweise();
   initialisiereW1bAnmeldungHinweise();
   initialisiereLogStromHinweise();
+  // P10-T90: Zwangs-Pin-Hinweise (lesende/nicht gesperrte Ops unter einem Pflicht-Stamm) ueber die Hinweisquellen-Registry.
+  initialisiereZwangsPinHinweise();
   /**
    * GET /mcp/sse - SSE Endpoint für MCP
    */
