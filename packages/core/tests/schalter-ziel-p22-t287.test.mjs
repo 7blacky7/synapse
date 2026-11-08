@@ -55,7 +55,7 @@ try {
   pool = (await load('packages/core/dist/db/client.js')).getPool();
   await pool.query('CREATE SCHEMA "' + schema + '"');
   for (const t of ['agent_profil_schalter', 'agent_identitaeten', 'agent_typen', 'agent_identitaet_audit', 'agent_sessions',
-    'agent_typ_revisionen', 'agent_profil_revisionen', 'agent_persona_zuweisungen', 'intern_schalter']) {
+    'agent_typ_revisionen', 'agent_profil_revisionen', 'agent_persona_zuweisungen', 'intern_schalter', 'memories']) {
     const ex = await pool.query("SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename=$1", [t]);
     if (ex.rows.length) await pool.query('CREATE TABLE "' + schema + '"."' + t + '" (LIKE public."' + t + '" INCLUDING ALL)');
   }
@@ -370,8 +370,8 @@ try {
   delete process.env.SYNAPSE_W1B_ANTWORTANPASSUNG;
 
   // Q S3: verdrahtete Lesestellen, Fremd-Empfaenger-Regel, Debug-Quelle, Messung (P5) -----------------------------------
-  ok(!Z.istZielFaehig('mod_inbox') && !Z.istZielFaehig('startkontext') && !Z.istZielFaehig('coedit_ohne_gate') && Z.istZielFaehig('task_pins')
-    && Z.istZielFaehig('zwangs_pin') && Z.istZielFaehig('profil_antwortanpassung'), 'P22-T287 Q Positivliste = nur verdrahtete Lesestellen (S3)');
+  ok(!Z.istZielFaehig('mod_inbox') && Z.istZielFaehig('startkontext') && !Z.istZielFaehig('coedit_ohne_gate') && Z.istZielFaehig('task_pins')
+    && Z.istZielFaehig('zwangs_pin') && Z.istZielFaehig('profil_antwortanpassung'), 'P22-T287 Q Positivliste = nur verdrahtete Lesestellen (S3; S4b: startkontext mit Ziel der gestarteten Identitaet)');
   ok(await fehlerCode(() => setze({ebene: 'identitaet', ziel: 'id-sub2', aktiv: true, funktion: 'mod_inbox'})) === 'funktion_nicht_je_ziel', 'P22-T287 Q nicht verdrahtete Funktion je Agent abgewiesen');
   const TAS = await load('packages/core/dist/services/tool-antworten-schlank.js');
   await setze({ebene: 'identitaet', ziel: 'id-sub2', aktiv: true});
@@ -401,11 +401,72 @@ try {
   for (let i = 0; i < 200; i++) await S.leseProfilProduktSchalter(F, P);
   console.log('MESSUNG P5 ungepuffert ohne Ziel ' + JSON.stringify({lesungen: 200, zielabfragen: Z.schalterZielDiagnose().abfragen, gesamt_ms: Date.now() - tq}));
   ok(Z.schalterZielDiagnose().abfragen === 0 && zu.abfragen === 200, 'P22-T287 Q P5: ohne Ziel keine Zielabfrage, ungepuffert eine je Lesung', {zu});
+
+  // Q2 S3b (Pruefer 2b71d432): N2 Debug-Quelle beim Puffertreffer, N3 Messung, H4 Puffer bei AUS, N1 Pflicht-Tag-Schutz ----------
+  S.leereAusweisKernCache();
+  const FSK = await load('packages/core/dist/services/fall-skills.js');
+  FSK.leereFallSkillSchalterPuffer();
+  const q2a = await imKontext(principal('id-sub2', 'sub-2', 'subagent'), async () => { await TAS.toolAntwortenSchlank(P); return Z.schalterQuelleDesAufrufs(); });
+  const q2b = await imKontext(principal('id-sub2', 'sub-2', 'subagent'), async () => { await TAS.toolAntwortenSchlank(P); return Z.schalterQuelleDesAufrufs(); });
+  ok(q2a.length === 1 && q2b.length === 1 && q2b[0].ziel_ebene === 'identitaet', 'P22-T287 Q2 N2: schalter_quelle auch beim Puffertreffer (fall-skills, zweiter Aufruf)', {q2a, q2b});
+  await S.leseProfilProduktSchalterGepuffert(F, P, {identity_id: 'id-sub2'});
+  const q2c = await imKontext(principal('id-sub2', 'sub-2', 'subagent'), async () => {
+    const vor = S.produktPufferDiagnose().treffer;
+    await S.leseProfilProduktSchalterGepuffert(F, P, {identity_id: 'id-sub2'});
+    return {treffer: S.produktPufferDiagnose().treffer - vor, quelle: await Z.schalterQuelleDesAufrufs()};
+  });
+  ok(q2c.treffer >= 1 && q2c.quelle.length === 1, 'P22-T287 Q2 N2: schalter_quelle auch beim Treffer aus dem Kern-Puffer', q2c);
+  S.leereAusweisKernCache();
+  Z.leereSchalterZielDiagnose();
+  let tm = Date.now();
+  for (let i = 0; i < 200; i++) await S.leseProfilProduktSchalter(F, P, {identity_id: 'id-andere'});
+  const ohneRegelUng = {ms: Date.now() - tm, ziel: Z.schalterZielDiagnose()};
+  Z.leereSchalterZielDiagnose();
+  const pzA = S.produktPufferDiagnose();
+  tm = Date.now();
+  for (let i = 0; i < 200; i++) await S.leseProfilProduktSchalterGepuffert(F, P, {identity_id: 'id-andere'});
+  const pzB = S.produktPufferDiagnose();
+  const ohneRegelGep = {ms: Date.now() - tm, puffer_treffer: pzB.treffer - pzA.treffer, puffer_fehlgriffe: pzB.fehlgriffe - pzA.fehlgriffe, ziel: Z.schalterZielDiagnose()};
+  const agentenIds = ['id-sub', 'id-sub2', 'id-andere', 'id-koord', 'id-main'];
+  S.leereAusweisKernCache();
+  Z.leereSchalterZielDiagnose();
+  const pzC = S.produktPufferDiagnose();
+  tm = Date.now();
+  for (let i = 0; i < 40; i++) for (const id of agentenIds) await S.leseProfilProduktSchalterGepuffert(F, P, {identity_id: id});
+  const pzD = S.produktPufferDiagnose();
+  const nAgenten = {agenten: 5, lesungen: 200, ms: Date.now() - tm, puffer_treffer: pzD.treffer - pzC.treffer, puffer_fehlgriffe: pzD.fehlgriffe - pzC.fehlgriffe, ziel: Z.schalterZielDiagnose()};
+  console.log('MESSUNG P5 EIN ohne Regel ungepuffert ' + JSON.stringify(ohneRegelUng));
+  console.log('MESSUNG P5 EIN ohne Regel gepuffert ' + JSON.stringify(ohneRegelGep));
+  console.log('MESSUNG P5 5 Agenten gepuffert ' + JSON.stringify(nAgenten));
+  ok(ohneRegelUng.ziel.abfragen === 200 && ohneRegelUng.ziel.treffer === 0 && ohneRegelGep.ziel.abfragen === 1 && nAgenten.ziel.abfragen === 5,
+    'P22-T287 Q2 N3: EIN ohne Regel ungepuffert eine Zielabfrage je Lesung, gepuffert eine je Agent', {ohneRegelUng, ohneRegelGep, nAgenten});
+  await projektSchalter('schalter_identitaet', false);
+  S.leereAusweisKernCache();
+  await S.leseProfilProduktSchalterGepuffert('schalter_identitaet', P, null);
+  await S.leseProfilProduktSchalterGepuffert(F, P);
+  const h4a = S.produktPufferDiagnose();
+  await S.leseProfilProduktSchalterGepuffert(F, P, {identity_id: 'id-sub2'});
+  const h4b = S.produktPufferDiagnose();
+  ok(h4b.fehlgriffe - h4a.fehlgriffe === 0 && h4b.treffer - h4a.treffer >= 1, 'P22-T287 Q2 H4: bei schalter_identitaet AUS Puffer je Projekt (Ziel nicht im Schluessel)', {h4a, h4b});
+  await projektSchalter('schalter_identitaet', true);
+  S.leereAusweisKernCache();
+  const ZP = await load('packages/core/dist/services/zwangs-pin.js');
+  await projektSchalter('zwangs_pin', false);
+  await pool.query("INSERT INTO memories (id, project, name, content, category, tags) VALUES ($1,$2,'pin-t287','Pflicht-Memory','rules',$3)", [randomUUID(), P, ['pflicht:src/']]);
+  const schutzArgs = {tool: 'memory', action: 'update', args: {project: P, name: 'pin-t287', tags: []}, project: P, legacyAgent: 'luna-1'};
+  ok(await S.zielRegelIrgendwoAktiv('zwangs_pin', P) === false && (await ZP.pruefePflichtTagSchutz(schutzArgs)) === null,
+    'P22-T287 Q2 N1: ohne Projekt- und Zielregel kein Pflicht-Tag-Schutz (Bestand)');
+  await setze({ebene: 'identitaet', ziel: 'id-sub2', aktiv: true, funktion: 'zwangs_pin'});
+  const schutz = await ZP.pruefePflichtTagSchutz(schutzArgs);
+  ok(await S.zielRegelIrgendwoAktiv('zwangs_pin', P) === true && schutz !== null && JSON.stringify(schutz).includes('pflicht'),
+    'P22-T287 Q2 N1: zwangs_pin nur je Agent EIN -> Pflicht-Tag-Schutz trotzdem aktiv', schutz);
   process.env.SYNAPSE_W1B_GATE_TTL_MS = '0';
   S.leereAusweisKernCache();
 
   // M Lesefehler --------------------------------------------------------------------------------------------------
-  await pool.query('DROP TABLE agent_profil_schalter_ziel');
+  // Spalte umbenennen statt DROP: seit Deploy t239 gibt es public.agent_profil_schalter_ziel in synapse_test, ein DROP im Testschema
+  // liesse die Abfrage still auf public zurueckfallen (search_path). So bleibt die Testtabelle vorn und die Abfrage scheitert.
+  await pool.query('ALTER TABLE agent_profil_schalter_ziel RENAME COLUMN ziel TO ziel_weg');
   st = await lies({identity_id: 'id-sub2', agent_id: 'sub-2'});
   ok(st.ziel_fehler === 'schalter_ziel_nicht_lesbar' && st.ebene === 'projekt' && st.aktiv === false && !st.letzter_fehler, 'P22-T287 M Lesefehler: projekt wie bisher + ziel_fehler', st);
 

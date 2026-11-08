@@ -671,7 +671,7 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
           // Klartext nur in dieser TLS-/LAN-Antwort an den geprüften Daemon,
           // nie im Queue-Job, Completion, Wrapperstatus oder Projektordner.
           const { leseRuntimeToolAusgabe, toolAusgabeUmgebung, leseRuntimeSynapseMods, runtimeModsUmgebung, cacheWaechterSchalter } = await import('@synapse/core');
-          const tool_ausgabe_env = d.runtime ? toolAusgabeUmgebung(await leseRuntimeToolAusgabe(project)) : { SYNAPSE_TOOL_AUSGABE_AKTIV: '0' };
+          const tool_ausgabe_env = d.runtime ? toolAusgabeUmgebung(await leseRuntimeToolAusgabe(project, { identity_id: i.id })) : { SYNAPSE_TOOL_AUSGABE_AKTIV: '0' };
           const runtime_mod_env = runtimeModsUmgebung(await leseRuntimeSynapseMods(d.runtime?.runtime === 'claude' ? project : null));
           if (d.runtime?.runtime !== 'claude') runtime_mod_env.SYNAPSE_RUNTIME_SYNAPSE_MODS_STAND = '';
           // t223-Nachbesserung: Startstand cache_waechter fuer die Wrapper-Telemetrie (nur Claude-Runtime; AUS = kein Abruf).

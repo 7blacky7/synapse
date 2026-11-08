@@ -39,3 +39,43 @@ ALTER TABLE agent_profil_schalter_ziel ADD COLUMN IF NOT EXISTS herkunft TEXT;
 ALTER TABLE agent_profil_schalter_ziel ADD COLUMN IF NOT EXISTS setter_agent_id TEXT;
 ALTER TABLE agent_profil_schalter_ziel_verlauf ADD COLUMN IF NOT EXISTS herkunft TEXT;
 ALTER TABLE agent_profil_schalter_ziel_verlauf ADD COLUMN IF NOT EXISTS setter_agent_id TEXT;
+-- P22-T287 S4: Einstellwerte je Agent (Ebenen identitaet/agent/typ) fuer die ziel-faehigen Werte der Bereiche shell_ausgabe,
+-- runtime_tool_ausgabe und ausweis_fristen (agent-profil-schalter-ziel.ts ZIEL_EINSTELLUNG_BEREICHE). Rang wie die Schalter; darunter
+-- die bisherige Aufloesung des Bereichs (projekt > global > Standard). Nur bei schalter_identitaet EIN wirksam.
+CREATE TABLE IF NOT EXISTS agent_einstellung_ziel (
+  id BIGSERIAL PRIMARY KEY,
+  bereich TEXT NOT NULL,
+  ebene TEXT NOT NULL CHECK (ebene IN ('identitaet','agent','typ')),
+  project TEXT NOT NULL,
+  ziel TEXT NOT NULL CHECK (btrim(ziel) <> ''),
+  name TEXT NOT NULL,
+  wert BIGINT NOT NULL CHECK (wert >= 0),
+  grund TEXT NOT NULL CHECK (btrim(grund) <> ''),
+  gesetzt_von TEXT NOT NULL,
+  setter_identity_id TEXT REFERENCES agent_identitaeten(id),
+  herkunft TEXT,
+  setter_agent_id TEXT,
+  gesetzt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_einstellung_ziel
+  ON agent_einstellung_ziel(bereich, ebene, project, ziel, name);
+CREATE INDEX IF NOT EXISTS idx_agent_einstellung_ziel_lesen
+  ON agent_einstellung_ziel(bereich, project);
+CREATE TABLE IF NOT EXISTS agent_einstellung_ziel_verlauf (
+  id BIGSERIAL PRIMARY KEY,
+  bereich TEXT NOT NULL,
+  ebene TEXT NOT NULL,
+  project TEXT NOT NULL,
+  ziel TEXT NOT NULL,
+  name TEXT NOT NULL,
+  alt BIGINT,
+  neu BIGINT,
+  grund TEXT NOT NULL,
+  gesetzt_von TEXT NOT NULL,
+  setter_identity_id TEXT REFERENCES agent_identitaeten(id),
+  herkunft TEXT,
+  setter_agent_id TEXT,
+  wann TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_einstellung_ziel_verlauf
+  ON agent_einstellung_ziel_verlauf(project, ebene, ziel, wann DESC);

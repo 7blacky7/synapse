@@ -1,10 +1,16 @@
 /** P22-T190: reine Spawn-Regeln; keine DB und keine neue lokale Konfigurationsquelle. */
 export const TOOL_RESULTS_READ_REGEL = 'Read(~/.claude/projects/**/tool-results/**)' as const;
-export interface ToolAusgabeWerte { claude_mcp_output_tokens: number; codex_tool_output_tokens: number; tool_ausgabe_kontext_prozent: number; tool_ausgabe_guard_sekunden: number }
+export interface ToolAusgabeWerte { claude_mcp_output_tokens: number; codex_tool_output_tokens: number; tool_ausgabe_kontext_prozent: number; tool_ausgabe_guard_sekunden: number;
+  /** P22-T287 Paket 0: Obergrenze je Werkzeugergebnis im API-Lauf (nicht in der Wrapper-Umgebung, nur api-tool-ausgabe.ts). */
+  api_tool_output_tokens: number }
 export interface ToolAusgabeStand {
-  schalter: { aktiv: boolean; quelle: string; bis: string | null; letzter_fehler: string | null };
+  /** P22-T287 S4: ziel_ebene, wenn eine Regel je Agent (identitaet|agent|typ) den Schalter entschieden hat. */
+  schalter: { aktiv: boolean; quelle: string; bis: string | null; letzter_fehler: string | null; ziel_ebene?: string };
   werte: ToolAusgabeWerte;
+  /** standard | einstellung | (P22-T287 S4) identitaet | agent | typ */
   quellen: Record<keyof ToolAusgabeWerte, string>;
+  /** P22-T287 S4: Werte je Agent nicht lesbar (dann globaler Wert). */
+  ziel_fehler?: string;
 }
 /** Nur diese nicht geheimen Werte duerfen vom Server in eine Wrapper-Umgebung gelangen. AUS ueberschreibt Vererbung. */
 export function toolAusgabeUmgebung(s: ToolAusgabeStand): Record<string, string> {

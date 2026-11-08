@@ -24,7 +24,7 @@
  */
 import { getPool } from '../db/client.js';
 import { internToolAktiv } from './intern-tool.js';
-import { leseProfilProduktSchalter, kernTtlMs, registriereSchalterGeschrieben } from './agent-profil-schalter.js';
+import { leseProfilProduktSchalter, leseProfilProduktSchalterGepuffert, kernTtlMs, registriereSchalterGeschrieben } from './agent-profil-schalter.js';
 import { kuerzeToolDefinition } from './tool-beschreibungen-kurz.js';
 import { aktuellerAgentPrincipal } from './agent-bezug.js';
 import { meldeFehlerfall, toolFamilie, type ToolFallKontext } from './erklaerungen.js';
@@ -41,6 +41,9 @@ export interface FallSkillSchalterStand {
   funktion: string;
   project: string | null;
   aktiv: boolean;
+  /** P22-T287 S3b (N2): Treffer einer Zielregel (fuer schalter_quelle auch beim Puffertreffer). */
+  ziel_ebene?: 'identitaet' | 'agent' | 'typ';
+  ziel?: string;
   quelle: 'standard' | 'produkt-schalter' | 'intern';
   bis: string | null;
   letzter_fehler: string | null;
@@ -57,13 +60,20 @@ export async function leseFallSkillSchalter(art: FallSkillSchalterArt, project?:
   const p = typeof project === 'string' && project.trim() ? project.trim() : null;
   // P22-T287 S3: schlank/hinweis/fremd entscheiden fuer den AUFRUFER (eigene Antwort/Hinweise) -> Ziel ausdruecklich, im Schluessel;
   // kurz (tools/list je Verbindung) und uebrige Arten ohne Ziel.
+  // S3b (H4): Ziel nur bei schalter_identitaet EIN, sonst Puffer je Projekt wie vor T287.
+  const zielModul = await import('./agent-profil-schalter-ziel.js');
   const ziel = p && (['schlank', 'hinweis', 'fremd'] as readonly string[]).includes(art)
-    ? await (await import('./agent-profil-schalter-ziel.js')).zielDesAufrufers(p) : null;
+    && (await leseProfilProduktSchalterGepuffert(zielModul.SCHALTER_ZIEL_FUNKTION, p, null)).aktiv
+    ? await zielModul.zielDesAufrufers(p) : null;
   const schluessel = funktion + '\u0000' + (p ?? '') + (ziel ? '\u0000' + (ziel.identity_id ?? '') + '\u0000' + (ziel.agent_id ?? '') : '');
   const ttl = kernTtlMs();
   const jetzt = Date.now();
   const c = ttl > 0 ? PUFFER.get(schluessel) : undefined;
-  if (c && c.bis > jetzt) return c.stand;
+  if (c && c.bis > jetzt) {
+    // S3b (N2): Debug-Quelle auch beim Puffertreffer.
+    if (c.stand.ziel_ebene && c.stand.ziel && p) await zielModul.merkeSchalterQuelle(funktion, p, { ebene: c.stand.ziel_ebene, ziel: c.stand.ziel, aktiv: c.stand.aktiv });
+    return c.stand;
+  }
   let stand: FallSkillSchalterStand = { funktion, project: p, aktiv: false, quelle: 'standard', bis: null, letzter_fehler: null };
   let intern = false;
   if (internToolAktiv()) {
@@ -82,7 +92,7 @@ export async function leseFallSkillSchalter(art: FallSkillSchalterArt, project?:
   if (!intern) {
     const prod = await leseProfilProduktSchalter(funktion, p, ziel);
     stand = { ...stand, aktiv: prod.aktiv && !prod.letzter_fehler, quelle: prod.quelle === 'produkt-schalter' ? 'produkt-schalter' : 'standard',
-      letzter_fehler: prod.letzter_fehler ?? stand.letzter_fehler };
+      letzter_fehler: prod.letzter_fehler ?? stand.letzter_fehler, ...(prod.ziel_ebene && prod.ziel ? { ziel_ebene: prod.ziel_ebene, ziel: prod.ziel } : {}) };
   }
   if (ttl > 0 && !stand.letzter_fehler) PUFFER.set(schluessel, { bis: jetzt + ttl, stand });
   return stand;

@@ -754,7 +754,9 @@ let letzteUebergabe: { thought_id: string; anlass: string; zuege: number; tokens
 export async function erzeugeVerlaufUebergabe(identity_id: string, ziel: { runtime?: string | null; modell?: string | null; effort?: string | null }, anlass: string,
   handoff_thought_id?: string | null): Promise<{ thought_id: string; zuege: number; tokens: number } | null> {
   try {
-    if (!(await leseVerlaufStufe2Schalter('verlauf_uebergabe')).aktiv) return null;
+    // P22-T287 S4b: Schalter fuer die uebergebende Identitaet (ausdrueckliches Ziel; ohne Regel je Agent wie bisher global).
+    const zielU = await (await import('./agent-profil-schalter-ziel.js')).zielDerIdentitaet(identity_id);
+    if (!(await leseVerlaufStufe2Schalter('verlauf_uebergabe', zielU)).aktiv) return null;
     const pool = getPool();
     const { baueUebergabeText } = await import('./agent-verlauf.js');
     const t = await baueUebergabeText(identity_id, ziel, anlass, {

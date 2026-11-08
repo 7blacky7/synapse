@@ -19,9 +19,11 @@ export const TASK_PINS_FUNKTION = 'task_pins' as const;
 export interface TaskPinsSchalter { aktiv: boolean; quelle: 'standard' | 'produkt-schalter' | 'intern'; ebene: 'global' | 'projekt' | null; bis: string | null; letzter_fehler: string | null }
 
 /** Produkt-Schalter mit befristetem intern-Override; eine Lesestelle. Wirft nie. */
-export async function leseTaskPinsSchalter(project: string | null): Promise<TaskPinsSchalter> {
-  // P22-T287 S3: Pins erscheinen beim Aufrufer (plan get, anmelden) -> Ziel des Aufrufers.
-  const ziel = project ? await (await import('./agent-profil-schalter-ziel.js')).zielDesAufrufers(project) : null;
+export async function leseTaskPinsSchalter(project: string | null, zielVorgabe?: { identity_id?: string | null; agent_id?: string | null } | null): Promise<TaskPinsSchalter> {
+  // P22-T287 S3: Pins erscheinen beim Aufrufer (plan get) -> Ziel des Aufrufers. S3b (H5): wer fuer eine bestimmte Identitaet liest
+  // (anmelden/Fortsetzung, spaeter Start-Pfade), uebergibt deren Ziel ausdruecklich.
+  const ziel = zielVorgabe !== undefined ? zielVorgabe
+    : project ? await (await import('./agent-profil-schalter-ziel.js')).zielDesAufrufers(project) : null;
   const p = await leseProfilProduktSchalter(TASK_PINS_FUNKTION, project, ziel);
   let stand: TaskPinsSchalter = { aktiv: p.aktiv, quelle: p.quelle, ebene: p.ebene, bis: null, letzter_fehler: p.letzter_fehler };
   if (internToolAktiv()) {
@@ -40,10 +42,10 @@ export async function leseTaskPinsSchalter(project: string | null): Promise<Task
  * Haengt je Task 'pins' an (Schluessel = Feld mit der Task-UUID, Standard 'id'). null = Schalter AUS (Aufrufer bleibt unveraendert).
  */
 export async function ergaenzeTaskPins<T extends Record<string, unknown>>(
-  project: string, tasks: T[], schluessel: string = 'id',
+  project: string, tasks: T[], schluessel: string = 'id', ziel?: { identity_id?: string | null; agent_id?: string | null } | null,
 ): Promise<{ tasks: Array<T & { pins?: TaskPins }>; debug: string } | null> {
   if (!project || !tasks.length) return null;
-  const schalter = await leseTaskPinsSchalter(project);
+  const schalter = await leseTaskPinsSchalter(project, ziel);
   if (!schalter.aktiv) return null;
   const start = Date.now();
   const kopf = 'task_pins an (' + schalter.quelle + (schalter.ebene ? '/' + schalter.ebene : '') + ')';

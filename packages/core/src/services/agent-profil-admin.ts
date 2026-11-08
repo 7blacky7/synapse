@@ -39,7 +39,7 @@ import { AGENT_ANMELDUNGEN_ADMIN_ACTIONS, AGENT_ANMELDUNGEN_ADMIN_PARAMETER, ist
 // P10-T90: Zwangs-Pins verwalten (admin zwangs_pins; status/setzen/entfernen, eigener Rechtepfad in zwangs-pin.ts).
 import { ZWANGS_PIN_ADMIN_ACTIONS, ZWANGS_PIN_ADMIN_PARAMETER, istZwangsPinAdminAction, fuehreZwangsPinAdminAus } from './zwangs-pin.js';
 import { RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, RUNTIME_UEBERWACHUNG_ADMIN_PARAMETER, istRuntimeUeberwachungAdminAction, fuehreRuntimeUeberwachungAdminAus } from './runtime-ueberwachung.js';
-import { AUSWEIS_FRIST_NAMEN, leseAusweisFristen, setzeAusweisFristen } from './agent-ausweis-fristen.js';
+import { AUSWEIS_FRIST_NAMEN, AUSWEIS_FRIST_DEFINITIONEN, AusweisFristenFehler, leseAusweisFristen, setzeAusweisFristen } from './agent-ausweis-fristen.js';
 import { leseFilesPlanAblaufSchalter, setzeFilesPlanAblaufSchalter } from './files-plan-ablauf-schalter.js';
 import { listeAusweisVisa, erteileArbeitsfreigabe, entzieheArbeitsfreigabe } from './agent-ausweis-projekte.js';
 import { aktuellerAgentAufruf } from './agent-bezug.js';
@@ -49,6 +49,8 @@ import { aliaseDerIdentitaet } from './agent-namens-alias.js';
 import { HINWEIS_KATALOG } from './hinweis-katalog.js';
 // P22-T287: Produkt-Schalter je Agent (Ebenen identitaet/agent/typ).
 import { setzeZielSchalter, listeZielSchalter, istSchalterZielEbene, SCHALTER_ZIEL_EBENEN, type SchalterZiel, type ZielSetzer } from './agent-profil-schalter-ziel.js';
+// P22-T287 S4: Fristen-Teilmenge je Agent (gemeinsamer admin-Weg der Einstellwerte).
+import { zielEinstellungAngabe, zielEinstellungSicht, fuehreZielWerteAus, ZIEL_EINSTELLUNG_BEREICHE, type ZielEinstellungAngabe } from './agent-profil-schalter-ziel.js';
 import { ADMIN_SUCHE_PARAMETER } from './admin-katalog-suche.js';
 
 const W1B_KERN_AKTIONEN = [
@@ -113,7 +115,7 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   frist_namen: { type: 'array', items: { type: 'string', enum: [...AUSWEIS_FRIST_NAMEN] }, description: 'ausweis_fristen modus entfernen: Werte dieser ebene entfernen (Rueckfall global bzw. Standard)' },
   neuer_name: { type: 'string', description: 'identitaet_umbenennen: neuer Name der Identitaet ziel_identity_id (Ausweis bleibt, alter Name wird Alias)' },
   // P22-T287: Produkt-Schalter je Agent ueber projekt/global (nur mit Schalter schalter_identitaet; modus entfernen = wieder erben).
-  ziel_ebene: { type: 'string', enum: ['identitaet', 'agent', 'typ'], description: 'profil_schalter_setzen/status je Agent: identitaet (ziel_identity_id) | agent (ziel = agent_id oder Muster luna-*, ohne Ausweis) | typ (typ_id); modus entfernen = erben' },
+  ziel_ebene: { type: 'string', enum: ['identitaet', 'agent', 'typ'], description: 'profil_schalter_setzen/status, shell_ausgabe_einstellungen, runtime_ueberwachung, ausweis_fristen je Agent: identitaet (ziel_identity_id) | agent (ziel = agent_id oder Muster luna-*, ohne Ausweis) | typ (typ_id); modus entfernen = erben' },
   ...NETZWERK_ADMIN_PARAMETER,
   ...HEX_ADMIN_PARAMETER,
   ...SHELL_AUSGABE_ADMIN_PARAMETER,
@@ -376,6 +378,33 @@ async function zielSetzenAntwort(project: string, a: Args, setzer: ZielSetzer): 
   return { project, ziel_ebene: zielEbene, ziel: aenderung.ziel, aenderung, ...(wirksam ? { wirksam } : {}), ...sicht.antwort };
 }
 
+/** P22-T287 S4: ausweis_fristen je Agent (nur ZIEL_EINSTELLUNG_BEREICHE.ausweis_fristen; Grenzen wie die Frist, Rechte/Audit in setzeZielWerte). */
+async function fristenZielAntwort(project: string, modus: string, za: ZielEinstellungAngabe, a: Args, akteur: AusweisAkteur): Promise<Record<string, unknown>> {
+  let werte: Record<string, number | null> | null = null;
+  if (modus !== 'status') {
+    if (modus !== 'setzen' && modus !== 'entfernen') throw new ProfilVerwaltungFehler('modus_ungueltig', { erlaubt: ['status', 'setzen', 'entfernen'] });
+    werte = {};
+    if (modus === 'setzen') {
+      for (const name of AUSWEIS_FRIST_NAMEN) {
+        const v = a[name];
+        if (v === undefined || v === null) continue;
+        const d = AUSWEIS_FRIST_DEFINITIONEN[name];
+        if (typeof v !== 'number' || !Number.isInteger(v) || v < d.min || v > d.max) throw new AusweisFristenFehler('frist_ungueltig', { name, min: d.min, max: d.max, einheit: d.einheit });
+        werte[name] = v;
+      }
+    } else {
+      for (const n of Array.isArray(a.frist_namen) ? a.frist_namen as unknown[] : []) {
+        if (typeof n !== 'string') throw new AusweisFristenFehler('frist_name_ungueltig', { erlaubt: [...AUSWEIS_FRIST_NAMEN] });
+        werte[n] = null;
+      }
+    }
+    if (!Object.keys(werte).length) throw new AusweisFristenFehler('fristen_fehlen', { erlaubt: [...ZIEL_EINSTELLUNG_BEREICHE.ausweis_fristen] });
+  }
+  const z = await fuehreZielWerteAus('ausweis_fristen', project, za, werte, a.grund, akteur);
+  const sicht = zielEinstellungSicht(za);
+  return { project, modus, ...z, ...(sicht ? { ausweis_fristen: await leseAusweisFristen(project, { frisch: true, ziel: sicht }) } : {}) };
+}
+
 async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, project: string, a: Args, akteurRoh: AusweisAkteur): Promise<Record<string, unknown>> {
   // P22-T34: der Legacy-Koordinator ohne Ausweis gilt fuer ALLE Aktionen wie Koordinator mit Ausweis (Rechtepruefung in den Diensten bzw.
   // pruefeProfilVerwalter; 'nur User' bleibt: web_ui_koordinator_token, globale Kataloge; globale Produkt-Schalter seit P22-T57 auch Koordinator). Die Dienste pruefen den Akteur zur Laufzeit.
@@ -539,6 +568,9 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
       // P22-T45: EINE Lesestelle agent-ausweis-fristen.ts. Projekt- UND globale Ebene: User oder Koordinator des aufrufenden Projekts,
       // auch Legacy-Koordinator (Grundsatz 3a, Vorbild jev_schalten); Subagent/Spezialist/Daemon nie. Antwort: wert + quelle je Frist.
       const modus = s(a, 'modus') ?? 'status';
+      // P22-T287 S4: Teilmenge je Agent ueber ziel_ebene + ziel_identity_id | ziel | typ_id (sonst Bestand).
+      const za = zielEinstellungAngabe(a);
+      if (za) return fristenZielAntwort(project, modus, za, a, akteurRoh);
       if (modus !== 'status') {
         if (modus !== 'setzen' && modus !== 'entfernen') throw new ProfilVerwaltungFehler('modus_ungueltig', { erlaubt: ['status', 'setzen', 'entfernen'] });
         const ebene = s(a, 'ebene') ?? 'projekt';

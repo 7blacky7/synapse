@@ -47,7 +47,8 @@ export function koordinatorHeartbeatAusStartrezept(startrezept: unknown): Koordi
  */
 export async function koordinatorHeartbeatBeimSpawn(project: string, identity_id: string): Promise<{ enabled: boolean; intervalMs: number | null } | null> {
   try {
-    if (!(await leseProfilProduktSchalter(KOORDINATOR_HEARTBEAT_FUNKTION, project)).aktiv) return null;
+    // P22-T287 S4b: Ziel = der gestartete Koordinator (Regel je Agent vor projekt/global).
+    if (!(await leseProfilProduktSchalter(KOORDINATOR_HEARTBEAT_FUNKTION, project, { identity_id })).aktiv) return null;
     const r = await getPool().query<{ startrezept: unknown }>(
       "SELECT startrezept FROM agent_identitaeten WHERE id=$1 AND project=$2 AND rolle='koordinator'", [identity_id, project]);
     const h = r.rows[0] ? koordinatorHeartbeatAusStartrezept(r.rows[0].startrezept) : null;
@@ -83,7 +84,9 @@ export async function fuehreKoordinatorHeartbeatAdminAus(action: string, args: R
     const project = pflichtText(args.project ?? (wer.art === 'identitaet' ? wer.principal.project : undefined), 'project_fehlt', 1, 128);
     const v = await pruefeProfilVerwalter(wer, project);
     if (args.aktiv === undefined || args.aktiv === null) return { success: true, action, modus: 'status', ...(await status(project)) };
-    if (!(await leseProfilProduktSchalter(KOORDINATOR_HEARTBEAT_FUNKTION, project)).aktiv) {
+    // P22-T287 S4b: setzen entscheidet fuer den Ziel-Koordinator (ausdrueckliches Ziel ziel_identity_id); Status bleibt Projektsicht.
+    const zielId = typeof args.ziel_identity_id === 'string' && args.ziel_identity_id.trim() ? args.ziel_identity_id.trim() : null;
+    if (!(await leseProfilProduktSchalter(KOORDINATOR_HEARTBEAT_FUNKTION, project, zielId ? { identity_id: zielId } : null)).aktiv) {
       fehler('funktion_aus', { funktion: KOORDINATOR_HEARTBEAT_FUNKTION, hinweis: 'Produkt-Schalter koordinator_heartbeat ist im Projekt AUS.' });
     }
     if (typeof args.aktiv !== 'boolean') fehler('aktiv_fehlt');

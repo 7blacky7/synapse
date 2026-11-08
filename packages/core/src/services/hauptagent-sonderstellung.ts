@@ -21,7 +21,8 @@
  */
 import type { QueryConfig } from 'pg';
 import { getPool } from '../db/client.js';
-import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
+import { leseProfilProduktSchalter, zielTrefferFuer } from './agent-profil-schalter.js';
+import type { SchalterZiel } from './agent-profil-schalter-ziel.js';
 import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
 
 export const MAIN_LESEZUGRIFF_FUNKTION = 'main_lesezugriff' as const;
@@ -35,10 +36,18 @@ export const MAIN_HINWEIS_FELD = 'main_hinweis';
 
 type Q = QueryConfig & { query_timeout: number };
 
-export interface MainSchalter { aktiv: boolean; quelle: 'standard' | 'produkt-schalter' | 'intern'; bis: string | null; letzter_fehler: string | null }
+export interface MainSchalter {
+  aktiv: boolean; quelle: 'standard' | 'produkt-schalter' | 'intern'; bis: string | null; letzter_fehler: string | null;
+  /** P22-T287 S4b: Regel je Agent (identitaet|agent|typ) hat fuer das ausdrueckliche Ziel entschieden. */
+  ziel_ebene?: string;
+}
 
-/** Frisch je Aufruf. Standard EIN; Lesefehler -> Standard mit letzter_fehler. Wirft nie. */
-export async function leseMainSchalter(funktion: MainSchalterFunktion): Promise<MainSchalter> {
+/**
+ * Frisch je Aufruf. Standard EIN; Lesefehler -> Standard mit letzter_fehler. Wirft nie.
+ * P22-T287 S4b: ziel (nur ausdruecklich, z. B. die GESTARTETE Identitaet beim Startkontext): intern-Override > Regel je Agent >
+ * bisher (Produkt-Schalter global > Standard EIN). Ohne ziel bzw. ohne Regel unveraendert.
+ */
+export async function leseMainSchalter(funktion: MainSchalterFunktion, ziel: (SchalterZiel & { project?: string | null }) | null = null): Promise<MainSchalter> {
   const basis: MainSchalter = { aktiv: true, quelle: 'standard', bis: null, letzter_fehler: null };
   let letzter: string | null = null;
   try {
@@ -54,6 +63,8 @@ export async function leseMainSchalter(funktion: MainSchalterFunktion): Promise<
         if (z) return { ...basis, aktiv: z.aktiv, quelle: 'intern', bis: z.bis ? z.bis.toISOString() : null };
       } catch { letzter = 'schalter_nicht_erreichbar'; }
     }
+    const zt = await zielTrefferFuer(funktion, ziel);
+    if (zt) return { ...basis, aktiv: zt.aktiv, quelle: 'produkt-schalter', letzter_fehler: letzter, ...(zt.ziel_ebene ? { ziel_ebene: zt.ziel_ebene } : {}) };
     const p = await leseProfilProduktSchalter(funktion, null);
     if (p.quelle === 'produkt-schalter') return { ...basis, aktiv: p.aktiv, quelle: 'produkt-schalter', letzter_fehler: letzter };
     return { ...basis, letzter_fehler: letzter ?? p.letzter_fehler };

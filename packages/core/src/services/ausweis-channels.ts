@@ -23,7 +23,7 @@
 import type { QueryConfig } from 'pg';
 import { getPool } from '../db/client.js';
 import { aktuellerAgentPrincipal, type IdentitaetsAgentPrincipal } from './agent-bezug.js';
-import { kernTtlMs, leseProfilProduktSchalter, registriereSchalterGeschrieben } from './agent-profil-schalter.js';
+import { kernTtlMs, leseProfilProduktSchalter, registriereSchalterGeschrieben, zielTrefferFuer } from './agent-profil-schalter.js';
 
 export const AUSWEIS_CHANNELS_FUNKTION = 'ausweis_channels' as const;
 export const CHANNEL_IM_AUSWEIS_FEHLER = 'channel_im_ausweis_festgelegt' as const;
@@ -49,6 +49,8 @@ export interface AusweisChannelsSchalter {
   quelle: 'standard' | 'produkt-schalter' | 'intern';
   bis: string | null;
   letzter_fehler: string | null;
+  /** P22-T287 S4b: Regel je Agent hat fuer die geprueft Identitaet entschieden. */
+  ziel_ebene?: string;
 }
 
 const PUFFER = new Map<string, { bis: number; stand: AusweisChannelsSchalter }>();
@@ -80,16 +82,25 @@ async function leseSchalterFrisch(project: string | null): Promise<AusweisChanne
   }
 }
 
-/** Wirksamer Schalter je Projekt; Lesefehler -> Standard AUS mit letzter_fehler. Wirft nie. */
-export async function leseAusweisChannelsSchalter(project: string | null): Promise<AusweisChannelsSchalter> {
+/**
+ * Wirksamer Schalter je Projekt; Lesefehler -> Standard AUS mit letzter_fehler. Wirft nie.
+ * P22-T287 S4b: identity_id (nur ausdruecklich: die Identitaet, deren Mitgliedschaft abgeglichen bzw. deren leave geprueft wird) ->
+ * intern-Override > Regel je Agent > bisher (projekt > global > Standard AUS). Ohne identity_id unveraendert.
+ */
+export async function leseAusweisChannelsSchalter(project: string | null, identity_id: string | null = null): Promise<AusweisChannelsSchalter> {
   const ttl = kernTtlMs();
   const schluessel = project ?? '';
   const jetzt = Date.now();
   const c = ttl > 0 ? PUFFER.get(schluessel) : undefined;
-  if (c && c.bis > jetzt) return c.stand;
-  const stand = await leseSchalterFrisch(project);
-  if (ttl > 0 && !stand.letzter_fehler) PUFFER.set(schluessel, { bis: jetzt + ttl, stand });
-  return stand;
+  let stand: AusweisChannelsSchalter;
+  if (c && c.bis > jetzt) stand = c.stand;
+  else {
+    stand = await leseSchalterFrisch(project);
+    if (ttl > 0 && !stand.letzter_fehler) PUFFER.set(schluessel, { bis: jetzt + ttl, stand });
+  }
+  if (stand.quelle === 'intern' || !identity_id || !project) return stand;
+  const zt = await zielTrefferFuer(AUSWEIS_CHANNELS_FUNKTION, { project, identity_id }).catch(() => null);
+  return zt ? { ...stand, aktiv: zt.aktiv, quelle: 'produkt-schalter', ...(zt.ziel_ebene ? { ziel_ebene: zt.ziel_ebene } : {}) } : stand;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -148,7 +159,7 @@ export interface AusweisChannelAbgleich {
  * lesestand 'jetzt' = Anmeldung; 'seit_ausweis' = laufender Lauf (Posts seit der Ausweisaenderung zaehlen als ungelesen).
  */
 export async function gleicheAusweisChannelsAb(p: IdentitaetsAgentPrincipal, opt: { lesestand: 'jetzt' | 'seit_ausweis' }): Promise<AusweisChannelAbgleich | null> {
-  if (!(await leseAusweisChannelsSchalter(p.project)).aktiv) return null;
+  if (!(await leseAusweisChannelsSchalter(p.project, p.identity_id)).aktiv) return null;
   const a = await leseAusweisChannels(p.identity_id);
   const out: AusweisChannelAbgleich = { channels: a?.channels ?? [], mitglied: [], neu: [], fehlend: [] };
   if (!a || a.project !== p.project || a.channels.length === 0) return out;
@@ -186,7 +197,7 @@ export async function gleicheAusweisChannelsImAufrufAb(agentId: string): Promise
 
 /** leave-Sperre: wirft AusweisChannelFehler, wenn der Channel in den wirksamen Ausweis-Channels steht (nur mit Schalter). */
 export async function pruefeAusweisChannelVerlassen(project: string, channelName: string, identity_id: string): Promise<void> {
-  if (!(await leseAusweisChannelsSchalter(project)).aktiv) return;
+  if (!(await leseAusweisChannelsSchalter(project, identity_id)).aktiv) return;
   const a = await leseAusweisChannels(identity_id);
   if (a && a.project === project && a.channels.includes(channelName)) throw new AusweisChannelFehler(channelName);
 }

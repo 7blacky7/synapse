@@ -45,6 +45,8 @@ import { randomUUID } from 'node:crypto';
 import { pruefeModellFuerRuntime } from './hauptagent-modelle.js';
 // P27-T3: Produkt-Diagnose des Stau-Waechters (Blattmodul, kein I/O) - funktioniert auch bei intern AUS.
 import { stauVerwaltungsStatus } from './warteschlangen-stau-stand.js';
+// P22-T287 S4: Tool-Ausgabe-Werte je Agent (admin runtime_ueberwachung mit ziel_ebene).
+import { zielEinstellungAngabe, zielEinstellungSicht, fuehreZielWerteAus, istZielFaehigerWert, SchalterZielFehler, ZIEL_EINSTELLUNG_BEREICHE, type ZielEinstellungAngabe } from './agent-profil-schalter-ziel.js';
 
 export const RUNTIME_UEBERWACHUNG_FUNKTION = 'runtime_ueberwachung' as const;
 export const UEBERWACHTE_RUNTIMES = ['claude', 'codex'] as const;
@@ -177,6 +179,9 @@ export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
   // P22-T190: wirksam nur bei expliziter runtime_tool_ausgabe-Freigabe, beim naechsten Wrapper-Start.
   claude_mcp_output_tokens: { art: 'zahl', standard: 100000, min: 1000, max: 1000000 },
   codex_tool_output_tokens: { art: 'zahl', standard: 100000, min: 1000, max: 1000000 },
+  // P22-T287 Paket 0 (Entscheidung Koordinator, Gesamtplan P1a 81516c3b): Obergrenze je Werkzeugergebnis im API-Lauf (api-tool-ausgabe.ts),
+  //   getrennt von Codex; gleiche Prozentregel (tool_ausgabe_kontext_prozent), je Identitaet ueber runtime_tool_ausgabe.
+  api_tool_output_tokens: { art: 'zahl', standard: 100000, min: 1000, max: 1000000 },
   tool_ausgabe_kontext_prozent: { art: 'zahl', standard: 25, min: 1, max: 50 },
   tool_ausgabe_guard_sekunden: { art: 'zahl', standard: 10, min: 2, max: 60 },
   // F5: CLI-Update entscheidet die API (der Container-Daemon startet mit SYNAPSE_RUNTIME_CLI_AUTOUPDATE=0).
@@ -1250,6 +1255,32 @@ function projektDes(akteur: AusweisAkteur, args: Record<string, unknown>): strin
   return akteur.art === 'identitaet' ? akteur.principal.project : null;
 }
 
+/** P22-T287 S4: Tool-Ausgabe-Werte je Agent (ziel_ebene); nur ZIEL_EINSTELLUNG_BEREICHE.runtime_tool_ausgabe, Grenzen wie der globale Wert. */
+async function runtimeZielAntwort(action: string, modus: string, za: ZielEinstellungAngabe, args: Record<string, unknown>, wer: AusweisAkteur,
+  project: string | null): Promise<Record<string, unknown>> {
+  if (!project) return fehler('project_fehlt');
+  let werte: Record<string, number | null> | null = null;
+  if (modus === 'setzen') {
+    const roh = args.ueberwachung_werte;
+    if (!roh || typeof roh !== 'object' || Array.isArray(roh)) return fehler('einstellung_fehlt');
+    werte = {};
+    for (const [name, wert] of Object.entries(roh as Record<string, unknown>)) {
+      if (!istZielFaehigerWert('runtime_tool_ausgabe', name)) fehler('wert_nicht_je_ziel', { name, erlaubt: [...ZIEL_EINSTELLUNG_BEREICHE.runtime_tool_ausgabe] });
+      werte[name] = pruefeWert(name as RuntimeUeberwachungEinstellungName, wert) as number;
+    }
+  } else if (modus === 'entfernen') {
+    const namen = args.ueberwachung_namen;
+    if (!Array.isArray(namen) || !namen.length) return fehler('einstellung_fehlt');
+    werte = Object.fromEntries(namen.map((n) => [String(n), null]));
+  } else {
+    await pruefeProfilVerwalter(wer, project);
+  }
+  const z = await fuehreZielWerteAus('runtime_tool_ausgabe', project, za, werte, args.grund, wer);
+  const sicht = zielEinstellungSicht(za);
+  const { leseRuntimeToolAusgabe } = await import('./runtime-tool-ausgabe.js');
+  return { success: true, action, modus, project, ...z, ...(sicht ? { tool_ausgabe: await leseRuntimeToolAusgabe(project, sicht) } : {}) };
+}
+
 /** Lesen und Setzen: User und Koordinator (F6, wie P22-T57). */
 export async function fuehreRuntimeUeberwachungAdminAus(action: string, args: Record<string, unknown>, akteur: W1bAkteur | AusweisAkteur | null): Promise<Record<string, unknown>> {
   try {
@@ -1258,6 +1289,9 @@ export async function fuehreRuntimeUeberwachungAdminAus(action: string, args: Re
     const project = projektDes(wer, args);
     const modus = typeof args.ueberwachung_modus === 'string' ? args.ueberwachung_modus : 'status';
     if (!(RUNTIME_UEBERWACHUNG_MODI as readonly string[]).includes(modus)) fehler('modus_unbekannt', { erlaubt: RUNTIME_UEBERWACHUNG_MODI });
+    // P22-T287 S4: Tool-Ausgabe-Werte je Agent (ziel_ebene + ziel_identity_id | ziel | typ_id); nur status/setzen/entfernen.
+    const za = zielEinstellungAngabe(args);
+    if (za && (modus === 'status' || modus === 'setzen' || modus === 'entfernen')) return await runtimeZielAntwort(action, modus, za, args, wer, project);
     switch (modus) {
       case 'status':
         await pruefeProfilVerwalter(wer, project);
@@ -1276,6 +1310,7 @@ export async function fuehreRuntimeUeberwachungAdminAus(action: string, args: Re
     }
   } catch (err) {
     if (err instanceof ProfilVerwaltungFehler) return { success: false, action, error: err.code, ...(err.details ? { details: err.details } : {}) };
+    if (err instanceof SchalterZielFehler) return { success: false, action, error: err.code, ...(err.details ? { details: err.details } : {}) };
     return { success: false, action, error: 'runtime_ueberwachung_fehler' };
   }
 }

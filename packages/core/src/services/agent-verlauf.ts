@@ -231,7 +231,9 @@ export function letzterStartkontextStand(): (StartkontextNachweis & { identity_i
  */
 export async function baueStartkontext(identity_id: string): Promise<{ text: string; zuege: number; tokens: number; nachweis: StartkontextNachweis } | null> {
   try {
-    if (!(await leseMainSchalter(STARTKONTEXT_FUNKTION)).aktiv) return null;
+    // P22-T287 S4b: Schalter fuer die GESTARTETE Identitaet (ausdrueckliches Ziel; ohne Regel je Agent wie bisher global).
+    const ziel = await (await import('./agent-profil-schalter-ziel.js')).zielDerIdentitaet(identity_id);
+    if (!(await leseMainSchalter(STARTKONTEXT_FUNKTION, ziel)).aktiv) return null;
     const pool = getPool();
     const stand = await identitaetsStand(identity_id);
     if (!stand) return null;

@@ -58,6 +58,7 @@ export const PROFIL_SCHALTER_ZWECK: Readonly<Record<string, string>> = {
   verlauf_token_zaehlung: 'Eigene Token-Zaehlung aus dem Verlauf.',
   verlauf_alle_richtungen: 'Alle Richtungen des Main im Verlauf (Zustellungen, eigene Ausgaben).',
   api_verlauf_hauptverlauf: 'API-Agenten schreiben ihren Turn in den gemeinsamen Verlauf (Standard AUS bis Abnahme).',
+  api_tool_ausgabe: 'Werkzeugergebnisse im API-Lauf auf einen Anteil des Modellfensters kuerzen (Standard AUS).',
   main_korridor: 'Korridor des Main ueber die API.',
   verlauf_uebergabe: 'Uebergabe aus dem Verlauf beim Wechsel des Main.',
   main_warteschlange: 'Warteschlange des Main-Chats (nur mit hauptagent_verlauf).',
@@ -296,6 +297,8 @@ export const ADMIN_KATALOG_AKTIONEN = ['profil_schalter_status', 'profil_schalte
  */
 export async function fuehreAdminSchlankAus(action: string, args: Args, ausfuehren: () => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
   if (!(ADMIN_KATALOG_AKTIONEN as readonly string[]).includes(action)) return ausfuehren();
+  // P22-T287 S4: Einstellwerte je Agent (ziel_ebene) antworten mit eigener aenderung/ziel_werte - unveraendert durchreichen.
+  if (s(args, 'ziel_ebene') && (action === 'shell_ausgabe_einstellungen' || action === 'runtime_ueberwachung')) return ausfuehren();
   const project = s(args, 'project');
 
   // Vorab: unbekannte profil_funktion -> aehnliche Treffer, ohne den Dispatcher zu rufen.

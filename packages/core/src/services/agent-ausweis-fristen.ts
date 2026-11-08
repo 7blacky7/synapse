@@ -34,10 +34,12 @@
  */
 import { getPool } from '../db/client.js';
 import { kernTtlMs } from './agent-profil-schalter.js';
+// P22-T287 S4: Teilmenge je Agent (ZIEL_EINSTELLUNG_BEREICHE.ausweis_fristen), gemeinsamer Rang-Helfer.
+import { leseZielWerte, type SchalterZiel, type SchalterZielEbene } from './agent-profil-schalter-ziel.js';
 
 export const AUSWEIS_FRIST_NAMEN = ['schatten_stunden', 'erstnutzung_minuten', 'visum_minuten', 'arbeitsfreigabe_stunden', 'anmeldung_plaene_minuten', 'files_plan_stunden', 'shell_hinweis_minuten', 'coedit_aktiv_sekunden'] as const;
 export type AusweisFristName = typeof AUSWEIS_FRIST_NAMEN[number];
-export type AusweisFristQuelle = 'standard' | 'global' | 'projekt';
+export type AusweisFristQuelle = 'standard' | 'global' | 'projekt' | SchalterZielEbene;
 type Einheit = 'stunden' | 'minuten' | 'sekunden';
 
 interface FristDefinition { standard: number; einheit: Einheit; min: number; max: number; wirkung: string }
@@ -70,6 +72,8 @@ export interface AusweisFristWert {
   /** wirksamer Wert in Millisekunden */
   ms: number;
   quelle: AusweisFristQuelle;
+  /** P22-T287 S4: Ziel der Regel je Agent (nur bei quelle identitaet|agent|typ). */
+  ziel?: string;
   standard: number;
   global: number | null;
   projekt: number | null;
@@ -84,6 +88,8 @@ export interface AusweisFristenStand {
   fristen: Record<AusweisFristName, AusweisFristWert>;
   letzter_fehler: string | null;
   hinweis: string;
+  /** P22-T287 S4: Regeln je Agent nicht lesbar (Fristen dann projekt/global/Standard). */
+  ziel_fehler?: string;
 }
 
 /** Geheimnisfreier Fachfehler (code + optionale details); die admin-Fehlerantwort gibt beides weiter. */
@@ -121,7 +127,7 @@ export function leereAusweisFristenCache(): void { PUFFER.clear(); }
  * EINE Lesestelle fuer alle Ausweis-Fristen. project null = nur global/Standard. frisch:true umgeht den Puffer
  * (Status-Antworten). Lesefehler -> Standardwerte mit letzter_fehler 'ausweis_fristen_nicht_lesbar' (nicht gepuffert).
  */
-export async function leseAusweisFristen(project?: string | null, opt: { frisch?: boolean } = {}): Promise<AusweisFristenStand> {
+async function leseFristenBasis(project?: string | null, opt: { frisch?: boolean } = {}): Promise<AusweisFristenStand> {
   const p = typeof project === 'string' && project.trim() ? project.trim() : null;
   const ttl = opt.frisch ? 0 : kernTtlMs();
   const schluessel = p ?? '';
@@ -141,6 +147,28 @@ export async function leseAusweisFristen(project?: string | null, opt: { frisch?
   } catch {
     return baueStand(p, [], 'ausweis_fristen_nicht_lesbar');
   }
+}
+
+/**
+ * EINE Lesestelle fuer alle Ausweis-Fristen (projekt > global > Standard, gepuffert; siehe leseFristenBasis).
+ * P22-T287 S4: opt.ziel (nur ausdruecklich: der Agent, fuer den die Frist entscheidet) legt fuer die Teilmenge
+ * ZIEL_EINSTELLUNG_BEREICHE.ausweis_fristen die Regeln je Agent (identitaet > agent > typ) darueber; nur bei schalter_identitaet EIN
+ * und nur innerhalb des Bereichs der Frist. Ohne ziel = Bestand. Der gepufferte Stand wird nicht veraendert.
+ */
+export async function leseAusweisFristen(project?: string | null, opt: { frisch?: boolean; ziel?: SchalterZiel | null } = {}): Promise<AusweisFristenStand> {
+  const stand = await leseFristenBasis(project, { frisch: opt.frisch });
+  if (!opt.ziel || !stand.project) return stand;
+  const zw = await leseZielWerte('ausweis_fristen', stand.project, opt.ziel);
+  if (!Object.keys(zw.werte).length && !zw.fehler) return stand;
+  const fristen = { ...stand.fristen };
+  for (const t of Object.values(zw.werte)) {
+    const name = t.name as AusweisFristName;
+    const d = AUSWEIS_FRIST_DEFINITIONEN[name];
+    if (!d || !Number.isInteger(t.wert) || t.wert < d.min || t.wert > d.max) continue;
+    fristen[name] = { ...fristen[name], wert: t.wert, ms: t.wert * EINHEIT_MS[d.einheit], quelle: t.ziel_ebene, ziel: t.ziel,
+      gesetzt_von: t.gesetzt_von, gesetzt_am: t.gesetzt_am, grund: t.grund };
+  }
+  return { ...stand, fristen, ...(zw.fehler ? { ziel_fehler: zw.fehler } : {}) };
 }
 
 /** Schattenfrist (Weg A) in ms fuer das Projekt; Lesestelle leseAusweisFristen. */

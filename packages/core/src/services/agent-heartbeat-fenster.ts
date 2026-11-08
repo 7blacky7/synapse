@@ -40,7 +40,8 @@ function weg(z: Ziel): 'koordinator_heartbeat' | 'wrapper' | null {
 
 async function schalterFuer(z: Ziel): Promise<{ name: string; aktiv: boolean; quelle: string; letzter_fehler: string | null }> {
   const name = z.rolle === 'koordinator' ? KOORDINATOR_HEARTBEAT_FUNKTION : UNTERAGENT_HEARTBEAT_FUNKTION;
-  const s = await leseProfilProduktSchalter(name, z.project).catch(() => null);
+  // P22-T287 S4b: Ziel = die Identitaet des Fensters (koordinator_heartbeat ist ziel-faehig; runtime_agenten_steuerung ignoriert das Ziel).
+  const s = await leseProfilProduktSchalter(name, z.project, { identity_id: z.id }).catch(() => null);
   return { name, aktiv: !!s && s.aktiv && !s.letzter_fehler, quelle: s?.quelle ?? 'fehler', letzter_fehler: s ? s.letzter_fehler : 'nicht_lesbar' };
 }
 

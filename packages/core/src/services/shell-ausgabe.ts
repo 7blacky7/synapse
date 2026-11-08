@@ -17,6 +17,8 @@
  *   interner Test-Override intern_schalter 'shell_ausgabe_voll' (modus freigegeben, befristet, nur mit intern-Tool).
  * EINSTELLWERTE: Tabelle shell_ausgabe_einstellungen (projekt > global > Standard), admin shell_ausgabe_einstellungen
  *   (Koordinator/User). Antworten nennen Werte samt Quelle (debug).
+ *   P22-T287 S4: die Abrufgrenzen (ZIEL_EINSTELLUNG_BEREICHE.shell_ausgabe) zusaetzlich je Agent (identitaet > agent > typ, nur bei
+ *   schalter_identitaet EIN); gelesen fuer den AUFRUFENDEN Agenten (zielDesAufrufers). Werte je Job bleiben projekt/global.
  */
 import { getPool } from '../db/client.js';
 import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
@@ -24,6 +26,8 @@ import { internToolAktiv } from './intern-tool-aktiv.js';
 import { maskiereShellVorSpeichern, maskiereShellAntwort } from './shell-maske.js';
 import { aktuellerW1bAkteur, pruefeProfilVerwalter, ProfilVerwaltungFehler, pflichtText } from './agent-profil-verwalter.js';
 import type { AusweisAkteur } from './agent-profil-vertrag.js';
+// P22-T287 S4: Abrufgrenzen je Agent (Ebenen identitaet/agent/typ, gemeinsamer Rang-Helfer).
+import { zielDesAufrufers, leseZielWerte, zielEinstellungAngabe, zielEinstellungSicht, fuehreZielWerteAus, SchalterZielFehler, type SchalterZiel, type SchalterZielEbene, type ZielEinstellungAngabe } from './agent-profil-schalter-ziel.js';
 
 export const SHELL_AUSGABE_FUNKTION = 'shell_ausgabe_voll' as const;
 
@@ -85,17 +89,26 @@ export async function shellAusgabeSchalter(project: string | null | undefined): 
   return stand;
 }
 
-export interface ShellAusgabeWert { wert: number; quelle: 'standard' | 'global' | 'projekt'; standard: number; global: number | null; projekt: number | null }
+export interface ShellAusgabeWert {
+  wert: number; quelle: 'standard' | 'global' | 'projekt' | SchalterZielEbene; standard: number; global: number | null; projekt: number | null;
+  /** P22-T287 S4: Ziel der Regel je Agent (nur bei quelle identitaet|agent|typ). */
+  ziel?: string;
+}
 export interface ShellAusgabeStand {
   project: string | null;
   werte: ShellAusgabeWerte;
   einstellungen: Record<ShellAusgabeEinstellungName, ShellAusgabeWert>;
   schalter: ShellAusgabeSchalterStand;
   letzter_fehler: string | null;
+  /** P22-T287 S4: Regeln je Agent nicht lesbar (Werte dann projekt/global/Standard). */
+  ziel_fehler?: string;
 }
 
-/** EINE Lesestelle fuer die Einstellwerte (projekt > global > Standard). Lesefehler -> Standard + letzter_fehler. */
-export async function leseShellAusgabeEinstellungen(project: string | null | undefined): Promise<ShellAusgabeStand> {
+/**
+ * EINE Lesestelle fuer die Einstellwerte (projekt > global > Standard). Lesefehler -> Standard + letzter_fehler.
+ * P22-T287 S4: ziel (nur ausdruecklich) legt die Regeln je Agent fuer die ziel-faehigen Abrufgrenzen darueber; ohne ziel = Bestand.
+ */
+export async function leseShellAusgabeEinstellungen(project: string | null | undefined, ziel: SchalterZiel | null = null): Promise<ShellAusgabeStand> {
   let fehler: string | null = null;
   let rows: Array<{ ebene: string; name: string; wert: string }> = [];
   try {
@@ -105,6 +118,7 @@ export async function leseShellAusgabeEinstellungen(project: string | null | und
   } catch { fehler = 'shell_ausgabe_einstellungen_nicht_lesbar'; }
   const werte = {} as ShellAusgabeWerte;
   const einstellungen = {} as ShellAusgabeStand['einstellungen'];
+  const zw = ziel && project ? await leseZielWerte('shell_ausgabe', project, ziel) : null;
   for (const name of Object.keys(SHELL_AUSGABE_EINSTELLUNGEN) as ShellAusgabeEinstellungName[]) {
     const std = SHELL_AUSGABE_EINSTELLUNGEN[name];
     const g = rows.find((r) => r.name === name && r.ebene === 'global');
@@ -116,8 +130,19 @@ export async function leseShellAusgabeEinstellungen(project: string | null | und
     werte[name] = gueltig ? n : std;
     einstellungen[name] = { wert: werte[name], quelle: gueltig && z ? (p ? 'projekt' : 'global') : 'standard', standard: std,
       global: g ? Number(g.wert) : null, projekt: p ? Number(p.wert) : null };
+    const t = zw?.werte[name];
+    if (t && Number.isSafeInteger(t.wert) && t.wert > 0) {
+      werte[name] = t.wert;
+      einstellungen[name] = { ...einstellungen[name], wert: t.wert, quelle: t.ziel_ebene, ziel: t.ziel };
+    }
   }
-  return { project: project ?? null, werte, einstellungen, schalter: await shellAusgabeSchalter(project), letzter_fehler: fehler };
+  return { project: project ?? null, werte, einstellungen, schalter: await shellAusgabeSchalter(project), letzter_fehler: fehler,
+    ...(zw?.fehler ? { ziel_fehler: zw.fehler } : {}) };
+}
+
+/** P22-T287 S4: Abrufgrenzen fuer den AUFRUFENDEN Agenten (log/suche/get/get_stream/exec-tail entscheiden fuer ihn). */
+async function werteFuerAufrufer(project: string): Promise<ShellAusgabeWerte> {
+  return (await leseShellAusgabeEinstellungen(project, await zielDesAufrufers(project))).werte;
 }
 
 export const SHELL_AUSGABE_ADMIN_ACTIONS = ['shell_ausgabe_einstellungen'] as const;
@@ -126,6 +151,33 @@ export const SHELL_AUSGABE_ADMIN_PARAMETER = {
   shell_ausgabe_namen: { type: 'array', items: { type: 'string' }, description: 'shell_ausgabe_einstellungen entfernen: Namen auf dieser Ebene zuruecksetzen' },
 };
 
+/** P22-T287 S4: admin shell_ausgabe_einstellungen je Agent (ziel_ebene); Werte wie shell_ausgabe_werte/-namen, Rechte/Audit in setzeZielWerte. */
+async function shellAusgabeZielAntwort(project: string, modus: string, za: ZielEinstellungAngabe, args: Record<string, unknown>, wer: AusweisAkteur): Promise<Record<string, unknown>> {
+  let werte: Record<string, number | null> | null = null;
+  if (modus !== 'status') {
+    if (modus !== 'setzen' && modus !== 'entfernen') throw new ProfilVerwaltungFehler('modus_ungueltig');
+    werte = {};
+    if (modus === 'setzen') {
+      const roh = args.shell_ausgabe_werte;
+      if (!roh || typeof roh !== 'object' || Array.isArray(roh)) throw new ProfilVerwaltungFehler('shell_ausgabe_werte_fehlen');
+      for (const [name, v] of Object.entries(roh as Record<string, unknown>)) {
+        if (!Object.hasOwn(SHELL_AUSGABE_EINSTELLUNGEN, name)) throw new ProfilVerwaltungFehler('shell_ausgabe_name_ungueltig');
+        if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1) throw new ProfilVerwaltungFehler('shell_ausgabe_wert_ungueltig');
+        werte[name] = v;
+      }
+    } else {
+      if (!Array.isArray(args.shell_ausgabe_namen) || !args.shell_ausgabe_namen.length) throw new ProfilVerwaltungFehler('shell_ausgabe_namen_fehlen');
+      for (const name of args.shell_ausgabe_namen as unknown[]) {
+        if (typeof name !== 'string' || !Object.hasOwn(SHELL_AUSGABE_EINSTELLUNGEN, name)) throw new ProfilVerwaltungFehler('shell_ausgabe_name_ungueltig');
+        werte[name] = null;
+      }
+    }
+  }
+  const z = await fuehreZielWerteAus('shell_ausgabe', project, za, werte, args.grund, wer);
+  const sicht = zielEinstellungSicht(za);
+  return { success: true, action: 'shell_ausgabe_einstellungen', modus, project, ...z, ...(sicht ? { wirksam: await leseShellAusgabeEinstellungen(project, sicht) } : {}) };
+}
+
 /** admin shell_ausgabe_einstellungen: modus status (Standard) | setzen | entfernen, ebene projekt (Standard) | global. */
 export async function fuehreShellAusgabeAdminAus(args: Record<string, unknown>, wer: AusweisAkteur | null = aktuellerW1bAkteur()): Promise<Record<string, unknown>> {
   try {
@@ -133,6 +185,9 @@ export async function fuehreShellAusgabeAdminAus(args: Record<string, unknown>, 
     if (!project || !wer) throw new ProfilVerwaltungFehler('recht_fehlt');
     const akteur = await pruefeProfilVerwalter(wer, project);
     const modus = args.modus ?? 'status';
+    // P22-T287 S4: Abrufgrenzen je Agent (ziel_ebene + ziel_identity_id | ziel | typ_id); Rechte/Audit in setzeZielWerte.
+    const za = zielEinstellungAngabe(args);
+    if (za) return await shellAusgabeZielAntwort(project, String(modus), za, args, wer);
     if (modus !== 'status') {
       if (modus !== 'setzen' && modus !== 'entfernen') throw new ProfilVerwaltungFehler('modus_ungueltig');
       const ebene = args.ebene ?? 'projekt';
@@ -170,7 +225,8 @@ export async function fuehreShellAusgabeAdminAus(args: Record<string, unknown>, 
     }
     return { success: true, action: 'shell_ausgabe_einstellungen', modus, ...await leseShellAusgabeEinstellungen(project) };
   } catch (e) {
-    return { success: false, action: 'shell_ausgabe_einstellungen', error: e instanceof ProfilVerwaltungFehler ? e.code : 'shell_ausgabe_einstellungen_speicher_fehler' };
+    return { success: false, action: 'shell_ausgabe_einstellungen', error: e instanceof ProfilVerwaltungFehler || e instanceof SchalterZielFehler ? e.code : 'shell_ausgabe_einstellungen_speicher_fehler',
+      ...(e instanceof SchalterZielFehler && e.details ? { details: e.details } : {}) };
   }
 }
 
@@ -495,7 +551,7 @@ export async function leseShellAusgabeBereich(id: string, fromLine?: number, toL
   const k = await ladeAusgabeKopf(id);
   if (!k) return null;
   if (!(await shellAusgabeSchalter(k.project)).aktiv) return undefined;
-  const w = (await leseShellAusgabeEinstellungen(k.project)).werte;
+  const w = await werteFuerAufrufer(k.project);
   const g = gesamtVon(k);
   const from = Math.max(1, Math.trunc(Number.isFinite(fromLine) ? fromLine as number : 1));
   const gewuenscht = Number.isFinite(toLine) ? Math.max(from, Math.trunc(toLine as number)) : from + 99;
@@ -557,7 +613,7 @@ export async function sucheShellAusgabe(id: string, query: string | undefined, o
   const k = await ladeAusgabeKopf(id);
   if (!k) return null;
   if (!(await shellAusgabeSchalter(k.project)).aktiv) return undefined;
-  const w = (await leseShellAusgabeEinstellungen(k.project)).werte;
+  const w = await werteFuerAufrufer(k.project);
   const g = gesamtVon(k);
   const basis = { found: true, total_lines: g.total_lines, total_bytes: g.total_bytes, total_matches: 0, matches: [] as ShellLogTreffer[], truncated: false };
   const filterRe = opts.filter ? SHELL_LOG_FILTER[opts.filter] : undefined;
@@ -642,7 +698,7 @@ export async function leseShellAusgabeNeu(id: string, opts: { seit_zeile?: numbe
   const k = await ladeAusgabeKopf(id);
   if (!k) return null;
   if (!(await shellAusgabeSchalter(k.project)).aktiv) return undefined;
-  const w = (await leseShellAusgabeEinstellungen(k.project)).werte;
+  const w = await werteFuerAufrufer(k.project);
   const g = gesamtVon(k);
   const laufend = LAUFEND.has(k.status);
   const obergrenze = laufend ? g.vollstaendige_zeilen : g.total_lines;
@@ -688,7 +744,7 @@ export interface ShellAusgabeAnzeige {
  */
 export async function shellAusgabeAnzeige(job: { id: string; project: string; status: string; output?: string | null } & Partial<JobSummen>): Promise<ShellAusgabeAnzeige | null> {
   if (!(await shellAusgabeSchalter(job.project)).aktiv) return null;
-  const w = (await leseShellAusgabeEinstellungen(job.project)).werte;
+  const w = await werteFuerAufrufer(job.project);
   const k: AusgabeKopf = {
     id: job.id, project: job.project, status: String(job.status), output: job.output ?? null, message: null, output_truncated: null,
     ausgabe_teile: job.ausgabe_teile ?? null, ausgabe_bytes: job.ausgabe_bytes != null ? String(job.ausgabe_bytes) : null,
@@ -741,7 +797,7 @@ export async function shellAusgabeAnzeige(job: { id: string; project: string; st
 /** exec-Antwort: tail nach Zeilen und Bytes deckeln (Schalter an). */
 export async function begrenzeShellTail(project: string | undefined, tail: unknown, angefordert?: number): Promise<{ tail: unknown; tail_gekappt?: { zeilen: number; hinweis: string } }> {
   if (!project || !Array.isArray(tail) || !(await shellAusgabeSchalter(project)).aktiv) return { tail };
-  const w = (await leseShellAusgabeEinstellungen(project)).werte;
+  const w = await werteFuerAufrufer(project);
   const roh = tail.slice(-w.exec_tail_max_zeilen).map((z) => String(z));
   const quelle = roh.map((z) => kuerzeZeile(z, w.zeile_max_zeichen));
   const aus: string[] = [];
@@ -764,6 +820,6 @@ export async function begrenzeShellTail(project: string | undefined, tail: unkno
 /** tail_lines fuer neue Jobs deckeln (Schalter an), damit auch der gespeicherte tail klein bleibt. */
 export async function begrenzeShellTailLines(project: string, n: number | undefined): Promise<number | undefined> {
   if (n === undefined || !(await shellAusgabeSchalter(project)).aktiv) return n;
-  const w = (await leseShellAusgabeEinstellungen(project)).werte;
+  const w = await werteFuerAufrufer(project);
   return Math.max(1, Math.min(Math.trunc(n), w.exec_tail_max_zeilen));
 }

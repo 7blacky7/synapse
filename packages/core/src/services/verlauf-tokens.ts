@@ -18,7 +18,8 @@
  */
 import type { QueryConfig } from 'pg';
 import { getPool } from '../db/client.js';
-import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
+import { leseProfilProduktSchalter, zielTrefferFuer } from './agent-profil-schalter.js';
+import type { SchalterZiel } from './agent-profil-schalter-ziel.js';
 
 export const VERLAUF_TOKEN_FUNKTION = 'verlauf_token_zaehlung' as const;
 export const ANTHROPIC_START_FAKTOR = 3.5;
@@ -33,7 +34,11 @@ type Q = QueryConfig & { query_timeout: number };
 export type ModellFamilie = 'openai' | 'anthropic' | 'sonstige';
 export type ZaehlVerfahren = 'o200k_exakt' | 'zeichen_kalibriert' | 'zeichen_4';
 
-export interface TokenZaehlSchalter { aktiv: boolean; quelle: 'standard' | 'produkt-schalter' | 'intern'; bis: string | null; letzter_fehler: string | null }
+export interface TokenZaehlSchalter {
+  aktiv: boolean; quelle: 'standard' | 'produkt-schalter' | 'intern'; bis: string | null; letzter_fehler: string | null;
+  /** P22-T287 S4b: Regel je Agent hat fuer das ausdrueckliche Ziel entschieden. */
+  ziel_ebene?: string;
+}
 
 /** Schalter der Stufe 2 (alle Standard AUS, nur ausdruecklich): eine Lesestelle fuer alle. */
 // P22-T73: main_warteschlange (Warteschlange des Main-Chats) liest denselben Weg: Standard AUS, intern > Produkt-Schalter.
@@ -45,8 +50,11 @@ export async function leseTokenZaehlSchalter(): Promise<TokenZaehlSchalter> {
   return leseVerlaufStufe2Schalter(VERLAUF_TOKEN_FUNKTION);
 }
 
-/** intern-Override (nur SYNAPSE_INTERN_TOOL=1, befristet) > Produkt-Schalter (ebene global) > AUS. */
-export async function leseVerlaufStufe2Schalter(funktion: VerlaufStufe2Funktion): Promise<TokenZaehlSchalter> {
+/**
+ * intern-Override (nur SYNAPSE_INTERN_TOOL=1, befristet) > Produkt-Schalter (ebene global) > AUS.
+ * P22-T287 S4b: ziel (nur ausdruecklich; derzeit verlauf_uebergabe mit der uebergebenden Identitaet) -> Regel je Agent vor global.
+ */
+export async function leseVerlaufStufe2Schalter(funktion: VerlaufStufe2Funktion, ziel: (SchalterZiel & { project?: string | null }) | null = null): Promise<TokenZaehlSchalter> {
   const basis: TokenZaehlSchalter = { aktiv: false, quelle: 'standard', bis: null, letzter_fehler: null };
   let letzter: string | null = null;
   const { internToolAktiv } = await import('./intern-tool.js');
@@ -60,6 +68,8 @@ export async function leseVerlaufStufe2Schalter(funktion: VerlaufStufe2Funktion)
       if (z) return { ...basis, aktiv: z.aktiv, quelle: 'intern', bis: z.bis ? z.bis.toISOString() : null };
     } catch { letzter = 'schalter_nicht_erreichbar'; }
   }
+  const zt = await zielTrefferFuer(funktion, ziel);
+  if (zt) return { ...basis, aktiv: zt.aktiv, quelle: 'produkt-schalter', letzter_fehler: letzter, ...(zt.ziel_ebene ? { ziel_ebene: zt.ziel_ebene } : {}) };
   const p = await leseProfilProduktSchalter(funktion, null);
   if (p.quelle === 'produkt-schalter') return { ...basis, aktiv: p.aktiv, quelle: 'produkt-schalter', letzter_fehler: letzter };
   return { ...basis, letzter_fehler: letzter ?? p.letzter_fehler };

@@ -20,7 +20,7 @@
  *     fuer den Aufrufer entscheiden, uebergeben zielDesAufrufers(project) (Fremd-Empfaenger-Regel).
  */
 import { getPool } from '../db/client.js';
-import { SCHALTER_ZIEL_FUNKTION, istZielFaehig, merkeSchalterQuelle, leseZielTreffer, type SchalterZiel, type SchalterZielEbene, type SchalterZielTreffer } from './agent-profil-schalter-ziel.js';
+import { SCHALTER_ZIEL_FUNKTION, istZielFaehig, merkeSchalterQuelle, leseZielTreffer, leereZielWertPuffer, type SchalterZiel, type SchalterZielEbene, type SchalterZielTreffer } from './agent-profil-schalter-ziel.js';
 import { internToolAktiv } from './intern-tool-aktiv.js';
 import { AUSWEIS_FORMAT } from './agent-ausweis-format.js';
 
@@ -280,6 +280,9 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   // P22-T286: API-Laufzeiten schreiben ihren Turn zusaetzlich in hauptagent_verlauf (api-agent-lauf.ts, agent-verlauf.ts);
   // je Projekt/global, Standard AUS bis Abnahme, nur ausdruecklich. AUS = Bestand.
   'api_verlauf_hauptverlauf',
+  // P22-T287 Paket 0: Werkzeugergebnisse im API-Lauf je Aufruf auf einen Anteil des Modellfensters kuerzen (api-tool-ausgabe.ts,
+  // Regel codexToolAusgabe, Werte runtime_tool_ausgabe je Identitaet); je Projekt/global/Ziel, Standard AUS, nur ausdruecklich. AUS = ungekuerzt.
+  'api_tool_ausgabe',
   // P22-T199: Co-Edit ohne Ready-Gate (coedit-methode.ts; EIN = neue Methode, AUS = Ready-Gate wie bisher); je Projekt/global,
   // Standard AUS, nur ausdruecklich. Gelesen je files-Aufruf ueber leseProfilProduktSchalterGepuffert.
   'coedit_ohne_gate',
@@ -374,7 +377,7 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'kontextprofil_bruecke',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-export const NUR_AUSDRUECKLICH: readonly string[] = ['schalter_identitaet', 'schalter_setzen_ohne_ausweis', 'profil_antwortanpassung', 'kontextprofil_bruecke', 'web_ui_agentfenster', 'web_ui_agentfenster_alle', 'zwangs_pin', 'koordinator_projektverwaltung', 'web_ui_agententeam_suche', 'editor_modul', 'editor_plan_strom', 'editor_plan_leinwand', 'editor_syntax', 'web_ui_live_artefakte', 'asset_tombstone_zustellung', 'web_ui_netzwerk_details', 'web_ui_channel_suche', 'web_ui_arbeitsbereich', 'team_ausweis_zeigen', 'shell_ausgabe_voll', 'warteschlangen_stau', 'warteschlangen_altbestand', 'asset_intern_aufraeumen', 'asset_publish_recovery', 'asset_pc_zustellung', 'asset_transfer_generisch', 'index_live_vorrang', 'log_strom', 'uebersicht_netzwerk', 'netzwerk_visum_sonnen', 'api_agenten_auswahl', 'api_deepseek_direkt', 'coedit_ohne_gate', 'anker_umrechnung', 'web_ui_neue_oberflaeche', 'seitenleiste_projekt_tasks', 'cache_waechter', 'runtime_synapse_mods', 'artefakt_dateien', 'tool_antwort_ueberlauf', 'runtime_tool_ausgabe', 'user_inbox', 'zeilen_anmerkungen', 'koordinator_mehrfenster', 'reverse_pipeline_halt', 'agentennetzwerk', 'netzwerk_datengrundlage', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_asset_registrierung', 'reverse_parser_adapter', 'reverse_leser', 'reverse_leser_nachzug', 'reverse_leser_hinweise', 'reverse_leser_runtime_verwaltung', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'reverse_global_sichtbar', 'reverse_intel_abruf', 'reverse_fehlerlog', 'ausweis_channels', 'kontingent_delegiert', 'plattform_agent_chat', 'main_agentenverwaltung', 'koordinator_heartbeat', 'agent_start_ort', 'runtime_agenten_uebersicht', 'runtime_agenten_steuerung', 'plattform_agent_modellwechsel', 'main_turn_wake_frist', 'ausweis_zielmodell', 'modell_lauf_bindung', 'wake_echter_absender', 'wake_antwort_identitaet', 'runtime_agenten_panel_neu', 'verlauf_tool_karten', 'agent_kennung_werbung', 'wrapper_status_ursache', 'agent_chat_einheitlich', 'mod_inbox', 'mod_inbox_vorpruefung', 'task_bindung_loesen_bei_done', 'artefakt_bewertung', 'artefakt_bewertung_melden', 'inbox_quittung', 'datei_vertrag', 'artefakt_vorlagen', 'artefakt_vorlagen_live', 'artefakt_ausweis_zeigen', 'artefakt_verweise', 'artefakt_skripte', 'verlauf_einbetten', 'verlauf_suche', 'chat_zitate', 'agent_aktuelle_task', 'agent_lauf_herkunft', 'agent_umbenennung', 'api_agenten', 'wiederkehr_plaene', 'speicher_aehnlichkeit', 'speicher_aehnlichkeit_pruefen', 'task_pins', 'api_agenten_lauf_intern', 'api_verlauf_hauptverlauf'];
+export const NUR_AUSDRUECKLICH: readonly string[] = ['schalter_identitaet', 'api_tool_ausgabe', 'schalter_setzen_ohne_ausweis', 'profil_antwortanpassung', 'kontextprofil_bruecke', 'web_ui_agentfenster', 'web_ui_agentfenster_alle', 'zwangs_pin', 'koordinator_projektverwaltung', 'web_ui_agententeam_suche', 'editor_modul', 'editor_plan_strom', 'editor_plan_leinwand', 'editor_syntax', 'web_ui_live_artefakte', 'asset_tombstone_zustellung', 'web_ui_netzwerk_details', 'web_ui_channel_suche', 'web_ui_arbeitsbereich', 'team_ausweis_zeigen', 'shell_ausgabe_voll', 'warteschlangen_stau', 'warteschlangen_altbestand', 'asset_intern_aufraeumen', 'asset_publish_recovery', 'asset_pc_zustellung', 'asset_transfer_generisch', 'index_live_vorrang', 'log_strom', 'uebersicht_netzwerk', 'netzwerk_visum_sonnen', 'api_agenten_auswahl', 'api_deepseek_direkt', 'coedit_ohne_gate', 'anker_umrechnung', 'web_ui_neue_oberflaeche', 'seitenleiste_projekt_tasks', 'cache_waechter', 'runtime_synapse_mods', 'artefakt_dateien', 'tool_antwort_ueberlauf', 'runtime_tool_ausgabe', 'user_inbox', 'zeilen_anmerkungen', 'koordinator_mehrfenster', 'reverse_pipeline_halt', 'agentennetzwerk', 'netzwerk_datengrundlage', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_asset_registrierung', 'reverse_parser_adapter', 'reverse_leser', 'reverse_leser_nachzug', 'reverse_leser_hinweise', 'reverse_leser_runtime_verwaltung', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'reverse_global_sichtbar', 'reverse_intel_abruf', 'reverse_fehlerlog', 'ausweis_channels', 'kontingent_delegiert', 'plattform_agent_chat', 'main_agentenverwaltung', 'koordinator_heartbeat', 'agent_start_ort', 'runtime_agenten_uebersicht', 'runtime_agenten_steuerung', 'plattform_agent_modellwechsel', 'main_turn_wake_frist', 'ausweis_zielmodell', 'modell_lauf_bindung', 'wake_echter_absender', 'wake_antwort_identitaet', 'runtime_agenten_panel_neu', 'verlauf_tool_karten', 'agent_kennung_werbung', 'wrapper_status_ursache', 'agent_chat_einheitlich', 'mod_inbox', 'mod_inbox_vorpruefung', 'task_bindung_loesen_bei_done', 'artefakt_bewertung', 'artefakt_bewertung_melden', 'inbox_quittung', 'datei_vertrag', 'artefakt_vorlagen', 'artefakt_vorlagen_live', 'artefakt_ausweis_zeigen', 'artefakt_verweise', 'artefakt_skripte', 'verlauf_einbetten', 'verlauf_suche', 'chat_zitate', 'agent_aktuelle_task', 'agent_lauf_herkunft', 'agent_umbenennung', 'api_agenten', 'wiederkehr_plaene', 'speicher_aehnlichkeit', 'speicher_aehnlichkeit_pruefen', 'task_pins', 'api_agenten_lauf_intern', 'api_verlauf_hauptverlauf'];
 /**
  * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
  * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.
@@ -419,7 +422,28 @@ export interface AusweisKernStand {
 
 const KERN_PUFFER = new Map<string, { bis: number; stand: ProfilProduktSchalterStand }>();
 /** Puffer verwerfen (Tests; automatisch nach jedem Schreiben eines Produkt-Schalters im eigenen Prozess). */
-export function leereAusweisKernCache(): void { KERN_PUFFER.clear(); }
+export function leereAusweisKernCache(): void { KERN_PUFFER.clear(); ZIEL_IRGENDWO.clear(); leereZielWertPuffer(); }
+/**
+ * P22-T287 S3b (N1): Gibt es im Projekt irgendeine wirksame Zielregel (aktiv=true) fuer die Funktion? Fuer Schutzpfade, die fuer die
+ * Sache entscheiden (z. B. Pflicht-Tags eines Zwangs-Pins) und nicht fuer den Schreiber. Nur bei schalter_identitaet EIN; gepuffert
+ * (kernTtlMs, geleert mit leereAusweisKernCache); Lesefehler -> false.
+ */
+const ZIEL_IRGENDWO = new Map<string, { bis: number; wert: boolean }>();
+export async function zielRegelIrgendwoAktiv(funktion: ProfilProduktFunktion, project: string | null): Promise<boolean> {
+  if (!project || !istZielFaehig(funktion)) return false;
+  if (!(await leseProduktGepuffert(SCHALTER_ZIEL_FUNKTION, project, null)).aktiv) return false;
+  const ttl = kernTtlMs();
+  const k = funktion + '\u0000' + project;
+  const jetzt = Date.now();
+  const c = ttl > 0 ? ZIEL_IRGENDWO.get(k) : undefined;
+  if (c && c.bis > jetzt) return c.wert;
+  try {
+    const r = await getPool().query('SELECT 1 FROM agent_profil_schalter_ziel WHERE funktion=$1 AND project=$2 AND aktiv LIMIT 1', [funktion, project]);
+    const wert = r.rows.length > 0;
+    if (ttl > 0) ZIEL_IRGENDWO.set(k, { bis: jetzt + ttl, wert });
+    return wert;
+  } catch { return false; }
+}
 /** P22-T287 S3 (P5): Puffer-Messung je Prozess (alle gepufferten Produkt-Schalter-Lesungen). */
 const PUFFER_ZAEHLER = { treffer: 0, fehlgriffe: 0 };
 export function produktPufferDiagnose(): { treffer: number; fehlgriffe: number } { return { ...PUFFER_ZAEHLER }; }
@@ -432,12 +456,20 @@ export function kernTtlMs(): number {
 }
 async function leseProduktGepuffert(funktion: ProfilProduktFunktion, project: string | null, ziel?: SchalterZiel | null): Promise<ProfilProduktSchalterStand> {
   const ttl = kernTtlMs();
-  // P22-T287 S3: Ziel nur ausdruecklich (kein Aufrufkontext); mit Ziel gehoert es in den Schluessel.
-  const z = ziel ?? null;
+  // P22-T287 S3: Ziel nur ausdruecklich (kein Aufrufkontext); mit Ziel gehoert es in den Schluessel. S3b (H4): nur bei ziel-faehiger
+  // Funktion UND schalter_identitaet EIN - sonst Puffer je Projekt wie vor T287.
+  let z = ziel ?? null;
+  if (z && (!project || funktion === SCHALTER_ZIEL_FUNKTION || !istZielFaehig(funktion)
+    || !(await leseProduktGepuffert(SCHALTER_ZIEL_FUNKTION, project, null)).aktiv)) z = null;
   const schluessel = funktion + '\u0000' + (project ?? '') + (z ? '\u0000' + (z.identity_id ?? '') + '\u0000' + (z.agent_id ?? '') : '');
   const jetzt = Date.now();
   const c = ttl > 0 ? KERN_PUFFER.get(schluessel) : undefined;
-  if (c && c.bis > jetzt) { PUFFER_ZAEHLER.treffer++; return c.stand; }
+  if (c && c.bis > jetzt) {
+    PUFFER_ZAEHLER.treffer++;
+    // S3b (N2): Debug-Quelle auch beim Puffertreffer (der Stand traegt ziel_ebene/ziel des Treffers).
+    if (c.stand.ziel_ebene && c.stand.ziel && project) await merkeSchalterQuelle(funktion, project, { ebene: c.stand.ziel_ebene, ziel: c.stand.ziel, aktiv: c.stand.aktiv });
+    return c.stand;
+  }
   PUFFER_ZAEHLER.fehlgriffe++;
   const stand = await leseProfilProduktSchalter(funktion, project, z);
   if (ttl > 0 && !stand.letzter_fehler) KERN_PUFFER.set(schluessel, { bis: jetzt + ttl, stand });
@@ -446,6 +478,19 @@ async function leseProduktGepuffert(funktion: ProfilProduktFunktion, project: st
 /** P22-T199: Produkt-Schalter je Prozess gepuffert (kernTtlMs, wie der Ausweis-Kern) fuer Lesestellen je Tool-Aufruf. */
 export function leseProfilProduktSchalterGepuffert(funktion: ProfilProduktFunktion, project: string | null, ziel?: SchalterZiel | null): Promise<ProfilProduktSchalterStand> {
   return leseProduktGepuffert(funktion, project, ziel);
+}
+/**
+ * P22-T287 S4b: Zielstufe fuer Lesestellen mit EIGENER Aufloesung (leseMainSchalter, leseVerlaufStufe2Schalter, ausweis_channels):
+ * NUR der Treffer einer Regel je Agent fuer das ausdrueckliche Ziel (gestartete bzw. empfangende Identitaet), sonst null = Bestand der
+ * Lesestelle. Ohne Ziel/Projekt, nicht ziel-faehig oder schalter_identitaet AUS -> null ohne weitere Abfrage. Gepuffert wie
+ * leseProfilProduktSchalterGepuffert (Ziel im Schluessel nur bei EIN, H4). Keine eigene Rangfolge: Treffer = ziel_ebene des Stands.
+ */
+export async function zielTrefferFuer(funktion: ProfilProduktFunktion, ziel: (SchalterZiel & { project?: string | null }) | null | undefined): Promise<ProfilProduktSchalterStand | null> {
+  const project = ziel?.project ?? null;
+  if (!ziel || !project || !istZielFaehig(funktion)) return null;
+  if (!(await leseProduktGepuffert(SCHALTER_ZIEL_FUNKTION, project, null)).aktiv) return null;
+  const s = await leseProduktGepuffert(funktion, project, { identity_id: ziel.identity_id ?? null, agent_id: ziel.agent_id ?? null });
+  return s.ziel_ebene && !s.letzter_fehler ? s : null;
 }
 
 interface KernRoh { aktiv: boolean; quelle: AusweisKernQuelle; fehler: string | null }

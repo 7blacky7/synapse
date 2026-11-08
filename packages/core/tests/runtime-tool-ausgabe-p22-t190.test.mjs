@@ -35,7 +35,9 @@ try {
   const setting = { claude_mcp_output_tokens: 120000, codex_tool_output_tokens: 90000, tool_ausgabe_kontext_prozent: 20, tool_ausgabe_guard_sekunden: 8 };
   await C.setzeRuntimeUeberwachungEinstellungen({ art: 'user' }, null, { werte: setting, grund: 'P22-T190 Test' });
   s = await C.leseRuntimeToolAusgabe(P);
-  ok(JSON.stringify(s.werte) === JSON.stringify(setting) && Object.values(s.quellen).every(q => q === 'einstellung'), 'PG-Werte und Quellen frisch gelesen', s);
+  // P22-T287 Paket 0: fuenfter Wert api_tool_output_tokens (API-Lauf) bleibt hier Standard; die vier CLI-Werte exakt wie gesetzt.
+  ok(Object.keys(setting).every(k => s.werte[k] === setting[k] && s.quellen[k] === 'einstellung') && s.werte.api_tool_output_tokens === 100000
+    && s.quellen.api_tool_output_tokens === 'standard', 'PG-Werte und Quellen frisch gelesen (api_tool_output_tokens Standard)', s);
   await assert.rejects(() => C.setzeRuntimeUeberwachungEinstellungen({ art: 'user' }, null, { werte: { claude_mcp_output_tokens: 1 }, grund: 'Test' })); checks++;
   for (const version of ['2.1.295 (Claude Code)', '2.1.310 (Claude Code)', '2.2.0']) C.pruefeToolAusgabeClaudeVersion(version);
   for (const version of [null, 'unbekannt', '2.1.294 (Claude Code)', '2.0.999']) { assert.throws(() => C.pruefeToolAusgabeClaudeVersion(version)); checks++; }

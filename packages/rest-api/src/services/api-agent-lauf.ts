@@ -38,6 +38,8 @@ import {
   type ApiAnbieterAdapter, type ApiNachrichtErgebnis,
 } from '@synapse/core';
 import { spawneRueckfallImContainer, leseApiRueckfall, pruefeRueckfallModell, rueckfallLimitName } from '@synapse/core';
+// P22-T287 Paket 0: Werkzeugergebnisse je Aufruf kuerzen (Schalter api_tool_ausgabe, Standard AUS).
+import { leseApiToolAusgabeGrenze, kuerzeApiWerkzeugInhalt, type ApiWerkzeugAusfuehrer } from '@synapse/core';
 import { AnbieterDirekt, WerkzeugeDirekt, WERKZEUG_PRAEFIX } from './api-agent-direkt.js';
 import type { rufeApiTransport } from './api-agent-transport.js';
 import type { apiLaufWerkzeugListe, apiLaufWerkzeugAufruf } from '../routes/mcp.js';
@@ -229,6 +231,8 @@ export class LaufVerwaltung {
     // P22-T286: Debug des API-Verlaufs in hauptagent_verlauf (Schalter, Zeilen, Gruende).
     hauptverlauf: { zeilen: 0, uebersprungen: 0, anmeldung_lang: 0, letzter_grund: null as string | null,
       letzter_fehler: null as string | null, main_schreiber_weg: 0 },
+    // P22-T287 Paket 0: Kuerzung der Werkzeugergebnisse (letzte Grenze je Turn, Anzahl und letzte Kuerzung).
+    tool_ausgabe: { gekuerzt: 0, letzte_grenze: null as Record<string, unknown> | null, letzte_kuerzung: null as Record<string, unknown> | null },
   };
 
   constructor(private readonly o: LaufVerwaltungOptionen = {}) {}
@@ -559,8 +563,21 @@ export class LaufVerwaltung {
       modell: l.modell, anbieter: l.anbieter, transport: this.o.transport });
     let aufrufe = 0, input = 0, output = 0, code: string | null = null;
     const adapter: ApiAnbieterAdapter = { name: direkt.name, rufe: async (a) => { const r = await direkt.rufe(a); aufrufe += 1; return r; } };
+    // P22-T287 Paket 0: Grenze je Turn fuer die LAUFENDE API-Identitaet (Regel codexToolAusgabe, Wert je Identitaet); AUS = Bestand.
+    const grenze = await leseApiToolAusgabeGrenze(l.project, l.identity_id, m?.context_window ?? null);
+    this.stat.tool_ausgabe.letzte_grenze = grenze.debug;
+    const ausfuehrer: ApiWerkzeugAusfuehrer = grenze.zeichen === null ? s.ausfuehrer : {
+      rufe: async (name, eingabe) => {
+        const r = await s.ausfuehrer.rufe(name, eingabe);
+        const k = kuerzeApiWerkzeugInhalt(r.inhalt, grenze.zeichen as number, grenze.tokens);
+        if (!k.gekuerzt) return r;
+        this.stat.tool_ausgabe.gekuerzt += 1;
+        this.stat.tool_ausgabe.letzte_kuerzung = { identity_id: l.identity_id, werkzeug: name, vorher: k.vorher, nachher: k.nachher, am: new Date().toISOString() };
+        return { ...r, inhalt: k.inhalt };
+      },
+    };
     const ergebnis = await fuehreApiNachrichtAus({
-      adapter, werkzeuge: s.werkzeuge, ausfuehrer: s.ausfuehrer, verlauf, system: s.system, signal,
+      adapter, werkzeuge: s.werkzeuge, ausfuehrer, verlauf, system: s.system, signal,
       max_tokens: Math.min(MAX_TOKENS_WUNSCH, t8.max_tokens_obergrenze.wert, m?.output_limit ?? MAX_TOKENS_WUNSCH),
       grenzen: { toolrunden_max: toolrunden ?? t8.toolrunden_max.wert, laufzeit_ms: t8.laufzeit_minuten.wert * 60_000 },
       beiNutzung: (n) => { input += n.input + n.cache_read + n.cache_creation; output += n.output; },

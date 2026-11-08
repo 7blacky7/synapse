@@ -134,7 +134,8 @@ export async function claimShellJobHints(
   const notices = identityId ? 'agent_identitaet_shell_job_notices' : 'shell_job_notices';
   const noticeActor = identityId ? 'identity_id' : 'agent_id';
   // P23-T3: Fenster fuer Fertigmeldungen aus der Einstellung (Lesefehler -> Standard 60); fremde Jobs ggf. mit Abruf-Hinweis.
-  const fertigFensterMin = (await leseAusweisFristen(project)).fristen.shell_hinweis_minuten.wert;
+  // P22-T287 S4: Fenster je Empfaenger (ausdrueckliches Ziel = dieser Agent: Identitaet bzw. Name ohne Ausweis).
+  const fertigFensterMin = (await leseAusweisFristen(project, { ziel: identityId ? { identity_id: identityId } : { agent_id: agentId } })).fristen.shell_hinweis_minuten.wert;
   const fremdHinweisAn = (await leseFallSkillSchalter('fremd', project)).aktiv;
   try {
     const { rows } = await getPool().query<{
@@ -296,8 +297,9 @@ export async function fremderLaufFeld(o: {
   if (!o.project || !o.command) return {};
   try {
     if (!(await leseFallSkillSchalter('fremd', o.project)).aktiv) return {};
-    const fenster = (await leseAusweisFristen(o.project)).fristen.shell_hinweis_minuten.wert;
     const identityId = o.agent_id ? aktuelleAgentIdentityId(o.project, o.agent_id) : null;
+    // P22-T287 S4: Fenster des ausfuehrenden Agenten (ausdrueckliches Ziel).
+    const fenster = (await leseAusweisFristen(o.project, { ziel: identityId ? { identity_id: identityId } : o.agent_id ? { agent_id: o.agent_id } : null })).fristen.shell_hinweis_minuten.wert;
     const ausser = typeof o.ausser_job_id === 'string' && SHELL_JOB_ID_PATTERN.test(o.ausser_job_id) ? o.ausser_job_id : null;
     const { rows } = await getPool().query<{ id: string; agent_id: string | null; status: string; exit_code: number | null; vor_min: number }>(
       `SELECT id, agent_id, status::text AS status, exit_code,

@@ -438,7 +438,8 @@ const TEXT_AUSWEIS_KEINE_FORTSETZUNG = 'Mit Ausweis gibt es keine Fortsetzung: S
 async function eigenePlaeneZeile(p: AgentTokenAnmeldung): Promise<string | null> {
   try {
     const { leseAusweisFristen } = await import('./agent-ausweis-fristen.js');
-    const fenster = (await leseAusweisFristen(p.project)).fristen.anmeldung_plaene_minuten;
+    // P22-T287 S4: Fenster je Identitaet (ausdrueckliches Ziel = die sich anmeldende Identitaet).
+    const fenster = (await leseAusweisFristen(p.project, { ziel: { identity_id: p.identitaet.id } })).fristen.anmeldung_plaene_minuten;
     const r = await getPool().query<{ id: string; min: number }>(
       `SELECT id::text AS id, FLOOR(EXTRACT(EPOCH FROM (NOW() - created_at)) / 60)::int AS min FROM file_batch_plans
         WHERE project=$1 AND status='open' AND created_at > NOW() - ($4::int * INTERVAL '1 minute')
