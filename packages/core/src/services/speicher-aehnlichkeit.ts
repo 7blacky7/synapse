@@ -132,7 +132,9 @@ export interface SpeicherAehnlichkeitSchalter {
 export async function leseSpeicherAehnlichkeitSchalter(
   funktion: typeof SPEICHER_AEHNLICHKEIT_FUNKTION | typeof SPEICHER_AEHNLICHKEIT_PRUEFEN_FUNKTION, project: string | null,
 ): Promise<SpeicherAehnlichkeitSchalter> {
-  const p = await leseProfilProduktSchalter(funktion, project);
+  // P22-T287 S3: entscheidet beim Speichern des Aufrufers -> Ziel des Aufrufers.
+  const ziel = project ? await (await import('./agent-profil-schalter-ziel.js')).zielDesAufrufers(project) : null;
+  const p = await leseProfilProduktSchalter(funktion, project, ziel);
   let stand: SpeicherAehnlichkeitSchalter = { funktion, aktiv: p.aktiv, quelle: p.quelle, ebene: p.ebene, bis: null, letzter_fehler: p.letzter_fehler };
   if (internToolAktiv()) {
     try {

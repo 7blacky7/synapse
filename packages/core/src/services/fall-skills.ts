@@ -55,7 +55,11 @@ registriereSchalterGeschrieben(leereFallSkillSchalterPuffer);
 export async function leseFallSkillSchalter(art: FallSkillSchalterArt, project?: string | null): Promise<FallSkillSchalterStand> {
   const funktion = FALL_SKILL_FUNKTIONEN[art];
   const p = typeof project === 'string' && project.trim() ? project.trim() : null;
-  const schluessel = funktion + '\u0000' + (p ?? '');
+  // P22-T287 S3: schlank/hinweis/fremd entscheiden fuer den AUFRUFER (eigene Antwort/Hinweise) -> Ziel ausdruecklich, im Schluessel;
+  // kurz (tools/list je Verbindung) und uebrige Arten ohne Ziel.
+  const ziel = p && (['schlank', 'hinweis', 'fremd'] as readonly string[]).includes(art)
+    ? await (await import('./agent-profil-schalter-ziel.js')).zielDesAufrufers(p) : null;
+  const schluessel = funktion + '\u0000' + (p ?? '') + (ziel ? '\u0000' + (ziel.identity_id ?? '') + '\u0000' + (ziel.agent_id ?? '') : '');
   const ttl = kernTtlMs();
   const jetzt = Date.now();
   const c = ttl > 0 ? PUFFER.get(schluessel) : undefined;
@@ -76,7 +80,7 @@ export async function leseFallSkillSchalter(art: FallSkillSchalterArt, project?:
     } catch { stand = { ...stand, letzter_fehler: 'intern_schalter_nicht_lesbar' }; }
   }
   if (!intern) {
-    const prod = await leseProfilProduktSchalter(funktion, p);
+    const prod = await leseProfilProduktSchalter(funktion, p, ziel);
     stand = { ...stand, aktiv: prod.aktiv && !prod.letzter_fehler, quelle: prod.quelle === 'produkt-schalter' ? 'produkt-schalter' : 'standard',
       letzter_fehler: prod.letzter_fehler ?? stand.letzter_fehler };
   }

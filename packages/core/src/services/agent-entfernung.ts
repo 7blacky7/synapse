@@ -28,6 +28,8 @@ import type { AusweisAkteur, W1bAkteur } from './agent-profil-vertrag.js';
 import { MAIN_ROLLE } from './agent-profil-vertrag.js';
 import { hauptagentIdentitaetsId } from './hauptagent-dienst.js';
 import { aliaseFuerNamen, type NamensAlias } from './agent-namens-alias.js';
+// P22-T287 (Pruefer 9ff7ab0f P6): Schalter-Regeln des entfernten Agenten aufraeumen.
+import { raeumeZielRegelnAuf } from './agent-profil-schalter-ziel.js';
 
 export const AGENT_ENTFERNUNG_FUNKTION = 'agenten_entfernung' as const;
 export const AGENT_ENTFERNUNG_STANDARD_TAGE = 30;
@@ -432,6 +434,9 @@ export async function fuehreEntfernungAus(e: { tage?: number; project?: string |
       if (!r.rowCount) continue;
       neu++;
       await benenneEintragUm(c, { art: k.art, project: k.project, identity_id: k.identity_id, von: k.agent_id, nach: neuName, name: k.identity_id ? neuName : null, status: k.identity_id ? 'deaktiviert' : null });
+      // P22-T287 (Pruefer 9ff7ab0f P6): eigene Schalter-Regeln mit aufraeumen (identity_id bzw. exakter alter Name; Verlauf bleibt).
+      await raeumeZielRegelnAuf(c, { project: k.project, ebene: k.identity_id ? 'identitaet' : 'agent', ziel: k.identity_id ?? k.agent_id,
+        wer: e.wer.wer, actor_identity_id: e.wer.actor_identity_id ?? null, grund });
       umbenannt.push({ art: k.art, project: k.project, alt: k.agent_id, neu: neuName });
       if (k.identity_id) {
         await c.query(q('INSERT INTO agent_identitaet_audit (identity_id, wer, aktion, alt, neu, grund, actor_identity_id) VALUES ($1,$2,$3,$4,$5,$6,$7)',

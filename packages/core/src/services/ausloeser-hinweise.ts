@@ -285,6 +285,9 @@ export async function holeAusloeserHinweisMetriken(project: string, pool: Pool =
  * Null = Bestandsdispatcher aufrufen (einschließlich seiner Berechtigungsantwort).
  */
 export async function fuehreHinweisprofilAdminAus(action: string,args:Record<string,unknown>,agentId?:string|null,pool?:Pool):Promise<Record<string,unknown>|null> {
+  // P22-T287 S2: ziel identity:<id> + Schalter kontextprofil_bruecke EIN -> Agentenprofil (kontextprofil-bruecke.ts); sonst null = Altweg.
+  const bruecke = await (await import('./kontextprofil-bruecke.js')).fuehreKontextprofilBrueckeAus(action, args, agentId);
+  if (bruecke) return bruecke;
   if (!darfKoordinatorOderUser(agentId??args.agent_id) || typeof args.project!=='string' || !args.project || args.kontext_budget!==undefined || args.stufe!==undefined) return null;
   if (!['kontextprofil_setzen','kontextprofil_liste','kontextprofil_entfernen'].includes(action)) return null;
   if (action==='kontextprofil_setzen' && args.hinweise_aus===undefined && args.hinweise_nur===undefined) return null;

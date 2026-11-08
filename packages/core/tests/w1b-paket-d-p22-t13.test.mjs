@@ -122,6 +122,8 @@ const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','z
  'coedit_aktiv_sekunden','files_plan_ablauf_aktiv','frist_namen',
  // P22-T173: identitaet_umbenennen (direkt nach den Fristen)
  'neuer_name',
+ // P22-T287: Produkt-Schalter je Agent (profil_schalter_setzen/status), direkt nach neuer_name.
+ 'ziel_ebene',
  // P22-T93: additive Netzwerkparameter zwischen Fristen und Hex.
  'netzwerk_modus','netzwerk_werte',
  // P21-T3/T13: Hex-Einstellungen (im Schema vor den Hauptagent-Parametern)

@@ -340,13 +340,20 @@ interface ZwangsPinBefund {
   art: ZwangsPinArt; pfade: string[]; offen: PinTreffer[]; stand: Map<string, OffenGrund | null>; geltung: ZwangsPinGeltung;
   merkmale: ZwangsPinMerkmale | null; schalter: { quelle: string; ebene: string | null };
 }
+/** P22-T287 S3: Schalter je Agent fuer genau den Aufrufer der Sperre/Quittung (Ausweis -> identity_id, sonst Name). */
+function zwangsPinZiel(a: ZwangsPinAufrufer | null): { identity_id?: string | null; agent_id?: string | null } | null {
+  if (!a) return null;
+  const r = a as unknown as { identity_id?: string | null; agent_id?: string | null };
+  return r.identity_id ? { identity_id: r.identity_id } : r.agent_id ? { agent_id: r.agent_id } : null;
+}
+
 async function ermittleBefund(e: {
   tool: string; action?: string; args: Readonly<Record<string, unknown>>; project: string | null; aufrufer: ZwangsPinAufrufer | null;
   herkunft?: string | null; merkmale?: ZwangsPinMerkmale | null;
 }): Promise<ZwangsPinBefund | null> {
   const art = zwangsPinArt(e.tool, e.action);
   if (!art || !e.project || typeof e.args.artefakt_id === 'string') return null;
-  const schalter = await leseProfilProduktSchalterGepuffert(ZWANGS_PIN_FUNKTION, e.project);
+  const schalter = await leseProfilProduktSchalterGepuffert(ZWANGS_PIN_FUNKTION, e.project, zwangsPinZiel(e.aufrufer));
   if (!schalter.aktiv) return null;
   const pins = await ladeZwangsPins(e.project);
   if (!pins.length) return null;
@@ -461,7 +468,7 @@ export function zwangsPinAntwortErfolgreich(ergebnis: unknown): boolean {
 export async function quittiereZwangsPinLesen(e: { project: string | null; aufrufer: ZwangsPinAufrufer | null; namen: unknown; id?: unknown }): Promise<string[]> {
   if (!e.project || !e.aufrufer) return [];
   try {
-    const schalter = await leseProfilProduktSchalterGepuffert(ZWANGS_PIN_FUNKTION, e.project);
+    const schalter = await leseProfilProduktSchalterGepuffert(ZWANGS_PIN_FUNKTION, e.project, zwangsPinZiel(e.aufrufer));
     if (!schalter.aktiv) return [];
     const pins = await ladeZwangsPins(e.project);
     if (!pins.length) return [];

@@ -121,6 +121,11 @@ export async function ergaenzeToolHinweise(
       if (stau.length > 0) extras.warteschlangen_stau = stau;
     } catch { /* Info-Hinweis darf die Antwort nie kippen. */ }
   }
+  // P22-T287 S3: Debug-Quelle der Schalter je Agent - NUR wenn in diesem Aufruf eine Zielregel (identitaet/agent/typ) gegriffen hat.
+  try {
+    const quelle = await (await import('./agent-profil-schalter-ziel.js')).schalterQuelleDesAufrufs();
+    if (quelle.length > 0) extras.schalter_quelle = quelle;
+  } catch { /* Debug darf die Antwort nie kippen. */ }
   if (Object.keys(extras).length === 0) return result;
   // Eine fachliche Liste bleibt vollständig; nur bei echten Hinweisen braucht sie eine Hülle.
   return Array.isArray(result) ? { result, ...extras } : { ...result, ...extras };

@@ -390,6 +390,7 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
       limit: 'Katalogsuche: Eintraege je Seite.',
       offset: 'Katalogsuche: Startposition.',
       ziel_identity_id: 'Zielidentitaet.',
+      ziel_ebene: 'Schalter je Agent: identitaet|agent|typ.',
       schattenprofil_id: 'Schattenprofil.',
       zustand: 'schattenprofil_liste: Filter.',
       erwartete_revision: 'Erwartete Revision (CAS).',

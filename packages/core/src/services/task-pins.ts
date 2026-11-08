@@ -20,7 +20,9 @@ export interface TaskPinsSchalter { aktiv: boolean; quelle: 'standard' | 'produk
 
 /** Produkt-Schalter mit befristetem intern-Override; eine Lesestelle. Wirft nie. */
 export async function leseTaskPinsSchalter(project: string | null): Promise<TaskPinsSchalter> {
-  const p = await leseProfilProduktSchalter(TASK_PINS_FUNKTION, project);
+  // P22-T287 S3: Pins erscheinen beim Aufrufer (plan get, anmelden) -> Ziel des Aufrufers.
+  const ziel = project ? await (await import('./agent-profil-schalter-ziel.js')).zielDesAufrufers(project) : null;
+  const p = await leseProfilProduktSchalter(TASK_PINS_FUNKTION, project, ziel);
   let stand: TaskPinsSchalter = { aktiv: p.aktiv, quelle: p.quelle, ebene: p.ebene, bis: null, letzter_fehler: p.letzter_fehler };
   if (internToolAktiv()) {
     try {

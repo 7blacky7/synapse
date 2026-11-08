@@ -24,7 +24,7 @@ import { holeAgentOnboarding } from './agent-onboarding.js';
 import { pruefeUnbekannteParameter } from './unbekannte-parameter.js';
 import { logToolCall } from './tool-call-log.js';
 import {
-  leseW1bSchalter, leseAusweisKern, ausweisTokenAktiv, ausweisAnmeldungAktiv, leseAusweisKernFuerToken, ausweisProjekt, ausweisIrgendwoAktiv,
+  leseW1bSchalter, leseAntwortanpassungSchalter, leseAusweisKern, ausweisTokenAktiv, ausweisAnmeldungAktiv, leseAusweisKernFuerToken, ausweisProjekt, ausweisIrgendwoAktiv,
   type AusweisKernStand,
 } from './agent-profil-schalter.js';
 // P22-T131: Schalter agent_kennung_werbung + Textersatz fuer Hinweise.
@@ -903,7 +903,8 @@ async function bereiteAgentToolAufrufVorKern(
     // Profil-/Typrevision) fuer Gate, Hinweisfilter VOR Suche/Claim und Agentenprojektion. Fehler ->
     // Ablehnung vor dem Handler, nie alte Freigaben; die nicht sperrbaren Anmelde-/Sitzungsaktionen
     // (Auflage C1) laufen dann ohne Zuschnitt (= heutiges Verhalten) weiter.
-    const anpassung = (await leseW1bSchalter('antwortanpassung')).freigegeben;
+    // P22-T287 S2: Produktquelle profil_antwortanpassung je Identitaet (identitaet > typ > projekt > global > Env); intern-Override hat Vorrang.
+    const anpassung = (await leseAntwortanpassungSchalter(p.project, { identity_id: p.identitaet.id })).freigegeben;
     if (strikt || anpassung) {
       try {
         await bereiteZuschnittSnapshotVor(agentPrincipalAusAnmeldung(p), { anpassung });

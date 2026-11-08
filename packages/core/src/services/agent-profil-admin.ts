@@ -47,6 +47,8 @@ import { deaktiviereAgentIdentitaet, reaktiviereAgentIdentitaet } from './agent-
 import { benenneIdentitaetUm } from './agent-umbenennung.js';
 import { aliaseDerIdentitaet } from './agent-namens-alias.js';
 import { HINWEIS_KATALOG } from './hinweis-katalog.js';
+// P22-T287: Produkt-Schalter je Agent (Ebenen identitaet/agent/typ).
+import { setzeZielSchalter, listeZielSchalter, istSchalterZielEbene, SCHALTER_ZIEL_EBENEN, type SchalterZiel, type ZielSetzer } from './agent-profil-schalter-ziel.js';
 import { ADMIN_SUCHE_PARAMETER } from './admin-katalog-suche.js';
 
 const W1B_KERN_AKTIONEN = [
@@ -110,6 +112,8 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   files_plan_ablauf_aktiv: { type: 'boolean', description: 'ausweis_fristen: Produkt-Schalter Fristablauf offener files-Plaene (Standard EIN; P6-T49). modus setzen: true|false auf ebene; modus entfernen + Parameter vorhanden: Wert dieser ebene entfernen' },
   frist_namen: { type: 'array', items: { type: 'string', enum: [...AUSWEIS_FRIST_NAMEN] }, description: 'ausweis_fristen modus entfernen: Werte dieser ebene entfernen (Rueckfall global bzw. Standard)' },
   neuer_name: { type: 'string', description: 'identitaet_umbenennen: neuer Name der Identitaet ziel_identity_id (Ausweis bleibt, alter Name wird Alias)' },
+  // P22-T287: Produkt-Schalter je Agent ueber projekt/global (nur mit Schalter schalter_identitaet; modus entfernen = wieder erben).
+  ziel_ebene: { type: 'string', enum: ['identitaet', 'agent', 'typ'], description: 'profil_schalter_setzen/status je Agent: identitaet (ziel_identity_id) | agent (ziel = agent_id oder Muster luna-*, ohne Ausweis) | typ (typ_id); modus entfernen = erben' },
   ...NETZWERK_ADMIN_PARAMETER,
   ...HEX_ADMIN_PARAMETER,
   ...SHELL_AUSGABE_ADMIN_PARAMETER,
@@ -317,8 +321,9 @@ async function fuehreAusweisAktionAus(action: AusweisAktion, args: Args, akteur:
 }
 
 /** P22-T253: Status zeigt den befristeten Debug-Override nur bei aktivem intern-Tool. */
-export async function leseUiProduktSchalter(f: Parameters<typeof leseProfilProduktSchalter>[0], project: string) {
-  const produkt = await leseProfilProduktSchalter(f, project);
+export async function leseUiProduktSchalter(f: Parameters<typeof leseProfilProduktSchalter>[0], project: string, ziel: SchalterZiel | null = null) {
+  // P22-T287: Verwaltungssicht ohne Ziel = Projektsicht (nicht der Stand des aufrufenden Agenten).
+  const produkt = await leseProfilProduktSchalter(f, project, ziel);
   if (f !== 'web_ui_arbeitsbereich' && f !== 'web_ui_channel_suche' && f !== 'web_ui_netzwerk_details' && f !== 'web_ui_live_artefakte' && f !== 'editor_modul') return produkt;
   const { internToolAktiv } = await import('./intern-tool-aktiv.js');
   if (!internToolAktiv()) return produkt;
@@ -328,14 +333,64 @@ export async function leseUiProduktSchalter(f: Parameters<typeof leseProfilProdu
   } catch (e) { return { ...produkt, letzter_fehler: e instanceof Error ? e.message : String(e) }; }
 }
 
+/**
+ * P22-T287: Sicht eines Agenten fuer profil_schalter_status/-setzen. Ohne ziel_ebene und ohne ziel_identity_id = Projektsicht wie
+ * bisher. identitaet: wirksamer Stand dieser Identitaet (inkl. agent/typ); agent mit exaktem Namen: Stand dieses Namens; Muster/typ:
+ * nur die Regeln (kein einzelner Agent).
+ */
+async function zielSicht(project: string, a: Args): Promise<{ ziel: SchalterZiel | null; antwort: Record<string, unknown> }> {
+  const ebene = s(a, 'ziel_ebene') ?? (s(a, 'ziel_identity_id') ? 'identitaet' : undefined);
+  if (ebene === undefined) return { ziel: null, antwort: {} };
+  if (!istSchalterZielEbene(ebene)) throw new ProfilVerwaltungFehler('ziel_ebene_ungueltig', { erlaubt: [...SCHALTER_ZIEL_EBENEN] });
+  let ziel: SchalterZiel | null = null;
+  let zielText: string | undefined;
+  if (ebene === 'identitaet') {
+    zielText = s(a, 'ziel_identity_id');
+    if (zielText) {
+      const r = await getPool().query('SELECT 1 FROM agent_identitaeten WHERE id=$1 AND project=$2', [zielText, project]);
+      if (!r.rows[0]) throw new ProfilVerwaltungFehler('identitaet_unbekannt');
+      // P4 (9ff7ab0f): Ausweis-Identitaet nur ueber identitaet/typ, nicht ueber Name/Muster.
+      ziel = { identity_id: zielText };
+    }
+  } else if (ebene === 'agent') {
+    zielText = s(a, 'ziel');
+    if (zielText && !zielText.includes('*')) ziel = { agent_id: zielText };
+  } else {
+    zielText = s(a, 'typ_id');
+  }
+  return { ziel, antwort: {
+    ziel_ansicht: { ebene, ziel: zielText ?? null, wirksam_fuer: ziel ? (ziel.identity_id ?? ziel.agent_id ?? null) : null },
+    ziel_regeln: await listeZielSchalter(project, { ebene, ...(zielText ? { ziel: zielText } : {}) }),
+  } };
+}
+
+/** P22-T287: Setzen/Entfernen je Agent (Akteur der Profilverwaltung oder Agent ohne Ausweis, Pruefung in setzeZielSchalter). */
+async function zielSetzenAntwort(project: string, a: Args, setzer: ZielSetzer): Promise<Record<string, unknown>> {
+  const zielEbene = s(a, 'ziel_ebene') ?? '';
+  const zf = pflicht(s(a, 'profil_funktion'), 'profil_funktion_fehlt');
+  const ziel = zielEbene === 'identitaet' ? s(a, 'ziel_identity_id') : zielEbene === 'typ' ? s(a, 'typ_id') : s(a, 'ziel');
+  const aenderung = await setzeZielSchalter({ ebene: zielEbene, project, ziel, funktion: zf,
+    aktiv: a.modus === 'entfernen' ? null : a.aktiv as boolean, grund: String(a.grund ?? '') }, setzer);
+  const sicht = await zielSicht(project, a);
+  const wirksam = sicht.ziel ? await leseUiProduktSchalter(zf as ProfilProduktFunktion, project, sicht.ziel) : null;
+  return { project, ziel_ebene: zielEbene, ziel: aenderung.ziel, aenderung, ...(wirksam ? { wirksam } : {}), ...sicht.antwort };
+}
+
 async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, project: string, a: Args, akteurRoh: AusweisAkteur): Promise<Record<string, unknown>> {
   // P22-T34: der Legacy-Koordinator ohne Ausweis gilt fuer ALLE Aktionen wie Koordinator mit Ausweis (Rechtepruefung in den Diensten bzw.
   // pruefeProfilVerwalter; 'nur User' bleibt: web_ui_koordinator_token, globale Kataloge; globale Produkt-Schalter seit P22-T57 auch Koordinator). Die Dienste pruefen den Akteur zur Laufzeit.
   const akteur = akteurRoh as W1bAkteur;
   switch (action) {
-    case 'profil_schalter_status':
-      return { project, schalter: await Promise.all([...PROFIL_PRODUKT_FUNKTIONEN, ...ALT_AUSWEIS_FUNKTIONEN].map(f => leseUiProduktSchalter(f, project))), ausweis_kern: await leseAusweisKern(project) };
+    case 'profil_schalter_status': {
+      // P22-T287: mit ziel_identity_id bzw. ziel_ebene (+ ziel/typ_id) wirksamer Stand dieses Agenten samt Zielregeln (Debug).
+      const sicht = await zielSicht(project, a);
+      return { project, schalter: await Promise.all([...PROFIL_PRODUKT_FUNKTIONEN, ...ALT_AUSWEIS_FUNKTIONEN].map(f => leseUiProduktSchalter(f, project, sicht.ziel))),
+        ausweis_kern: await leseAusweisKern(project), ...sicht.antwort };
+    }
     case 'profil_schalter_setzen': {
+      // P22-T287: Ebene je Agent (Rechte wie Profilverwaltung, Schalter schalter_identitaet, Audit in setzeZielSchalter).
+      const zielEbene = s(a, 'ziel_ebene');
+      if (zielEbene !== undefined) return zielSetzenAntwort(project, a, akteurRoh);
       const ebene = (s(a, 'ebene') ?? 'projekt') as 'global' | 'projekt';
       const funktion = pflicht(s(a, 'profil_funktion'), 'profil_funktion_fehlt') as ProfilProduktFunktion | 'alle';
       await setzeProfilProduktSchalter(
@@ -627,6 +682,16 @@ export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteu
   // P22-T34 (User 19.10., memory entscheidung-agenten-ausweis-2026-10-19 Punkt 3a): EINE Stelle fuer die Akteur-Ermittlung. Ohne Ausweis und ohne
   // User-Eingang gilt der Legacy-Koordinator (Rolle/Namensmuster, Name gehoert keiner Token-Identitaet) fuer ALLE Aktionen wie ein Koordinator.
   const wer: AusweisAkteur | null = akteur ?? legacyKoordinatorAus(args);
+  // P22-T287 (User-Korrektur 27f9c071): Agent nach alter Methode OHNE Ausweis darf NUR Schalter je Agent setzen. Sicherung in
+  // setzeZielSchalter (Schalter schalter_setzen_ohne_ausweis, Projekt der Anfrage, Grund Pflicht, Audit herkunft ohne_ausweis).
+  if (!wer && action === 'profil_schalter_setzen' && s(args, 'ziel_ebene') !== undefined) {
+    try {
+      const project = pflicht(s(args, 'project'), 'project_fehlt');
+      return { success: true, action, ...(await zielSetzenAntwort(project, args, { art: 'ohne_ausweis', agent_id: s(args, 'agent_id') ?? '' })) };
+    } catch (e) {
+      return fehlerAntwort(action, e);
+    }
+  }
   if (!wer) {
     return { success: false, action, error: 'recht_fehlt',
       message: 'Profilverwaltung nur durch den User (authentifizierter User-Eingang), einen Koordinator mit persoenlichem Ausweis oder einen Legacy-Koordinator ohne Ausweis.' };
