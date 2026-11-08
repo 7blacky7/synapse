@@ -88,6 +88,11 @@ try{
  const overflow=r.artefakt_id;
  // P22-T287 Paket 0: Kennzeichnung Tool-Antwort-Fortsetzung, eigener Weiterlese-Aufruf, nicht in der Artefakt-Liste.
  ok(r.art==='tool_antwort_fortsetzung'&&r.naechster_aufruf.action==='tool_antwort_weiterlesen'&&r.naechster_aufruf.artefakt_id===overflow,'F P22-T287 Kennzeichnung und eigener Weiterlese-Aufruf',r.naechster_aufruf);
+ // Gegenpruefung t245 (claude-birke, P22-T311 Befund 08c5c214, artefakt-ueberlauf.ts WEITERLESEN_ALTERNATIV): Hinweis fuer aeltere
+ // artefakt-Schemas, und der dort genannte Weg action read liest dieselbe Fortsetzung.
+ const alt311=await tool({action:'read',artefakt_id:overflow,from_line:r.naechster_aufruf.from_line,from_column:r.naechster_aufruf.from_column});
+ ok(typeof r.weiterlesen_alternativ==='string'&&r.weiterlesen_alternativ.includes('action:"read"')&&alt311.success&&typeof alt311.content==='string'&&alt311.content.length>0,
+  'F P22-T311 weiterlesen_alternativ genannt, artefakt read liest die Fortsetzung',{hinweis:r.weiterlesen_alternativ,success:alt311.success});
  const liste287=await tool({action:'list',limit:200});ok(liste287.success&&!JSON.stringify(liste287).includes(overflow),'F P22-T287 Ueberlauf nicht in artefakt list',liste287.count);
  const fehler=await als(()=>C.begrenzeArtefaktAntwort({success:false,error:'Fehler '.repeat(2000)},zugang,'probe','fehler'));
  ok(fehler.ueberlauf&&fehler.success===false&&fehler.original_success===false,'F Ueberlauf behaelt Originalfehlerstatus',fehler);

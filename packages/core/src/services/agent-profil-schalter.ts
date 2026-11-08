@@ -695,6 +695,14 @@ export const STANDARD_AKTIVE_PROJEKTE_AUSNAHMEN: Readonly<Record<string, string>
   api_deepseek_direkt: 'Kosten', persona: 'nur auf User-Wunsch', koordinator_projektverwaltung: 'Rechte ueber Projektgrenzen',
   asset_intern_aufraeumen: 'loescht', artefakt_bewertung_melden: 'Spam', reverse_siedler3: 'Altschalter', schattenprofile: 'Altschalter',
   token_abruf: 'Altschalter',
+  // Befund 08.11.2026 (thought 08c5c214, Koordinator): setzen ein neues Tool-Schema bzw. Verhalten bei den Agenten voraus, loeschen
+  // lokal oder erzeugen Last ueber alle aktiven Projekte -> nur ausdruecklich je Projekt/global.
+  inbox_quittung: 'braucht chat-Parameter quittung (alte Clients: quittung_fehlt)',
+  runtime_tool_ausgabe: 'Read-Guard verlangt Claude Code >= 2.1.295 im Container',
+  runtime_synapse_mods: 'verwaltete Container-Mods fuer alle Container-Agenten', cache_waechter: 'Container-Mod (Messung) ab naechstem CLI-Start',
+  mod_inbox: 'weckt interaktive Claude-Code-Sitzungen ueber eine installierte Mod', mod_inbox_vorpruefung: 'wirkt nur mit mod_inbox',
+  asset_tombstone_zustellung: 'Tombstones an PCs = lokales Loeschen', asset_pc_zustellung: 'schreibt Share-Dateien in Projektordner',
+  asset_transfer_generisch: 'Transferlast aller Projekt-Assets ohne Inspector', anker_umrechnung: 'rechnet Plan-Zeilenangaben still um',
   // Koordinator 08.11.2026: agenten_ausweis, mehrprojekt, main_agentenverwaltung, kontingent_delegiert sind KEINE Ausnahme (User will
   // Ausweis und Visum in allen Projekten; Kontingent kostet nur mit container_agenten_max > 0 und User-Auftrag).
 };
@@ -894,7 +902,12 @@ export async function setzeProfilProduktSchalter(
     const [mech, darf] = await Promise.all([leseProfilProduktSchalter(SCHALTER_STANDARD_FUNKTION, rechtProjekt),
       leseProfilProduktSchalter('schalter_setzen_ohne_ausweis', rechtProjekt)]);
     if (!mech.aktiv || !darf.aktiv) throw new ProfilSchalterFehler('ohne_ausweis_aus');
-    const ausweis = await getPool().query("SELECT 1 FROM agent_identitaeten WHERE agent_id=$1 AND status='aktiv' LIMIT 1", [agent]);
+    // Nachzug (Koordinator 08.11.2026): ein frueherer Name (Alias, agent_namens_aliase P22-T173) einer aktiven Ausweis-Identitaet
+    // zaehlt wie ihr Name. Lesefehler (Tabelle fehlt) -> Abbruch des Setzens, nie stillschweigend durchlassen.
+    const ausweis = await getPool().query(
+      `SELECT 1 FROM agent_identitaeten WHERE agent_id=$1 AND status='aktiv'
+       UNION ALL SELECT 1 FROM agent_namens_aliase a JOIN agent_identitaeten i ON i.id::text = a.identity_id
+        WHERE a.alter_name=$1 AND i.status='aktiv' LIMIT 1`, [agent]);
     if (ausweis.rows.length) throw new ProfilSchalterFehler('recht_fehlt');
     wer = 'ohne_ausweis:' + agent;
     herkunft = 'ohne_ausweis';

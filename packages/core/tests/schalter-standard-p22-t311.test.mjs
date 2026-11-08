@@ -42,7 +42,7 @@ let pool;
 try {
   pool = (await load('packages/core/dist/db/client.js')).getPool();
   await pool.query('CREATE SCHEMA "' + schema + '"');
-  for (const t of ['agent_profil_schalter', 'agent_identitaeten', 'agent_profil_schalter_ziel', 'agent_profil_schalter_ziel_verlauf', 'projects', 'intern_schalter']) {
+  for (const t of ['agent_profil_schalter', 'agent_identitaeten', 'agent_profil_schalter_ziel', 'agent_profil_schalter_ziel_verlauf', 'projects', 'intern_schalter', 'agent_namens_aliase']) {
     const ex = await pool.query("SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename=$1", [t]);
     if (ex.rows.length) await pool.query('CREATE TABLE "' + schema + '"."' + t + '" (LIKE public."' + t + '" INCLUDING ALL)');
   }
@@ -71,6 +71,11 @@ try {
   // Koordinator 08.11.2026: Vorsichtsliste gestrichen - diese gehen in aktiven Projekten automatisch EIN.
   ok(['agenten_ausweis', 'mehrprojekt', 'main_agentenverwaltung', 'kontingent_delegiert'].every(f => k(f).standard_aktive_projekte && k(f).ausnahme_grund === null),
     'P22-T311 A Entscheid Koordinator: Ausweis/Visum/Main-Verwaltung/Kontingent keine Ausnahme');
+  // Befund 08.11.2026 (thought 08c5c214, Koordinator): neues Schema/Verhalten bei Agenten, lokales Loeschen oder Last -> Ausnahme mit Grund.
+  const NEU_AUSNAHMEN = ['inbox_quittung', 'runtime_tool_ausgabe', 'runtime_synapse_mods', 'cache_waechter', 'mod_inbox', 'mod_inbox_vorpruefung',
+    'asset_tombstone_zustellung', 'asset_pc_zustellung', 'asset_transfer_generisch', 'anker_umrechnung'];
+  ok(NEU_AUSNAHMEN.every(f => S.PROFIL_PRODUKT_FUNKTIONEN.includes(f) && !k(f).standard_aktive_projekte && typeof k(f).ausnahme_grund === 'string' && k(f).ausnahme_grund.length > 5),
+    'P22-T311 A Befund 08c5c214: zehn Schalter bleiben Ausnahme mit Grund (agent-profil-schalter.ts STANDARD_AKTIVE_PROJEKTE_AUSNAHMEN)', NEU_AUSNAHMEN.map(k));
   ok(S.schalterKatalog().length === S.PROFIL_PRODUKT_FUNKTIONEN.length, 'P22-T311 A schalterKatalog deckt alle Produkt-Schalter ab');
 
   // B Mechanik AUS = Bestand
@@ -83,6 +88,8 @@ try {
   ok(s.aktiv === true && s.quelle === 'standard' && s.wert_quelle === 'standard_aktives_projekt' && s.standard_aktive_projekte?.projekt_aktiv === true,
     'P22-T311 C/SOLL 1+5 aktives Projekt: freigegebener Schalter EIN, Quelle standard_aktives_projekt', s);
   ok((await lies('coedit_ohne_gate')).aktiv === false, 'P22-T311 C Ausnahme bleibt AUS im aktiven Projekt');
+  const mi = await lies('mod_inbox');
+  ok(mi.aktiv === false && mi.wert_quelle === 'standard' && (await lies('inbox_quittung')).aktiv === false, 'P22-T311 C Befund 08c5c214: mod_inbox/inbox_quittung bleiben AUS im aktiven Projekt', mi);
   ok((await lies('tool_ausgabe_seiten')).aktiv === false, 'P22-T311 C nicht abgenommener Schalter bleibt AUS im aktiven Projekt');
   ok((await lies('mehrprojekt')).aktiv === true && (await lies('agenten_ausweis')).wert_quelle === 'standard_aktives_projekt', 'P22-T311 C mehrprojekt/agenten_ausweis im aktiven Projekt EIN');
   ok((await S.leseProfilProduktSchalterGepuffert(F, P, null)).aktiv === true, 'P22-T311 C gepufferte Lesestelle liefert denselben Wert');
@@ -118,6 +125,11 @@ try {
   ok(alleCode === 'recht_fehlt', "P22-T311 F 'alle' ohne Ausweis abgelehnt", alleCode);
   await pool.query("INSERT INTO agent_identitaeten (id, project, name, agent_id, rolle, erstellt_von) VALUES ($1,$2,'t311-mit','t311-mit','subagent','test')", [randomUUID(), P]);
   ok(await fehlerCode(() => ohne({ebene: 'projekt', project: P, funktion: F, aktiv: true}, 't311-mit')) === 'recht_fehlt', 'P22-T311 F Name einer Ausweis-Identitaet: abgelehnt');
+  // Nachzug (Koordinator 08.11.2026): frueherer Name (Alias P22-T173) einer aktiven Ausweis-Identitaet zaehlt wie ihr Name.
+  const umbenannt = randomUUID();
+  await pool.query("INSERT INTO agent_identitaeten (id, project, name, agent_id, rolle, erstellt_von) VALUES ($1,$2,'t311-neu','t311-neu','subagent','test')", [umbenannt, P]);
+  await pool.query("INSERT INTO agent_namens_aliase (project, identity_id, alter_name, neuer_name, umbenannt_von, grund) VALUES ($1,$2,'t311-alt','t311-neu','test','P22-T311 Alias')", [P, umbenannt]);
+  ok(await fehlerCode(() => ohne({ebene: 'projekt', project: P, funktion: F, aktiv: true}, 't311-alt')) === 'recht_fehlt', 'P22-T311 F Alias-Name einer Ausweis-Identitaet: abgelehnt (agent-profil-schalter.ts)');
   await setze({ebene: 'projekt', project: Q, funktion: 'schalter_setzen_ohne_ausweis', aktiv: false});
   ok(await fehlerCode(() => ohne({ebene: 'projekt', project: Q, funktion: F, aktiv: false})) === 'ohne_ausweis_aus', 'P22-T311 F fremdes Projekt mit dessen Schalter AUS: abgelehnt');
   await setze({ebene: 'projekt', project: Q, funktion: 'schalter_setzen_ohne_ausweis', aktiv: true});

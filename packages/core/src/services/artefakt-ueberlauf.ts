@@ -25,6 +25,8 @@ const seitenBudget=(v:unknown):number|null=>{
 };
 const weiterlesenAufruf=(id:string,n:Record<string,unknown>,seiten:number|null)=>
  ({tool:'artefakt',action:TOOL_ANTWORT_WEITERLESEN,artefakt_id:id,from_line:n.from_line,from_column:n.from_column,...(seiten!==null?{seiten_bytes:seiten}:{})});
+/** Befund 08c5c214 (P22-T311): aeltere artefakt-Schemas kennen tool_antwort_weiterlesen nicht - action read liest dieselbe Fortsetzung. */
+export const WEITERLESEN_ALTERNATIV='Aeltere artefakt-Schemas ohne tool_antwort_weiterlesen: artefakt(action:"read", artefakt_id, from_line, from_column) liest dieselbe Fortsetzung.';
 
 export async function bereinigeArtefaktUeberlaeufe(max:number){
  const pool=getPool(),rows=(await pool.query<{id:string;standard_project:string}>('SELECT id::text,standard_project FROM agent_artifacts WHERE ueberlauf AND ablauf_am<=NOW() ORDER BY ablauf_am LIMIT $1',[max])).rows;
@@ -94,6 +96,7 @@ export async function begrenzeArtefaktAntwort(wert:unknown,b:ArtefaktDateiZugang
  return begrenzeArtefaktSeite({success:!(typeof wert==='object'&&wert!==null&&(wert as Record<string,unknown>).success===false),ueberlauf:true,art:TOOL_ANTWORT_FORTSETZUNG,
   original_success:typeof wert==='object'&&wert!==null?(wert as Record<string,unknown>).success:undefined,
   artefakt_id:id,titel,...seite,naechster_aufruf:seite.naechster_aufruf?weiterlesenAufruf(id,seite.naechster_aufruf,eigenesBudget):null,
+  ...(seite.naechster_aufruf?{weiterlesen_alternativ:WEITERLESEN_ALTERNATIV}:{}),
   ablauf_am:ablauf.toISOString(),verlauf,debug:{tool,action,schalter,quellen,antwort_bytes:Buffer.byteLength(kompakt),budget_bytes:budget,
    budget_quelle:eigenesBudget!==null?'aufrufer':'antwort_max_bytes',cleanup}},budget);
 }
@@ -115,5 +118,6 @@ export async function leseToolAntwortFortsetzung(args:Record<string,unknown>,b:A
  const seite=artefaktTextSeite(s.text_inhalt,{from_line:args.from_line,from_column:args.from_column},{...werte,seite_max_bytes:budget,seite_zeilen:SEITE_MAX});
  return begrenzeArtefaktSeite({success:true,ueberlauf:true,art:TOOL_ANTWORT_FORTSETZUNG,artefakt_id:z.artefakt_id,titel:z.titel,...seite,
   naechster_aufruf:seite.naechster_aufruf?weiterlesenAufruf(z.artefakt_id,seite.naechster_aufruf,eigenesBudget):null,
+  ...(seite.naechster_aufruf?{weiterlesen_alternativ:WEITERLESEN_ALTERNATIV}:{}),
   ablauf_am:z.ablauf_am?new Date(z.ablauf_am).toISOString():null,debug:{budget_bytes:budget,budget_quelle:eigenesBudget!==null?'seiten_bytes':'antwort_max_bytes'}},budget);
 }
