@@ -162,7 +162,8 @@ try {
   let rd = await A.fuehreW1bAdminAus('profil_schalter_setzen', {project: P, agent_id: 'luna-2', profil_funktion: F, ziel_ebene: 'agent', ziel: 'luna-2', aktiv: true, grund: G10}, {akteur: null});
   ok(rd.success && rd.aenderung?.herkunft === 'ohne_ausweis' && rd.aenderung?.wer === 'ohne_ausweis:luna-2', 'P22-T287 E2 admin-Dispatcher: ohne Akteur + agent_id = Weg ohne Ausweis', rd);
   rd = await A.fuehreW1bAdminAus('profil_schalter_setzen', {project: P, agent_id: 'luna-2', profil_funktion: F, aktiv: true, grund: G10}, {akteur: null});
-  ok(rd.success === false && rd.error === 'recht_fehlt', 'P22-T287 E2 ohne Ausweis Projekt-/Globalebene weiterhin nicht', rd);
+  // P22-T311: Projekt-/Globalebene ohne Ausweis ist jetzt das Notfall-Recht hinter schalter_standard_aktive_projekte (hier AUS) -> ohne_ausweis_aus.
+  ok(rd.success === false && ['recht_fehlt', 'ohne_ausweis_aus'].includes(rd.error), 'P22-T287 E2 ohne Ausweis Projekt-/Globalebene weiterhin nicht (Mechanik P22-T311 AUS)', rd);
   rd = await A.fuehreW1bAdminAus('profil_schalter_status', {project: P, agent_id: 'luna-2'}, {akteur: null});
   ok(rd.success === false && rd.error === 'recht_fehlt', 'P22-T287 E2 andere admin-Aktionen ohne Ausweis weiterhin nicht', rd);
   rd = await A.fuehreW1bAdminAus('profil_schalter_setzen', {project: P, agent_id: 'sub-1', profil_funktion: F, ziel_ebene: 'agent', ziel: 'luna-2', aktiv: false, grund: G10}, {akteur: akteurId('id-sub', 'sub-1', 'subagent')});

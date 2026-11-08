@@ -22,6 +22,7 @@ import {
 import { rolleFuerAgent } from './agent-rollen.js';
 import {
   PROFIL_PRODUKT_FUNKTIONEN, ALT_AUSWEIS_FUNKTIONEN, leseProfilProduktSchalter, setzeProfilProduktSchalter, leseAusweisKern, ausweisSchattenAktiv, type ProfilProduktFunktion,
+  schalterKatalog, leseSchalterVerlauf,
 } from './agent-profil-schalter.js';
 import {
   ProfilVerwaltungFehler, aktuellerW1bAkteur, pflichtText, pruefeProfilVerwalter, userAuftragFuer,
@@ -417,7 +418,9 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
       // P22-T287: mit ziel_identity_id bzw. ziel_ebene (+ ziel/typ_id) wirksamer Stand dieses Agenten samt Zielregeln (Debug).
       const sicht = await zielSicht(project, a);
       return { project, schalter: await Promise.all([...PROFIL_PRODUKT_FUNKTIONEN, ...ALT_AUSWEIS_FUNKTIONEN].map(f => leseUiProduktSchalter(f, project, sicht.ziel))),
-        ausweis_kern: await leseAusweisKern(project), ...sicht.antwort };
+        ausweis_kern: await leseAusweisKern(project), ...sicht.antwort,
+        // P22-T311 (fuer die Web-UI-Historie): Katalog freigegeben/Standard aktive Projekte und die letzten Aenderungen projekt+global.
+        schalter_katalog: schalterKatalog(), schalter_verlauf: await leseSchalterVerlauf(project, 50) };
     }
     case 'profil_schalter_setzen': {
       // P22-T287: Ebene je Agent (Rechte wie Profilverwaltung, Schalter schalter_identitaet, Audit in setzeZielSchalter).
@@ -725,6 +728,22 @@ export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteu
     try {
       const project = pflicht(s(args, 'project'), 'project_fehlt');
       return { success: true, action, ...(await zielSetzenAntwort(project, args, { art: 'ohne_ausweis', agent_id: s(args, 'agent_id') ?? '' })) };
+    } catch (e) {
+      return fehlerAntwort(action, e);
+    }
+  }
+  // P22-T311 Notfall-Recht (User 'immer nur mit grund'): ohne Ausweis auch Ebene projekt (eigenes/fremdes Projekt) und global.
+  // Sicherung in setzeProfilProduktSchalter (schalter_setzen_ohne_ausweis + schalter_standard_aktive_projekte, Grund >= 10, Audit).
+  if (!wer && action === 'profil_schalter_setzen' && s(args, 'ziel_ebene') === undefined && s(args, 'agent_id')) {
+    try {
+      const project = pflicht(s(args, 'project'), 'project_fehlt');
+      const ebene = (s(args, 'ebene') ?? 'projekt') as 'global' | 'projekt';
+      // Fremdes Projekt: project = Zielprojekt (Rechte-Projekt bei ebene projekt ist das Schalterprojekt selbst).
+      const ziel = ebene === 'projekt' ? project : null;
+      const funktion = pflicht(s(args, 'profil_funktion'), 'profil_funktion_fehlt') as ProfilProduktFunktion | 'alle';
+      const stand = await setzeProfilProduktSchalter({ ebene, project: ziel, funktion, aktiv: args.aktiv as boolean, grund: String(args.grund ?? '') },
+        { ohne_ausweis: s(args, 'agent_id') ?? '', aufruf_project: project });
+      return { success: true, action, project, weg: 'ohne_ausweis', schalter: stand, schalter_verlauf: await leseSchalterVerlauf(ziel ?? project, 5) };
     } catch (e) {
       return fehlerAntwort(action, e);
     }

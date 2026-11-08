@@ -287,6 +287,9 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   // leseToolAusgabeSeitenGrenze/begrenzeAntwortFuerAgent, mcp.ts fuehreToolsCallAus); je Projekt/global, ziel-faehig,
   // Standard AUS, nur ausdruecklich. AUS = Bestand (unveraendert).
   'tool_ausgabe_seiten',
+  // P22-T311: Mechanik 'Standard EIN in aktiven Projekten' (leseProfilProduktSchalter standardAktivesProjekt, Katalog
+  // schalterKatalog) und Notfall-Recht ohne Ausweis auf Ebene projekt/global; je Projekt/global, Standard AUS bis Abnahme, nur ausdruecklich.
+  'schalter_standard_aktive_projekte',
   // P22-T199: Co-Edit ohne Ready-Gate (coedit-methode.ts; EIN = neue Methode, AUS = Ready-Gate wie bisher); je Projekt/global,
   // Standard AUS, nur ausdruecklich. Gelesen je files-Aufruf ueber leseProfilProduktSchalterGepuffert.
   'coedit_ohne_gate',
@@ -381,7 +384,7 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'kontextprofil_bruecke',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-export const NUR_AUSDRUECKLICH: readonly string[] = ['schalter_identitaet', 'api_tool_ausgabe', 'tool_ausgabe_seiten', 'schalter_setzen_ohne_ausweis', 'profil_antwortanpassung', 'kontextprofil_bruecke', 'web_ui_agentfenster', 'web_ui_agentfenster_alle', 'zwangs_pin', 'koordinator_projektverwaltung', 'web_ui_agententeam_suche', 'editor_modul', 'editor_plan_strom', 'editor_plan_leinwand', 'editor_syntax', 'web_ui_live_artefakte', 'asset_tombstone_zustellung', 'web_ui_netzwerk_details', 'web_ui_channel_suche', 'web_ui_arbeitsbereich', 'team_ausweis_zeigen', 'shell_ausgabe_voll', 'warteschlangen_stau', 'warteschlangen_altbestand', 'asset_intern_aufraeumen', 'asset_publish_recovery', 'asset_pc_zustellung', 'asset_transfer_generisch', 'index_live_vorrang', 'log_strom', 'uebersicht_netzwerk', 'netzwerk_visum_sonnen', 'api_agenten_auswahl', 'api_deepseek_direkt', 'coedit_ohne_gate', 'anker_umrechnung', 'web_ui_neue_oberflaeche', 'seitenleiste_projekt_tasks', 'cache_waechter', 'runtime_synapse_mods', 'artefakt_dateien', 'tool_antwort_ueberlauf', 'runtime_tool_ausgabe', 'user_inbox', 'zeilen_anmerkungen', 'koordinator_mehrfenster', 'reverse_pipeline_halt', 'agentennetzwerk', 'netzwerk_datengrundlage', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_asset_registrierung', 'reverse_parser_adapter', 'reverse_leser', 'reverse_leser_nachzug', 'reverse_leser_hinweise', 'reverse_leser_runtime_verwaltung', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'reverse_global_sichtbar', 'reverse_intel_abruf', 'reverse_fehlerlog', 'ausweis_channels', 'kontingent_delegiert', 'plattform_agent_chat', 'main_agentenverwaltung', 'koordinator_heartbeat', 'agent_start_ort', 'runtime_agenten_uebersicht', 'runtime_agenten_steuerung', 'plattform_agent_modellwechsel', 'main_turn_wake_frist', 'ausweis_zielmodell', 'modell_lauf_bindung', 'wake_echter_absender', 'wake_antwort_identitaet', 'runtime_agenten_panel_neu', 'verlauf_tool_karten', 'agent_kennung_werbung', 'wrapper_status_ursache', 'agent_chat_einheitlich', 'mod_inbox', 'mod_inbox_vorpruefung', 'task_bindung_loesen_bei_done', 'artefakt_bewertung', 'artefakt_bewertung_melden', 'inbox_quittung', 'datei_vertrag', 'artefakt_vorlagen', 'artefakt_vorlagen_live', 'artefakt_ausweis_zeigen', 'artefakt_verweise', 'artefakt_skripte', 'verlauf_einbetten', 'verlauf_suche', 'chat_zitate', 'agent_aktuelle_task', 'agent_lauf_herkunft', 'agent_umbenennung', 'api_agenten', 'wiederkehr_plaene', 'speicher_aehnlichkeit', 'speicher_aehnlichkeit_pruefen', 'task_pins', 'api_agenten_lauf_intern', 'api_verlauf_hauptverlauf'];
+export const NUR_AUSDRUECKLICH: readonly string[] = ['schalter_identitaet', 'api_tool_ausgabe', 'tool_ausgabe_seiten', 'schalter_standard_aktive_projekte', 'schalter_setzen_ohne_ausweis', 'profil_antwortanpassung', 'kontextprofil_bruecke', 'web_ui_agentfenster', 'web_ui_agentfenster_alle', 'zwangs_pin', 'koordinator_projektverwaltung', 'web_ui_agententeam_suche', 'editor_modul', 'editor_plan_strom', 'editor_plan_leinwand', 'editor_syntax', 'web_ui_live_artefakte', 'asset_tombstone_zustellung', 'web_ui_netzwerk_details', 'web_ui_channel_suche', 'web_ui_arbeitsbereich', 'team_ausweis_zeigen', 'shell_ausgabe_voll', 'warteschlangen_stau', 'warteschlangen_altbestand', 'asset_intern_aufraeumen', 'asset_publish_recovery', 'asset_pc_zustellung', 'asset_transfer_generisch', 'index_live_vorrang', 'log_strom', 'uebersicht_netzwerk', 'netzwerk_visum_sonnen', 'api_agenten_auswahl', 'api_deepseek_direkt', 'coedit_ohne_gate', 'anker_umrechnung', 'web_ui_neue_oberflaeche', 'seitenleiste_projekt_tasks', 'cache_waechter', 'runtime_synapse_mods', 'artefakt_dateien', 'tool_antwort_ueberlauf', 'runtime_tool_ausgabe', 'user_inbox', 'zeilen_anmerkungen', 'koordinator_mehrfenster', 'reverse_pipeline_halt', 'agentennetzwerk', 'netzwerk_datengrundlage', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_asset_registrierung', 'reverse_parser_adapter', 'reverse_leser', 'reverse_leser_nachzug', 'reverse_leser_hinweise', 'reverse_leser_runtime_verwaltung', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'reverse_global_sichtbar', 'reverse_intel_abruf', 'reverse_fehlerlog', 'ausweis_channels', 'kontingent_delegiert', 'plattform_agent_chat', 'main_agentenverwaltung', 'koordinator_heartbeat', 'agent_start_ort', 'runtime_agenten_uebersicht', 'runtime_agenten_steuerung', 'plattform_agent_modellwechsel', 'main_turn_wake_frist', 'ausweis_zielmodell', 'modell_lauf_bindung', 'wake_echter_absender', 'wake_antwort_identitaet', 'runtime_agenten_panel_neu', 'verlauf_tool_karten', 'agent_kennung_werbung', 'wrapper_status_ursache', 'agent_chat_einheitlich', 'mod_inbox', 'mod_inbox_vorpruefung', 'task_bindung_loesen_bei_done', 'artefakt_bewertung', 'artefakt_bewertung_melden', 'inbox_quittung', 'datei_vertrag', 'artefakt_vorlagen', 'artefakt_vorlagen_live', 'artefakt_ausweis_zeigen', 'artefakt_verweise', 'artefakt_skripte', 'verlauf_einbetten', 'verlauf_suche', 'chat_zitate', 'agent_aktuelle_task', 'agent_lauf_herkunft', 'agent_umbenennung', 'api_agenten', 'wiederkehr_plaene', 'speicher_aehnlichkeit', 'speicher_aehnlichkeit_pruefen', 'task_pins', 'api_agenten_lauf_intern', 'api_verlauf_hauptverlauf'];
 /**
  * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
  * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.
@@ -515,7 +518,8 @@ async function ausweisKernRoh(p: string | null): Promise<KernRoh> {
   // 2. Produkt-Schalter (projekt > global; PG = Quelle fuer alle Prozesse)
   const prod = await leseProduktGepuffert(AUSWEIS_KERN_FUNKTION, p);
   if (prod.letzter_fehler) fehler = fehler ?? prod.letzter_fehler;
-  else if (prod.quelle === 'produkt-schalter') return { aktiv: prod.aktiv, quelle: 'produkt-schalter', fehler };
+  // P22-T311: Standard EIN im aktiven Projekt (Mechanik schalter_standard_aktive_projekte) gilt wie ein gesetzter Produkt-Schalter.
+  else if (prod.quelle === 'produkt-schalter' || prod.wert_quelle === 'standard_aktives_projekt') return { aktiv: prod.aktiv, quelle: 'produkt-schalter', fehler };
   // 3. Produktionsstandard per Env
   if (process.env.SYNAPSE_AGENTEN_AUSWEIS === '1') return { aktiv: true, quelle: 'standard', fehler };
   // 4. Altschalter (Rueckfall)
@@ -635,6 +639,10 @@ export interface ProfilProduktSchalterStand {
   ziel?: string;
   ziel_muster?: boolean;
   ziel_fehler?: string;
+  /** P22-T311 Debug: Herkunft des wirksamen Werts (quelle bleibt standard|produkt-schalter). */
+  wert_quelle?: SchalterWertQuelle;
+  /** P22-T311 Debug: Stand der Regel 'Standard EIN in aktiven Projekten' (nur wenn keine Zeile gilt). */
+  standard_aktive_projekte?: { mechanik: boolean; projekt_aktiv: boolean | null; freigegeben: boolean; fehler?: string };
   regel_funktion: ProfilProduktFunktion | 'alle' | null;
   gesetzt_von: string | null;
   gesetzt_am: string | null;
@@ -673,6 +681,88 @@ async function zielStufe(funktion: string, project: string | null, ziel: Schalte
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// P22-T311 (User-Grundsatz 08.11.2026, memory grundsatz-schalter-standard-ein-aktive-projekte): in AKTIVEN Projekten
+// (projects.enabled: Web-UI-Liste bool_or(enabled), Tray setProjectEnabled) gilt fuer FREIGEGEBENE Schalter Standard EIN, wenn
+// keine Zeile (projekt/global/'alle') und keine Zielregel greift. Ausdruecklich gesetzte Werte gewinnen weiter, auch AUS.
+// Mechanik hinter schalter_standard_aktive_projekte (Standard AUS bis Abnahme). Eine Lesestelle, keine Kopie je Projekt.
+// ---------------------------------------------------------------------------------------------
+export const SCHALTER_STANDARD_FUNKTION = 'schalter_standard_aktive_projekte' as const;
+export type SchalterWertQuelle = 'identitaet' | 'agent' | 'typ' | 'projekt' | 'global' | 'standard_aktives_projekt' | 'standard';
+/** Ausnahmen laut User (Standard bleibt AUS, auch in aktiven Projekten), mit Grund. */
+export const STANDARD_AKTIVE_PROJEKTE_AUSNAHMEN: Readonly<Record<string, string>> = {
+  reverse_pipeline_halt: 'Notbremse', coedit_ohne_gate: 'Sicherung weg', api_agenten: 'Kosten', api_agenten_lauf_intern: 'Kosten',
+  api_deepseek_direkt: 'Kosten', persona: 'nur auf User-Wunsch', koordinator_projektverwaltung: 'Rechte ueber Projektgrenzen',
+  asset_intern_aufraeumen: 'loescht', artefakt_bewertung_melden: 'Spam', reverse_siedler3: 'Altschalter', schattenprofile: 'Altschalter',
+  token_abruf: 'Altschalter',
+  // Koordinator 08.11.2026: agenten_ausweis, mehrprojekt, main_agentenverwaltung, kontingent_delegiert sind KEINE Ausnahme (User will
+  // Ausweis und Visum in allen Projekten; Kontingent kostet nur mit container_agenten_max > 0 und User-Auftrag).
+};
+/** Noch nicht abgenommen: mit der Freigabe (Zeile entfernen) automatisch EIN in aktiven Projekten. */
+export const NICHT_FREIGEGEBEN: readonly string[] = ['schalter_identitaet', 'profil_antwortanpassung', 'kontextprofil_bruecke',
+  'tool_liste_je_verbindung', 'tool_ausgabe_seiten', 'api_tool_ausgabe', SCHALTER_STANDARD_FUNKTION];
+export interface SchalterKatalogEintrag { funktion: string; freigegeben: boolean; standard_aktive_projekte: boolean; ausnahme_grund: string | null }
+/** P22-T311 Katalogfeld je Schalter: freigegeben + Standard in aktiven Projekten. reverse_* bleiben wie sie sind (global). */
+export function schalterKatalogEintrag(funktion: string): SchalterKatalogEintrag {
+  // Gegenpruefung P22-T311: die Mechanik selbst nie ueber ihren eigenen Standard (auch nach Freigabe), sonst liest
+  // standardAktivesProjekt die Mechanik ueber leseProfilProduktSchalter -> standardAktivesProjekt ... ohne Ende.
+  const ausnahme = funktion === SCHALTER_STANDARD_FUNKTION ? 'Mechanik selbst, nur ausdruecklich'
+    : STANDARD_AKTIVE_PROJEKTE_AUSNAHMEN[funktion] ?? (funktion.startsWith('reverse_') ? 'globaler Reverse-Schalter bleibt wie er ist' : null);
+  const freigegeben = !NICHT_FREIGEGEBEN.includes(funktion);
+  return { funktion, freigegeben, standard_aktive_projekte: freigegeben && ausnahme === null && !STANDARD_EIN.includes(funktion as ProfilProduktFunktion), ausnahme_grund: ausnahme };
+}
+export function schalterKatalog(): SchalterKatalogEintrag[] {
+  return (PROFIL_PRODUKT_FUNKTIONEN as readonly string[]).map(schalterKatalogEintrag);
+}
+const PROJEKT_AKTIV_PUFFER = new Map<string, { bis: number; aktiv: boolean }>();
+const PROJEKT_AKTIV_TTL_MS = 30_000;
+export function leereProjektAktivPuffer(): void { PROJEKT_AKTIV_PUFFER.clear(); }
+/** Aktives Projekt = COALESCE(bool_or(projects.enabled), false) (wie isProjectEnabled), 30 s gepuffert. Lesefehler -> null. */
+export async function projektAktivFuerSchalter(project: string): Promise<boolean | null> {
+  const c = PROJEKT_AKTIV_PUFFER.get(project);
+  if (c && c.bis > Date.now()) return c.aktiv;
+  try {
+    const r = await getPool().query<{ aktiv: boolean }>({
+      text: 'SELECT COALESCE(bool_or(enabled), false) AS aktiv FROM projects WHERE name = $1', values: [project], query_timeout: 2000,
+    } as import('pg').QueryConfig & { query_timeout: number });
+    const aktiv = r.rows[0]?.aktiv === true;
+    PROJEKT_AKTIV_PUFFER.set(project, { bis: Date.now() + PROJEKT_AKTIV_TTL_MS, aktiv });
+    return aktiv;
+  } catch {
+    return null;
+  }
+}
+/** Ohne Zeile: Standard aktives Projekt (Mechanik EIN, freigegeben, Projekt aktiv) oder Standard. Wirft nie. */
+async function standardAktivesProjekt(basis: ProfilProduktSchalterStand): Promise<ProfilProduktSchalterStand> {
+  const k = schalterKatalogEintrag(basis.funktion);
+  if (!basis.project || !k.standard_aktive_projekte) return { ...basis, wert_quelle: 'standard' };
+  try {
+    const mechanik = (await leseProduktGepuffert(SCHALTER_STANDARD_FUNKTION, basis.project, null)).aktiv === true;
+    if (!mechanik) return { ...basis, wert_quelle: 'standard', standard_aktive_projekte: { mechanik, projekt_aktiv: null, freigegeben: true } };
+    const aktiv = await projektAktivFuerSchalter(basis.project);
+    const debug = { mechanik, projekt_aktiv: aktiv, freigegeben: true, ...(aktiv === null ? { fehler: 'projektstatus_nicht_lesbar' } : {}) };
+    return aktiv === true ? { ...basis, aktiv: true, wert_quelle: 'standard_aktives_projekt', standard_aktive_projekte: debug }
+      : { ...basis, wert_quelle: 'standard', standard_aktive_projekte: debug };
+  } catch {
+    return { ...basis, wert_quelle: 'standard', standard_aktive_projekte: { mechanik: false, projekt_aktiv: null, freigegeben: true, fehler: 'mechanik_nicht_lesbar' } };
+  }
+}
+/** P22-T311: Schalter-Historie (projekt + global) fuer Web-UI/Debug aus agent_profil_schalter_ziel_verlauf (ziel '-'). Lesefehler -> []. */
+export async function leseSchalterVerlauf(project: string | null, limit = 50): Promise<Array<Record<string, unknown>>> {
+  try {
+    const r = await getPool().query({
+      text: `SELECT ebene, NULLIF(project, '') AS project, funktion, alt, neu, grund, gesetzt_von, herkunft, setter_agent_id, setter_identity_id, wann
+        FROM agent_profil_schalter_ziel_verlauf
+        WHERE ziel = '-' AND ebene IN ('projekt','global') AND (ebene = 'global' OR project = $1)
+        ORDER BY wann DESC LIMIT $2`,
+      values: [project ?? '', Math.max(1, Math.min(500, Math.floor(limit)))], query_timeout: 2000,
+    } as import('pg').QueryConfig & { query_timeout: number });
+    return r.rows.map((z: Record<string, unknown>) => ({ ...z, wann: z.wann instanceof Date ? z.wann.toISOString() : z.wann }));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * EINE Lesestelle fuer Produkt-Schalter. ziel (P22-T287 S3): nur ausdruecklich - Objekt = fuer genau diesen Agenten (Aufrufer ueber
  * zielDesAufrufers, anderer Agent ueber dessen identity_id), undefined/null = ohne Agent-Ebenen (Projektsicht).
@@ -690,7 +780,7 @@ export async function leseProfilProduktSchalter(
   if (zs.treffer) {
     const t = zs.treffer;
     return { ...basis, aktiv: t.aktiv, quelle: 'produkt-schalter', ebene: 'projekt', ziel_ebene: t.ebene, ziel: t.ziel, ...(t.muster ? { ziel_muster: true } : {}),
-      regel_funktion: funktion, gesetzt_von: t.gesetzt_von, gesetzt_am: t.gesetzt_am, grund: t.grund };
+      regel_funktion: funktion, gesetzt_von: t.gesetzt_von, gesetzt_am: t.gesetzt_am, grund: t.grund, wert_quelle: t.ebene };
   }
   if (zs.fehler) basis.ziel_fehler = zs.fehler;
   try {
@@ -703,11 +793,12 @@ export async function leseProfilProduktSchalter(
     } as import('pg').QueryConfig & { query_timeout: number });
     const rang = (z: SchalterZeile) => (z.ebene === 'projekt' ? 2 : 0) + (z.funktion === funktion ? 1 : 0);
     const z = [...r.rows].sort((a, b) => rang(b) - rang(a))[0];
-    if (!z) return funktion==='reverse_siedler3'?{...basis,aktiv:false,stillgelegt:true,nachfolger:'reverse leser_liste'}:basis;
+    // P22-T311: ohne Zeile ggf. Standard EIN im aktiven Projekt (sonst Standard wie bisher).
+    if (!z) return funktion==='reverse_siedler3'?{...basis,aktiv:false,stillgelegt:true,nachfolger:'reverse leser_liste'}:await standardAktivesProjekt(basis);
     return { ...basis, aktiv: funktion==='reverse_siedler3'?false:z.aktiv, quelle: 'produkt-schalter', ebene: z.ebene,
       ...(funktion==='reverse_siedler3'?{stillgelegt:true,historischer_wert:z.aktiv,nachfolger:'reverse leser_liste'}:{}),
       regel_funktion: z.funktion as ProfilProduktFunktion | 'alle', gesetzt_von: z.gesetzt_von,
-      gesetzt_am: z.gesetzt_am.toISOString(), grund: z.grund };
+      gesetzt_am: z.gesetzt_am.toISOString(), grund: z.grund, wert_quelle: z.ebene };
   } catch {
     return { ...basis, letzter_fehler: 'produkt_schalter_nicht_lesbar' };
   }
@@ -724,6 +815,11 @@ export interface ProfilSchalterAkteur {
    * Koordinator: mit Ausweis muss er aktiver Koordinator DIESES Projekts sein, als Legacy-Koordinator ist es Pflicht.
    */
   aufruf_project?: string | null;
+  /**
+   * P22-T311 Notfall-Recht (User 'immer nur mit grund'): Agent OHNE Ausweis (alte Anmeldung, agent_id) setzt projekt (eigenes/fremdes)
+   * oder global; nur mit schalter_setzen_ohne_ausweis + schalter_standard_aktive_projekte EIN, Grund >= 10 Zeichen; Audit 'ohne_ausweis:<id>'.
+   */
+  ohne_ausweis?: string;
 }
 
 /**
@@ -758,6 +854,9 @@ export async function setzeProfilProduktSchalter(
   }
   let wer: string;
   let setter: string | null = null;
+  // P22-T311: Herkunft und agent_id des Setzenden fuer den Schalter-Verlauf (Web-UI-Historie).
+  let herkunft: 'user' | 'ausweis' | 'legacy_koordinator' | 'ohne_ausweis' = 'user';
+  let setterAgent: string | null = null;
   // P22-T57 (User 20.10.2026): Koordinator setzt auch global, gleiche Pruefung wie auf Projektebene. Projektebene: das
   // Schalter-Projekt; global: das Projekt des Aufrufs (ohne Angabe beim Ausweis dessen eigenes Projekt).
   const aufruf = typeof akteur.aufruf_project === 'string' && akteur.aufruf_project.trim() ? akteur.aufruf_project.trim() : null;
@@ -776,6 +875,7 @@ export async function setzeProfilProduktSchalter(
     if (!r.rows.length) throw new ProfilSchalterFehler('recht_fehlt');
     wer = akteur.identity_id;
     setter = akteur.identity_id;
+    herkunft = 'ausweis';
   } else if (akteur.legacy_koordinator && rechtProjekt) {
     // P22-T34: Legacy-Koordinator (Rolle/Namensmuster koordinator, Name gehoert keiner Token-Identitaet) wie Koordinator mit Ausweis.
     const agent = akteur.legacy_koordinator.trim();
@@ -784,9 +884,27 @@ export async function setzeProfilProduktSchalter(
     const eigene = await getPool().query('SELECT 1 FROM agent_identitaeten WHERE project=$1 AND agent_id=$2 LIMIT 1', [rechtProjekt, agent]);
     if (eigene.rows.length) throw new ProfilSchalterFehler('recht_fehlt');
     wer = 'legacy:' + agent;
+    herkunft = 'legacy_koordinator';
+    setterAgent = agent;
+  } else if (akteur.ohne_ausweis && rechtProjekt) {
+    // P22-T311 Notfall-Recht: nur mit Pflichtgrund, beiden Schaltern im Rechte-Projekt, Name ohne Ausweis-Identitaet, nicht 'alle'.
+    const agent = akteur.ohne_ausweis.trim();
+    if (!agent || e.funktion === 'alle') throw new ProfilSchalterFehler('recht_fehlt');
+    if (e.grund.trim().length < 10) throw new ProfilSchalterFehler('grund_fehlt');
+    const [mech, darf] = await Promise.all([leseProfilProduktSchalter(SCHALTER_STANDARD_FUNKTION, rechtProjekt),
+      leseProfilProduktSchalter('schalter_setzen_ohne_ausweis', rechtProjekt)]);
+    if (!mech.aktiv || !darf.aktiv) throw new ProfilSchalterFehler('ohne_ausweis_aus');
+    const ausweis = await getPool().query("SELECT 1 FROM agent_identitaeten WHERE agent_id=$1 AND status='aktiv' LIMIT 1", [agent]);
+    if (ausweis.rows.length) throw new ProfilSchalterFehler('recht_fehlt');
+    wer = 'ohne_ausweis:' + agent;
+    herkunft = 'ohne_ausweis';
+    setterAgent = agent;
   } else {
     throw new ProfilSchalterFehler('recht_fehlt');
   }
+  const altWert = e.funktion === 'reverse_pipeline_halt' ? null : (await getPool().query<{ aktiv: boolean }>(
+    "SELECT aktiv FROM agent_profil_schalter WHERE ebene=$1 AND COALESCE(project,'')=COALESCE($2,'') AND funktion=$3",
+    [e.ebene, project, e.funktion]).catch(() => ({ rows: [] as Array<{ aktiv: boolean }> }))).rows[0]?.aktiv ?? null;
   if(e.funktion==='reverse_siedler3')throw new ProfilSchalterFehler('funktion_stillgelegt');
   if(e.funktion==='reverse_pipeline_halt')await setzeReversePipelineHalt(getPool(),e.aktiv,e.grund.trim(),wer,setter);
   else await getPool().query(
@@ -795,6 +913,11 @@ export async function setzeProfilProduktSchalter(
      ON CONFLICT (ebene, (COALESCE(project, '')), funktion) DO UPDATE SET aktiv=EXCLUDED.aktiv, grund=EXCLUDED.grund,
        gesetzt_von=EXCLUDED.gesetzt_von, setter_identity_id=EXCLUDED.setter_identity_id, gesetzt_am=EXCLUDED.gesetzt_am`,
     [e.ebene, project, e.funktion, e.aktiv, e.grund.trim(), wer, setter]);
+  // P22-T311: jede Aenderung projekt/global in den vorhandenen Schalter-Verlauf (Schema 182, ziel '-'); Fehler bricht das Setzen nie ab.
+  await getPool().query(
+    `INSERT INTO agent_profil_schalter_ziel_verlauf (ebene, project, ziel, funktion, alt, neu, grund, gesetzt_von, setter_identity_id, herkunft, setter_agent_id)
+     VALUES ($1, COALESCE($2,''), '-', $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [e.ebene, project, e.funktion, altWert, e.aktiv, e.grund.trim(), wer, setter, herkunft, setterAgent]).catch(() => undefined);
   for (const hook of schalterGeschriebenHooks) { try { hook(); } catch { /* Puffer-Invalidierung darf das Schreiben nie scheitern lassen */ } }
   return leseProfilProduktSchalter(e.funktion === 'alle' ? 'profilverwaltung' : e.funktion, project);
 }

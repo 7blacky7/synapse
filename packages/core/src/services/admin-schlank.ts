@@ -59,6 +59,7 @@ export const PROFIL_SCHALTER_ZWECK: Readonly<Record<string, string>> = {
   verlauf_alle_richtungen: 'Alle Richtungen des Main im Verlauf (Zustellungen, eigene Ausgaben).',
   api_verlauf_hauptverlauf: 'API-Agenten schreiben ihren Turn in den gemeinsamen Verlauf (Standard AUS bis Abnahme).',
   tool_ausgabe_seiten: 'MCP-Antworten aller Agenten seitenweise aus dem Modellfenster (Standard AUS).',
+  schalter_standard_aktive_projekte: 'Freigegebene Schalter in aktiven Projekten automatisch EIN; Notfall-Setzen ohne Ausweis mit Grund (Standard AUS).',
   api_tool_ausgabe: 'Werkzeugergebnisse im API-Lauf auf einen Anteil des Modellfensters kuerzen (Standard AUS).',
   main_korridor: 'Korridor des Main ueber die API.',
   verlauf_uebergabe: 'Uebergabe aus dem Verlauf beim Wechsel des Main.',
