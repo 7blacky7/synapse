@@ -9,6 +9,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// P22-T288 B1 (Deploy-Bericht aca1086c): nie die echte ~/.synapse/file-watcher/config.json lesen (live z. B. cli_verlauf.tage 400).
+// configDir() folgt HOME - eigener leerer Temp-HOME, Fenster-Env weg.
+const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'p22-t288-home-'));
+process.env.HOME = testHome;
+delete process.env.CLI_VERLAUF_TAGE;
+process.on('exit', () => fs.rmSync(testHome, { recursive: true, force: true }));
+
 const m = await import(new URL('../dist/cli-verlauf.js', import.meta.url).href);
 const ri = (payload) => JSON.stringify({ timestamp: '2026-11-06T16:06:54.602Z', type: 'response_item', payload });
 const ctx = (model) => JSON.stringify({ timestamp: 't', type: 'turn_context', payload: { model } });
@@ -50,6 +57,13 @@ test('(2) codexDateien: nur rollout-*.jsonl im Fenster, aelteste zuerst', () => 
     fs.utimesSync(a, t - 10, t - 10);
     fs.utimesSync(alt3, t - 10 * 86400, t - 10 * 86400);
     assert.deepEqual(m.codexDateien().map((d) => path.basename(d.pfad)), ['rollout-b.jsonl', 'rollout-a.jsonl']);
+    // B1: cli_verlauf.tage aus der (Test-)config.json weitet das Fenster - nur die Test-config, nie die echte.
+    const cfgDir = path.join(testHome, '.synapse', 'file-watcher');
+    fs.mkdirSync(cfgDir, { recursive: true });
+    fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ cli_verlauf: { aktiv: false, tage: 400 } }));
+    try {
+      assert.deepEqual(m.codexDateien().map((d) => path.basename(d.pfad)), ['rollout-alt.jsonl', 'rollout-b.jsonl', 'rollout-a.jsonl']);
+    } finally { fs.rmSync(path.join(cfgDir, 'config.json'), { force: true }); }
   } finally {
     if (alt === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = alt;
     fs.rmSync(wurzel, { recursive: true, force: true });

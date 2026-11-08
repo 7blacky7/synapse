@@ -9,6 +9,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// P22-T288 B1 (Deploy-Bericht aca1086c): nie die echte ~/.synapse/file-watcher/config.json lesen (live z. B. cli_verlauf.tage 400).
+const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'p22-t288-home-'));
+process.env.HOME = testHome;
+delete process.env.CLI_VERLAUF_TAGE;
+process.on('exit', () => fs.rmSync(testHome, { recursive: true, force: true }));
+
 const m = await import(new URL('../dist/cli-verlauf.js', import.meta.url).href);
 
 test('(1) Drosselung: Standard 5, 1..100; Fenster bleibt fensterTage (cli_verlauf.tage), normal 2 Tage', () => {
