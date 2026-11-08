@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import MainAgentDashboard from '../../components/MainAgentDashboard';
 import { ChatEingabefeld } from '../../components/ChatEingabefeld';
 import { KlartextText, LesefensterOhneHerkunft, VerweisFensterProvider } from '../../components/Lesefenster';
@@ -25,8 +25,11 @@ import { fuehreToolCallsZusammen, kurzeDenkphase, wendeWerkzeugSchrittAn, wendeT
 import { setzeArtefaktBlock } from './artefakt-zustand';
 import { verlaufAnzeigeId, warteText, baueVerlaufNachrichten } from './verlauf';
 import { zitatTeile } from './zitat-teile';
+// P22-T280: ueber dem HUD (gemeinsamer Fensterstapel mit den Koordinatorfenstern), nur mit Schalter web_ui_agentfenster.
+import { AgentFensterOrt, entferneFenster, fensterEbene, hauptbereichUrsprung, holeNachVorne, useAgentFensterStapel } from '../../components/agentfenster-stapel';
 
-export function MainAgentView({ project, showDashboard, nurKnopf = false }: { theme: Theme; project: string; showDashboard: boolean; nurKnopf?: boolean }) {
+export function MainAgentView({ project, showDashboard, nurKnopf = false, ueberHud = false }: { theme: Theme; project: string; showDashboard: boolean; nurKnopf?: boolean; ueberHud?: boolean }) {
+  const fensterStapel = useAgentFensterStapel();
   const [input, setInput] = useState('');
   const [pendingFiles, setPendingFiles] = useState<MockChatAttachment[]>([]);
   // P22-T168: Zitat-Anhaenge NUR an den Hauptagenten (Schalter chat_zitate global).
@@ -459,6 +462,22 @@ export function MainAgentView({ project, showDashboard, nurKnopf = false }: { th
     }
   };
 
+  // P22-T280: frei schwebend + Schalter EIN -> ueber dem HUD (Portal an der Wurzel, Ebene aus dem gemeinsamen Stapel).
+  // Eingeklappt/peekend bleibt das Fenster wie bisher in der Stage.
+  const imHud = ueberHud && !chatCollapsed && !chatPeeking;
+  useEffect(() => { if (imHud) holeNachVorne('main'); else entferneFenster('main'); }, [imHud]);
+  const hudModusRef = useRef(false);
+  useEffect(() => {
+    if (hudModusRef.current === ueberHud) return;
+    hudModusRef.current = ueberHud;
+    const o = hauptbereichUrsprung();
+    const v = ueberHud ? 1 : -1;
+    setMainWindowPosition((p) => ({ x: Math.max(0, p.x + v * o.x), y: Math.max(0, p.y + v * o.y) }));
+  }, [ueberHud]);
+  // Beim Ortswechsel wird das Fenster neu eingehaengt: wer unten war, bleibt unten.
+  useLayoutEffect(() => { const feed = feedRef.current; if (feed && atBottomRef.current) feed.scrollTop = feed.scrollHeight; }, [imHud]);
+  const hudEbene = imHud ? fensterEbene(fensterStapel, 'main', true) : undefined;
+
   const alleMessages = runtimeMode === 'mock' ? messages : messages.filter((message) => !message.mock);
   // P22-T146: gleicher Fensterbaustein wie das Koordinator-Fenster (chat-fenster-logik); hochgescrollt gleitet nichts.
   const fenster = fensterAusschnitt(alleMessages, (message) => String(message.id), { fest: fensterFest, anzeigeAb: null, unten: atBottomRef.current, bisherAb: fensterAbRef.current });
@@ -469,12 +488,14 @@ export function MainAgentView({ project, showDashboard, nurKnopf = false }: { th
     '--agent-chat-height': '72%',
     '--main-window-x': mainWindowPosition.x + 'px',
     '--main-window-y': mainWindowPosition.y + 'px',
+    ...(hudEbene !== undefined ? { zIndex: hudEbene } : {}),
   } as CSSProperties;
   const shellClass = 'conversation agent-chat-shell'
     + (chatCollapsed && !chatPeeking ? ' is-collapsed' : '')
     + (chatPeeking ? ' is-peeking' : '')
     + (chatHasUnread ? ' has-new' : '')
-    + (chatCollapsed && !chatPeeking ? ' external-collapsed' : '');
+    + (chatCollapsed && !chatPeeking ? ' external-collapsed' : '')
+    + (imHud ? ' ueber-hud' : '');
   // P8-T28: gleiche Sperre fuer Senden-Knopf und Enter, damit Enter nicht am Knopf vorbei sendet.
   const sendenGesperrt = runtimeMode === 'unknown' || runtimeMode === 'mock' || thinking || (!input.trim() && !pendingFiles.length && !zitat.sendeZitate.length);
 
@@ -483,7 +504,8 @@ export function MainAgentView({ project, showDashboard, nurKnopf = false }: { th
     <div className={'agent-stage ' + (showDashboard ? 'is-dashboard' : 'is-overlay')}>
       {/* P22-T170: Dashboard/Top-Artefakte sind kein Chat - Lesefenster von dort haben Herkunft 'ohne' (Pin nur speichern). */}
       {showDashboard && <LesefensterOhneHerkunft><MainAgentDashboard project={project} toolCalls={toolCalls} agentBusy={thinking} savedArtifacts={savedArtifacts} artifacts={messages.filter((message) => message.kind === 'artifact').map((message) => ({ id: String(message.id), title: message.title || 'HTML-Antwort', blocks: message.blocks?.length ?? 0, saved: message.saved === true, blockIds: (message.blocks ?? []).map((block) => String(block.id)) }))} /></LesefensterOhneHerkunft>}
-      <section className={shellClass + ' floating-agent-window'} {...zitat.debug} tabIndex={-1} style={chatStyle} onPointerDown={(event) => { if (!(event.target as HTMLElement).closest('button,input,textarea,select,a')) event.currentTarget.focus({ preventScroll: true }); if (chatPeeking) openChat(); else registerInteraction(); }}>
+      <AgentFensterOrt ueberHud={imHud}>
+      <section className={shellClass + ' floating-agent-window'} {...zitat.debug} tabIndex={-1} style={chatStyle} data-agentfenster={imHud ? 'hud' : 'aus'} data-agentfenster-ebene={hudEbene} onPointerDown={(event) => { if (imHud) holeNachVorne('main'); if (!(event.target as HTMLElement).closest('button,input,textarea,select,a')) event.currentTarget.focus({ preventScroll: true }); if (chatPeeking) openChat(); else registerInteraction(); }}>
         {chatCollapsed && !chatPeeking && <button type="button" className="agent-side-launcher" onClick={openChat}><span>HA</span><strong>Hauptagent</strong>{chatHasUnread && <i />}</button>}
         <div className="conversation-head" onPointerDown={startMainWindowDrag} onPointerMove={moveMainWindow} onPointerUp={stopMainWindowDrag} onPointerCancel={stopMainWindowDrag}>
           <div className="agent-identity"><span>HA</span><div><strong>Hauptagent</strong><small>{chatMode === 'fixed' ? 'fixiert' : 'Auto · ' + collapseDelay + ' ' + (collapseUnit === 'sec' ? 'Sek.' : 'Min.')}</small></div></div>
@@ -556,6 +578,7 @@ export function MainAgentView({ project, showDashboard, nurKnopf = false }: { th
         </form>
         {zitat.oberflaeche}
       </section>
+      </AgentFensterOrt>
     </div>
     </VerweisFensterProvider>
   );

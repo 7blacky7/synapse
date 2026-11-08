@@ -1,0 +1,10 @@
+/*
+ * P22-T280: Agentenfenster ueber dem HUD (Produkt-Schalter web_ui_agentfenster, Standard AUS). Die Fenster haengen dann per Portal
+ * an .synapse-control (agentfenster-stapel.ts) und liegen fest im Viewport; die Ebene (1251..1290) setzt der Stapel inline.
+ * AUS greift nichts davon (Klasse ueber-hud fehlt). Nur Lage, keine Farben: das Aussehen kommt aus den bestehenden Fensterstilen.
+ */
+.synapse-control > .agent-chat-shell.ueber-hud,
+.synapse-control > .main-assistant-window.ueber-hud { position: fixed; }
+/* Ueber Seitenleiste und Leisten braucht das Fenster einen klaren Abstand nach unten (gleiche Schattensprache wie im Fokus). */
+.synapse-control > .agent-chat-shell.ueber-hud:not(:focus-within),
+.synapse-control > .main-assistant-window.ueber-hud:not(:focus-within) { box-shadow: 0 24px 70px rgba(0, 0, 0, .5); }

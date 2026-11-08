@@ -7,9 +7,28 @@
 .coordinator-info-window>header.coordinator-info-kopf small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* P22-T281: Modell-Chip (HauptagentModellChip) im Fensterkopf wie im Hauptagent-Chat; der Name kürzt sich, der Chip bleibt lesbar. */
 .coordinator-info-window>header.coordinator-info-kopf>div:first-child{flex:1 1 auto;min-width:0}
-.coordinator-info-window>header.coordinator-info-kopf>.hauptagent-modell-chip{flex:0 1 auto;min-width:0;margin:0 8px}
+.coordinator-info-window>header.coordinator-info-kopf>.hauptagent-modell-chip{flex:0 1 auto;min-width:0;margin:0}
 .coordinator-info-window>header.coordinator-info-kopf>.hauptagent-modell-chip .chip-status{max-width:210px}
 .coordinator-info-window>header.coordinator-info-kopf>.hauptagent-modell-chip i{width:6px;height:6px}
+/* P22-T280 (User 08.11. „sehen immer noch genauso aus wie davor“): Koordinatorfenster im Aufbau und Stil des Hauptagent-Fensters.
+   Kopf = conversation-head/agent-identity (Kürzel-Kachel, Name, Projekt), Knöpfe wie chat-display-controls, Modell-Chip rechts;
+   Fokus = Akzentkante wie der Hauptagent-Chat; Heartbeat als Steuerleiste im Stil von hauptagent-steuerung. Nur Theme-Variablen. */
+.main-assistant-window.koordinator-dock-fenster>header.conversation-head{flex:0 0 auto;gap:8px;border-top:0;background:transparent}
+.koordinator-dock-fenster>header.conversation-head>.agent-identity{flex:1 1 auto;min-width:0}
+.koordinator-dock-fenster>header.conversation-head>.agent-identity>div{min-width:0}
+.koordinator-dock-fenster>header.conversation-head>.agent-identity strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.koordinator-dock-fenster:focus-within>header.conversation-head .agent-identity>span{border-color:var(--accent);background:var(--accent);color:var(--accent-contrast)}
+.main-assistant-window.koordinator-dock-fenster>header.conversation-head>button{flex:none;height:28px;padding:0 8px;border:1px solid var(--border);background:var(--panel);color:var(--muted);font:700 9px "IBM Plex Mono",monospace;text-transform:uppercase;cursor:pointer}
+.main-assistant-window.koordinator-dock-fenster>header.conversation-head>button:hover,.main-assistant-window.koordinator-dock-fenster>header.conversation-head>button:focus-visible{border-color:var(--accent);color:var(--accent)}
+.main-assistant-window.koordinator-dock-fenster:focus-within{border-color:var(--accent);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 22%,transparent),0 24px 70px rgba(0,0,0,.58)}
+.koordinator-steuerung{flex-shrink:0;margin:8px 14px 0;padding:1px 10px;border-left:2px solid var(--accent);background:color-mix(in srgb,var(--accent) 6%,transparent);color:var(--muted);font:10px "IBM Plex Mono",monospace}
+.koordinator-steuerung>.agent-heartbeat-regler{font-size:10px}
+.koordinator-steuerung>.agent-heartbeat-regler>summary{padding:5px 0;color:var(--text);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.koordinator-steuerung>.agent-heartbeat-regler>summary span{font-weight:400;text-transform:none;letter-spacing:0}
+.koordinator-steuerung>.agent-heartbeat-regler[open]{padding-bottom:8px}
+.main-assistant-window.koordinator-dock-fenster>header.conversation-head .hauptagent-modell-chip .chip-status{min-width:0;max-width:230px}
+.main-assistant-window.coordinator-info-window.koordinator-dock-fenster.mit-chat{width:min(560px,calc(100vw - 32px))}
+.koordinator-dock-fenster>.coordinator-chat-hinweis{flex-shrink:0;margin:8px 14px 0;padding:8px 10px;border:1px solid var(--border);background:var(--strong);color:var(--muted);font:10px "IBM Plex Mono",monospace}
 .agent-chat-html{display:block;margin:4px 0}
 /* P22-T146: Hinweis auf neue Nachrichten, wenn der User hochgescrollt ist (Fenster springt nicht mit) */
 .einheitlicher-agent-chat .chat-fenster-neue{position:sticky;bottom:6px;z-index:2;display:block;margin:6px auto 0;border:1px solid var(--accent);background:var(--strong);color:var(--text);padding:4px 10px;font:700 9px "IBM Plex Mono",monospace;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.24)}
