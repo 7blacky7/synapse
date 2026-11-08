@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import { ApiAgentLaufwahl } from '../../components/ApiAgentLaufwahl';
+import { HauptagentModellChip } from '../../components/HauptagentModellChip';
 import { AktuelleTaskAbsatz, AgentTaskMarke } from '../../components/AgentTaskMarke';
 import { LaufHerkunftMarke } from '../../components/LaufHerkunftMarke';
 import { RuntimeAgentenPanel } from '../../components/RuntimeAgentenPanel';
@@ -73,13 +73,15 @@ export function ProjectAgentTeamView({ project }: { project: string }) {
         {current.art !== 'wrapper' && <TeamAusweisKarte key={current.identityId || current.name} zustand={current.ausweis}
           stand={teamAusweis?.identityId === current.identityId ? teamAusweis : null}
           onVerwalten={() => oeffneAusweisVerwaltung({ project, agentId: current.agentId || current.name })} />}
-        {current.identityId && <ApiAgentLaufwahl key={current.identityId} identityId={current.identityId} project={project} name={current.name} />}
         <AktuelleTaskAbsatz project={project} identityId={current.identityId} name={current.agentId || current.name} rueckfall={current.currentTask} />
         <dl>
           <div><dt>Rolle</dt><dd>{current.rolle || '–'}</dd></div>
           <div><dt>Typ</dt><dd>{current.typ || '–'}</dd></div>
           {current.art === 'wrapper' && <div><dt>Ausweis</dt><dd>–</dd></div>}
-          <div><dt>Modell</dt><dd>{current.model || '–'}</dd></div>
+          {/* P22-T281: derselbe Modell-Chip wie im Hauptagent-Chat (CLI- und API-Modelle, aktuelle Laufart). */}
+          <div><dt>Modell</dt><dd>{current.identityId
+            ? <HauptagentModellChip key={current.identityId} identityId={current.identityId} project={project} name={current.agentId || current.name} ort={current.herkunft ? herkunftText(current.herkunft) : null} />
+            : current.model || '–'}</dd></div>
           <div><dt>Provider</dt><dd>{current.provider || '–'}</dd></div>
           <div><dt>Ort</dt><dd>{current.herkunft ? herkunftText(current.herkunft) : '–'}</dd></div>
           <div><dt>Gestartet über</dt><dd title={current.startOrt?.quelle || undefined}>{current.startOrt ? current.startOrt.bezeichnung : '–'}</dd></div>

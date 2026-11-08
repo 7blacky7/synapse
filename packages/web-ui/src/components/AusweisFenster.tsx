@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { AktuelleTaskAbsatz, AgentTaskMarke } from './AgentTaskMarke';
 import { LaufHerkunftMarke } from './LaufHerkunftMarke';
 import { useAgentVerbrauch } from './HauptagentSteuerung';
+import { HauptagentModellChip } from './HauptagentModellChip';
 import { oeffneAusweisVerwaltung } from '../ausweis-deeplink';
 import { AusweisFehler, ladeDetail, ladeIdentitaeten, ladeTeamAusweis, speichereProfil, stelleAus, type IdentitaetDetail, type IdentitaetZeile } from '../api/ausweis-verwaltung';
 import { herkunftText, loadChannelViewModels, loadProjectTeamViewModels } from '../api/control-plane-adapter';
@@ -23,7 +24,7 @@ import { fensterImViewport } from './fenster-grenze';
  *   - Bearbeiten: vorhandene Ausweis-Felder aendern und fehlende hinzufuegen (speichereProfil = POST profile/:id/aendern, CAS-Revision);
  *   - Channel-Icon (#): Channels dem Ausweis zuweisen und wieder entziehen (Profilfeld channels, derselbe Weg).
  * Rechte, Schalter und Audit entscheidet das Backend; Fehler stehen sichtbar im Fenster (Texte aus ausweis-verwaltung.ts).
- * Die Laufwahl CLI/API (offenes P22-T202) ist hier bewusst nicht eingebaut.
+ * P22-T281: In der Zeile Modell steht derselbe Modell-Chip wie im Hauptagent-Chat (CLI- und API-Modelle, aktuelle Laufart).
  * DEBUG: data-modus und data-identitaet am Fenster, data-profil (laedt|bereit|fehler) und data-revision am Inhalt.
  */
 
@@ -191,7 +192,9 @@ function AusweisAnsicht({ project, start }: { project: string; start: ProjectTea
       <div><dt>Typ</dt><dd>{agent.typ || '–'}</dd></div>
       {agent.art === 'wrapper' && <div><dt>Ausweis</dt><dd>–</dd></div>}
       {/* H2 (Abnahme 576de978): derselbe Modellwert wie unter Ausweis-Felder und im Panel (ladeDetail), sonst der Wert der Team-Zeile. */}
-      <div><dt>Modell</dt><dd>{(mitAusweis && detail?.werte.modell) || agent.model || '–'}</dd></div>
+      <div><dt>Modell</dt><dd>{agent.identityId
+        ? <HauptagentModellChip key={agent.identityId} identityId={agent.identityId} project={project} name={agent.agentId || agent.name} ort={agent.herkunft ? herkunftText(agent.herkunft) : null} />
+        : (mitAusweis && detail?.werte.modell) || agent.model || '–'}</dd></div>
       <div><dt>Provider</dt><dd>{agent.provider || '–'}</dd></div>
       <div><dt>Ort</dt><dd>{agent.herkunft ? herkunftText(agent.herkunft) : '–'}</dd></div>
       <div><dt>Gestartet über</dt><dd title={agent.startOrt?.quelle || undefined}>{agent.startOrt ? agent.startOrt.bezeichnung : '–'}</dd></div>

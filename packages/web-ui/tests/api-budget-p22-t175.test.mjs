@@ -54,14 +54,18 @@ ok(L.API_BUDGET_VORSCHLAG.grenze_usd === 25 && L.API_BUDGET_VORSCHLAG.zeitraum =
 const panel = lies('packages/web-ui/src/components/ApiBudgetPanel.tsx');
 ok(/from '\.\/api-budget-logik'/.test(panel) && /budgetFormular\(s\.budget, s\.modelle\.map\(m => m\.alias\)\)/.test(panel) && /budgetZeile\(s\.budget\)/.test(panel),
   'P22-T175 ApiBudgetPanel.tsx: Formular und Budgetzeile aus api-budget-logik.ts');
-ok(/data-api-key-vorhanden=\{key\?\.wert \?\? ''\}><b>API-Key vorhanden: \{key\?\.wert \?\? '…'\}<\/b>/.test(panel) && /apiKeyAnzeige\(s\.api_key_vorhanden\)/.test(panel),
+// P22-T281 (User 08.11.2026): Zugänge stehen in der einklappbaren Karte „Zugänge“ mit Kurzstand; Wert ja/nein weiter aus api_key_vorhanden.
+ok(/<Karte titel="Zugänge" stand=\{zugangKurz\} daten=\{key\?\.wert\}>/.test(panel) && /apiKeyAnzeige\(s\.api_key_vorhanden\)/.test(panel),
   'P22-T175 ApiBudgetPanel.tsx: Anzeige API-Key vorhanden ja/nein aus api_key_vorhanden');
 // P22-T176: das Panel liest jetzt auch den Stand api_key (ohne Wert); geprueft wird weiter: kein Umgebungszugriff, kein Browser-Speicher.
 ok(!/process\.env/.test(panel) && !/localStorage|sessionStorage/.test(panel), 'P22-T175 ApiBudgetPanel.tsx: kein Umgebungszugriff, kein Browser-Speicher in der Web-UI');
 ok(/disabled=\{zeitraum !== 'monat'\}/.test(panel), 'P22-T175 ApiBudgetPanel.tsx: Reset-Tag nur bei Zeitraum monat');
-ok(/\{vorschlag && <div className="scope-warning wide" data-api-budget-vorschlag="">/.test(panel), 'P22-T175 ApiBudgetPanel.tsx: Vorschlag sichtbar, solange kein Budget gesetzt ist');
+// P22-T281: der Vorschlag ist eine kurze Zeile an den Budget-Knöpfen.
+ok(/data-api-budget-vorschlag=\{vorschlag \? '' : undefined\}>\{vorschlag \? 'Vorschlag: '/.test(panel), 'P22-T175 ApiBudgetPanel.tsx: Vorschlag sichtbar, solange kein Budget gesetzt ist');
 const pfade = [...panel.matchAll(/'(\/api\/[^']+)'/g)].map((m) => m[1]);
-ok(pfade.length > 0 && pfade.every((p) => p.startsWith('/api/main-agent/api')), 'P22-T175 ApiBudgetPanel.tsx: nur der bestehende Vertrag /api/main-agent/api*', pfade);
+// P22-T281: der Umschalter api_agenten_auswahl kam aus dem entfallenen Laufwahl-Block hierher (bestehender Schalter-Vertrag).
+ok(pfade.length > 0 && pfade.every((p) => p.startsWith('/api/main-agent/api') || p === '/api/projects/'),
+  'P22-T175 ApiBudgetPanel.tsx: nur der bestehende Vertrag /api/main-agent/api* (plus Schalter api_agenten_auswahl)', pfade);
 
 // ---------------------------------------------------------------- C Einbau (ControlPlaneSettingsView.tsx)
 const cp = lies('packages/web-ui/src/components/ControlPlaneSettingsView.tsx');

@@ -4,6 +4,22 @@ import { getAgentRuntimeModelle, type AgentRuntimeName, type CliModell, type Cli
 import '../cli-modelle.css';
 
 /**
+ * P22-T281: gemeinsamer Abruf je Runtime für alle Chips und Panels (eine laufende Anfrage bzw. ein Ergebnis für 60 s);
+ * „neu lesen“ umgeht den Cache. Verhindert parallele Abrufe derselben Liste aus mehreren Fenstern.
+ */
+const KATALOG_TTL_MS = 60_000;
+const katalogCache = new Map<AgentRuntimeName, { zeit: number; anfrage: Promise<CliModellListe> }>();
+function ladeKatalogGeteilt(runtime: AgentRuntimeName, neu: boolean): Promise<CliModellListe> {
+  const jetzt = Date.now();
+  const vorhanden = katalogCache.get(runtime);
+  if (!neu && vorhanden && jetzt - vorhanden.zeit < KATALOG_TTL_MS) return vorhanden.anfrage;
+  const anfrage = getAgentRuntimeModelle(runtime, neu);
+  katalogCache.set(runtime, { zeit: jetzt, anfrage });
+  anfrage.catch(() => { if (katalogCache.get(runtime)?.anfrage === anfrage) katalogCache.delete(runtime); });
+  return anfrage;
+}
+
+/**
  * P22-T61: Modelle der CLI-Container aus der CLI selbst (GET /api/agent-runtimes/:runtime/modelle) statt fester Listen.
  * Zeigt Quelle, Stand und CLI-Version; ist nichts lesbar, steht der Grund da (kein Rueckfall auf feste Werte).
  * Freie Eingabe einer Modell-ID bleibt moeglich.
@@ -24,7 +40,7 @@ export function useCliModelle(runtime: AgentRuntimeName | null) {
     const gilt = () => katalogAntwortGilt(aktiv.current, g, anfrage.current, runtime, aktuelleRuntime.current);
     setLaedt(true);
     try {
-      const l = await getAgentRuntimeModelle(runtime, neu);
+      const l = await ladeKatalogGeteilt(runtime, neu);
       if (gilt()) { setListe(l); setFehler(''); }
     } catch (reason) {
       if (gilt()) setFehler(reason instanceof Error ? reason.message : String(reason));

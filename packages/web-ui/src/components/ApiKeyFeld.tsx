@@ -35,7 +35,7 @@ export function ApiKeyFeld({ stand, grundOk, busy, senden }: {
     }
   };
 
-  return <div className="cp-setting-field wide" data-api-key-feld="" data-api-key-schalter={s.aktiv ? 'ein' : 'aus'}>
+  return <div className="cp-setting-field wide" data-api-key-feld="" data-api-key-schalter={s.aktiv ? 'ein' : 'aus'} data-api-key-debug={stand.debug}>
     <span>
       <b>API-Key hinterlegen</b>
       <small>{s.aktiv
@@ -43,7 +43,7 @@ export function ApiKeyFeld({ stand, grundOk, busy, senden }: {
         : 'Eingabe in der Web-UI: AUS. Es gilt nur ' + API_KEY_NAME + ' aus der Server-Umgebung.'}
         {' '}Server-Tresor: {stand.tresor.vorhanden ? 'bereit' : 'fehlt (SYNAPSE_AGENT_TOKEN_SCHLUESSEL), Hinterlegen nicht möglich'}.</small>
     </span>
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+    <div className="cp-aktionen">
       {s.aktiv && <input type="password" autoComplete="new-password" spellCheck={false} aria-label="Anthropic-API-Key" placeholder="sk-ant-…"
         value={eingabe} onChange={(event) => setEingabe(event.target.value)} style={{ flex: '1 1 260px', minWidth: 0 }} />}
       {s.aktiv && <button type="button" disabled={busy || !grundOk || !apiKeyFormOk(eingabe)} onClick={() => void hinterlegen()}>
@@ -56,6 +56,5 @@ export function ApiKeyFeld({ stand, grundOk, busy, senden }: {
         {s.aktiv ? 'Eingabe ausschalten' : 'Eingabe einschalten'}</button>
     </div>
     {test && <small data-api-key-test="">{test}</small>}
-    <small data-api-key-debug="">Debug: {stand.debug}</small>
   </div>;
 }

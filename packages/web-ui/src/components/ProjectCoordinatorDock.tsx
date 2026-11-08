@@ -1,5 +1,3 @@
-import { ApiAgentLaufwahl } from './ApiAgentLaufwahl';
-
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { herkunftText, loadOnlineCoordinators } from '../api/control-plane-adapter';
 import type { OnlineCoordinatorViewModel } from '../control-plane/view-model';
@@ -9,6 +7,8 @@ import { PlattformAgentChat } from './PlattformAgentChat';
 import { AgentTaskMarke } from './AgentTaskMarke';
 import { LaufHerkunftMarke } from './LaufHerkunftMarke';
 import { AgentHeartbeatRegler } from './AgentHeartbeatRegler';
+// P22-T281: derselbe Modell-Chip wie im Hauptagent-Chat (CLI- und API-Modelle, aktuelle Laufart).
+import { HauptagentModellChip } from './HauptagentModellChip';
 import './project-coordinator-dock.css';
 
 /**
@@ -22,7 +22,6 @@ export function ProjectCoordinatorDock() {
   // P22-T189: stabile Identitaets-Keys halten Chat, Entwurf, Position und Stapelung auseinander.
   const [fenster, setFenster] = useState<Array<{ coordinator: OnlineCoordinatorViewModel; x: number; y: number; z: number; mehrfenster: boolean }>>([]);
   const zRef = useRef(52);
-  const [statusVersion, setStatusVersion] = useState(0);
   const [railTop, setRailTop] = useState(11);
   // P22-T112/T187: jeder Status gehoert nur zur Zielidentitaet; bei Fehler geschlossen bleiben.
   const [chatStand, setChatStand] = useState<Record<string, PlattformAgentChatSchalter & { chatGeladen?: boolean }>>({});
@@ -50,7 +49,7 @@ export function ProjectCoordinatorDock() {
     document.addEventListener('visibilitychange', sichtbar);
     return () => { active = false; window.removeEventListener('focus', laden); document.removeEventListener('visibilitychange', sichtbar); };
     // Die bestehende Koordinator-Aktualisierung zieht auch Schalter nach, ohne zweiten Poll-Takt.
-  }, [offeneIds, coordinators, statusVersion]);
+  }, [offeneIds, coordinators]);
   const railDragRef = useRef<{ pointerId: number; startY: number; originTop: number } | null>(null);
   const fensterDragRef = useRef<{ identityId: string; id: number; x: number; y: number; ox: number; oy: number } | null>(null);
 
@@ -148,24 +147,19 @@ export function ProjectCoordinatorDock() {
           open.lastActivity ? 'Lebenszeichen ' + open.lastActivity : 'kein Lebenszeichen'].join(' · ');
         return (
         <aside key={open.id} data-coordinator-window={open.id} data-mehrfenster={String(f.mehrfenster)}
-          data-chat-aktiv={String(chatAktiv)} data-chat-quelle={stand?.quelle ?? 'laden'}
+          data-chat-aktiv={String(chatAktiv)} data-chat-quelle={stand?.quelle ?? 'laden'} data-chat-fehler={stand?.letzter_fehler ?? undefined} data-fenster-ebene={f.z}
           onPointerDown={() => aktiviere(open.id)} className={'main-assistant-window coordinator-info-window koordinator-dock-fenster floating-agent-window' + (chatGeladen ? ' mit-chat' : '')} tabIndex={-1} style={{ transform: 'translate(' + f.x + 'px,' + f.y + 'px)', zIndex: f.z }}>
           <header className="coordinator-info-kopf" onPointerDown={(event) => startFensterDrag(event, open.id)} onPointerMove={moveFenster} onPointerUp={stopFensterDrag} onPointerCancel={stopFensterDrag}>
             <div><i /><span><strong>{open.name}<AgentTaskMarke project={open.project} identityId={open.id} name={open.name} /><LaufHerkunftMarke project={open.project} identityId={open.id} name={open.name} /></strong><small title={kopfzeile}>{kopfzeile}</small></span></div>
+            <HauptagentModellChip key={'modell:' + open.id} identityId={open.id} project={open.project} name={open.name} ort={herkunftText(open.herkunft)} />
             <button type="button" onClick={() => setFenster((alt) => alt.filter((f) => f.coordinator.id !== open.id))}>An Seite</button>
             <AgentHeartbeatRegler key={open.id} identityId={open.id} />
           </header>
-          <ApiAgentLaufwahl key={'laufwahl:' + open.id} identityId={open.id} project={open.project} name={open.name} />
           {!chatAktiv && <div role="status" className="coordinator-chat-hinweis" style={{ padding: 12 }}>
             {!stand ? 'Chatstatus wird geladen …' : stand.letzter_fehler
               ? 'Chatstatus nicht abrufbar: ' + stand.letzter_fehler
               : 'Chat ist ausgeschaltet: ' + stand.name + ' (Projekt ' + (stand.project ?? open.project) + ').'}
-            <button type="button" onClick={() => setStatusVersion((v) => v + 1)}>Status neu abfragen</button>
           </div>}
-          <details className="coordinator-chat-debug" style={{ padding: '0 12px' }}><summary>Chat-Debug</summary>
-            <pre>{JSON.stringify({ identity_id: open.id, schalter: stand ?? null, mehrfenster: stand?.mehrfenster ?? { aktiv: false, quelle: 'standard' },
-              fenster: { x: f.x, y: f.y, z: f.z } }, null, 2)}</pre>
-          </details>
           {/* P22-T189/ac1f8247: Freigabe sperrt nur Senden, nicht den gemounteten Entwurf. */}
           {chatGeladen && <PlattformAgentChat key={open.id} identityId={open.id} name={open.name} project={open.project} sendeGesperrt={!chatAktiv} />}
           <footer><span>agent_identitaeten · aktiver Lauf</span><b>online</b></footer>

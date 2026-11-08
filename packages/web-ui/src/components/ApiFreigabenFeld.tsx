@@ -74,7 +74,7 @@ export function ApiFreigabenFeld({ modelle, grundOk, busy, senden }: {
         data-api-agenten-schalter={f.api_agenten_aktiv ? 'ein' : 'aus'}>
         <b>{f.agent_id}<LaufHerkunftMarke project={f.project} identityId={f.identity_id} name={f.agent_id} /> · {rolleText(f.rolle)} · {f.project}</b>
         <span data-api-freigabe-zeile="">{freigabeZeile(f)}{f.api_agenten_aktiv === false ? ' · Schalter api_agenten im Projekt AUS (Freigabe wirkt nicht)' : ''}</span>
-        <span>
+        <span className="cp-aktionen">
           <button type="button" disabled={busy} onClick={() => setForm(formularAus(f, modelle))}>Bearbeiten</button>
           {' '}<button type="button" disabled={busy || !grundOk} onClick={() => void entziehen(f)}>Entziehen</button>
         </span>
@@ -101,10 +101,10 @@ export function ApiFreigabenFeld({ modelle, grundOk, busy, senden }: {
           {' '}Heartbeat (jeder Weckruf kostet; Standard aus)</label>
         <label className="cp-haken"><input type="checkbox" checked={form.aktiv} onChange={(event) => setForm({ ...form, aktiv: event.target.checked })} />
           {' '}aktiv</label>
-        <span>
-          <button type="button" disabled={busy || !grundOk || !pruefung.ok || schalter?.aktiv === false} onClick={() => void setzen()}>Freigabe setzen</button>
+        <span className="cp-aktionen">
+          <button type="button" className="primary" disabled={busy || !grundOk || !pruefung.ok || schalter?.aktiv === false} onClick={() => void setzen()}>Freigabe setzen</button>
           {!pruefung.ok && form.identity_id && <small>{' '}{pruefung.grund}</small>}
-          {!grundOk && <small>{' '}Grund oben eintragen (mindestens 5 Zeichen).</small>}
+          {!grundOk && <small>{' '}Grund am Seitenende eintragen (mindestens 5 Zeichen).</small>}
         </span>
       </div>
     </div>

@@ -26,3 +26,8 @@
 .hauptagent-modell-chip .effort-leiste .efforts button.effort.std{border-style:dashed}
 .hauptagent-modell-chip .effort-leiste .efforts button.effort.an,.hauptagent-modell-chip .effort-leiste .efforts button.effort:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
 .hauptagent-modell-chip .effort-leiste .effort-hinweise{padding:0 6px;color:var(--muted);font-size:8px}
+/* P22-T281: Menü als Portal in .synapse-control (Koordinator- und Ausweis-Fenster schneiden mit overflow:hidden ab); API-Gruppen in derselben Zeilenform. */
+.hauptagent-modell-chip.chip-portal{position:fixed;z-index:1399;display:block;width:0;height:0}
+.hauptagent-modell-chip .gruppe button:disabled:not(.aktiv){opacity:.45;cursor:default}
+.hauptagent-modell-chip .gruppe.api button code{color:var(--accent)}
+.hauptagent-modell-chip .chip-link{border:0;background:none;color:var(--accent);font:inherit;padding:0;cursor:pointer;text-decoration:underline}
