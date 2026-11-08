@@ -986,6 +986,7 @@ export type { VerlaufZugKontext } from './services/hauptagent-verlauf.js';
 export {
   schreibeZustellVerlauf, aktuellerMainLauf, aktuellesMainModell, importiereSitzungsEintraege, pruefeMainKorridor, erzeugeVerlaufUebergabe,
   zugewieseneMainRuntime, MAIN_HANDOFF_TEXT, mainStartkontext, leseVerlaufFuer, AGENT_VERLAUF_ALLE_FUNKTION,
+  schreibeWechselZeile, setzeGemesseneTokens, API_VERLAUF_HAUPTVERLAUF_FUNKTION, leseApiVerlaufHauptverlaufSchalter,
 } from './services/hauptagent-verlauf.js';
 // P22-T82: Spezialisten im Runtime-Container (ort container, Kontingent je Projekt, Schema 127).
 export {
@@ -1241,6 +1242,9 @@ export {
 } from './services/zwangs-pin.js';
 export type { ZwangsPin, ZwangsPinAufrufer, ZwangsPinErgebnis, ZwangsPinGeltung, ZwangsPinGeltungsArt, ZwangsPinArt, ZwangsPinMerkmale } from './services/zwangs-pin.js';
 export { ZWANGS_PIN_SCHEMA_SQL } from './db/zwangs-pin-schema.js';
+// P22-T287: Produkt-Schalter je Agent (Ebenen identitaet/agent/typ).
+export { AGENT_PROFIL_SCHALTER_ZIEL_SCHEMA_SQL } from './db/agent-profil-schalter-ziel-schema.js';
+export * from './services/agent-profil-schalter-ziel.js';
 export type { AnmeldungWeg, AnmeldungKontext, AnmeldungenAbfrage, AnmeldungenSchalter } from './services/agent-anmeldungen.js';
 export type { KorridorPruefung } from './services/specialist-respawn.js';
 

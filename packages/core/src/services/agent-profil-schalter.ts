@@ -14,8 +14,13 @@
  *     Override nur bei SYNAPSE_INTERN_TOOL=1, modus 'freigegeben', befristet (intern-schalter.ts);
  *     Ablauf/Lesefehler/ohne intern -> Produktionsstandard. Ohne intern KEIN PG-Lesen.
  * AUS = t109-Verhalten. Bedeutung 'freigegeben' (aktiv=true heisst Funktion EIN, keine Pause).
+ * (III) P22-T287: Ebenen je Agent (identitaet bzw. agent > typ) UEBER projekt/global, nur fuer die Positivliste
+ *     ZIEL_FAEHIGE_FUNKTIONEN und nur bei Produkt-Schalter schalter_identitaet EIN (agent-profil-schalter-ziel.ts).
+ *     leseProfilProduktSchalter(funktion, project, ziel): S3 - Ziel NUR ausdruecklich (undefined/null = Projektsicht); Lesestellen, die
+ *     fuer den Aufrufer entscheiden, uebergeben zielDesAufrufers(project) (Fremd-Empfaenger-Regel).
  */
 import { getPool } from '../db/client.js';
+import { SCHALTER_ZIEL_FUNKTION, istZielFaehig, merkeSchalterQuelle, leseZielTreffer, type SchalterZiel, type SchalterZielEbene, type SchalterZielTreffer } from './agent-profil-schalter-ziel.js';
 import { internToolAktiv } from './intern-tool-aktiv.js';
 import { AUSWEIS_FORMAT } from './agent-ausweis-format.js';
 
@@ -36,7 +41,8 @@ export interface W1bSchalterStand {
   name: string;
   freigegeben: boolean;
   standard: boolean;
-  quelle: 'standard' | 'intern';
+  /** P22-T287 S2: 'produkt-schalter' nur bei leseAntwortanpassungSchalter (Produktquelle profil_antwortanpassung). */
+  quelle: 'standard' | 'intern' | 'produkt-schalter';
   bis: string | null;
   letzter_fehler: string | null;
 }
@@ -59,6 +65,24 @@ export async function leseW1bSchalter(art: W1bSchalterArt): Promise<W1bSchalterS
   } catch {
     return { ...basis, letzter_fehler: 'schalter_nicht_erreichbar' };
   }
+}
+
+/** P22-T287 S2: Produkt-Schalter der Antwortanpassung nach Profil (ziel-faehig). */
+export const PROFIL_ANTWORTANPASSUNG_FUNKTION = 'profil_antwortanpassung' as const;
+
+/**
+ * P22-T287 S2 (Konzept ebe24645): EINE Lesestelle fuer die Antwortanpassung (P22-T13 Paket C). Reihenfolge: intern-Override
+ * w1b_antwortanpassung (befristet, nur SYNAPSE_INTERN_TOOL=1) > Produkt-Schalter profil_antwortanpassung (identitaet > typ > projekt >
+ * global; Ziel wird ausdruecklich uebergeben, kein Aufrufkontext) > Env SYNAPSE_W1B_ANTWORTANPASSUNG > AUS. project null -> wie bisher
+ * nur Env/intern. Lesefehler des Produkt-Schalters -> Env-Standard, Debug in produkt.letzter_fehler. Gepuffert je Prozess (kernTtlMs).
+ */
+export async function leseAntwortanpassungSchalter(project: string | null, ziel: SchalterZiel | null):
+  Promise<W1bSchalterStand & { produkt?: ProfilProduktSchalterStand }> {
+  const basis = await leseW1bSchalter('antwortanpassung');
+  if (basis.quelle === 'intern' || !project) return basis;
+  const produkt = await leseProduktGepuffert(PROFIL_ANTWORTANPASSUNG_FUNKTION, project, ziel);
+  if (produkt.quelle === 'produkt-schalter' && !produkt.letzter_fehler) return { ...basis, freigegeben: produkt.aktiv, quelle: 'produkt-schalter', produkt };
+  return { ...basis, produkt };
 }
 
 export const PROFIL_PRODUKT_FUNKTIONEN = [
@@ -253,6 +277,9 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'api_agenten_auswahl',
   // P22-T278: DeepSeek-API direkt als eigener Anbieter (api-deepseek.ts); je Projekt/global, Standard AUS, nur ausdruecklich.
   'api_deepseek_direkt',
+  // P22-T286: API-Laufzeiten schreiben ihren Turn zusaetzlich in hauptagent_verlauf (api-agent-lauf.ts, agent-verlauf.ts);
+  // je Projekt/global, Standard AUS bis Abnahme, nur ausdruecklich. AUS = Bestand.
+  'api_verlauf_hauptverlauf',
   // P22-T199: Co-Edit ohne Ready-Gate (coedit-methode.ts; EIN = neue Methode, AUS = Ready-Gate wie bisher); je Projekt/global,
   // Standard AUS, nur ausdruecklich. Gelesen je files-Aufruf ueber leseProfilProduktSchalterGepuffert.
   'coedit_ohne_gate',
@@ -272,6 +299,13 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   // P22-T270: Agententeam als Suche (erster Eintrag „Ausweis erstellen“) + Ausweis-Fenster mit Bearbeiten und Channel-Zuweisung
   // (web-ui AgentenTeamSuche/AusweisFenster); je Projekt/global, Standard AUS, nur ausdruecklich. AUS = bisherige Agententeam-Seite.
   'web_ui_agententeam_suche',
+  // P22-T280: Hauptagent- und Koordinatorfenster ueber dem HUD (gemeinsamer Fensterstapel + Portal, web-ui agentfenster-stapel.ts);
+  // je Projekt/global, Standard AUS, nur ausdruecklich. AUS = Fenster bleiben im Hauptbereich wie bisher.
+  'web_ui_agentfenster',
+  // P22-T289: Klick auf einen Agenten im Channel (Mitglied, Absender) bzw. in der Agententeam-Suche oeffnet das gemeinsame
+  // Agentenfenster (web-ui AgentFenster.tsx, Stapel agentfenster-stapel.ts); je Projekt/global, Standard AUS, nur ausdruecklich.
+  // AUS = bisherige Wege (Channel: ChannelAgentFensterWeiche, Agententeam: Ausweis-Fenster).
+  'web_ui_agentfenster_alle',
   // P22-T255: Channel-Knoten und Ergebnisdetails im Agentennetzwerk.
   'web_ui_netzwerk_details',
   // P22-T164: projektübergreifende Live-Artefaktübersicht, Standard AUS.
@@ -326,9 +360,21 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   // P10-T90: Zwangs-Pin - Pflicht-Memory an einen Stamm; schreibende files-Ops darunter fuer ueberwachte Claude-CLI-Kontexte gesperrt bis
   // memory read im Lauf + Kontext (zwangs-pin.ts, admin zwangs_pins); je Projekt/global, Standard AUS, nur ausdruecklich.
   'zwangs_pin',
+  // P22-T287: Produkt-Schalter je Agent (Ebenen identitaet/agent/typ ueber projekt/global, agent-profil-schalter-ziel.ts); je Projekt/global,
+  // Standard AUS, nur ausdruecklich. AUS = Zielregeln werden ignoriert, Setzen auf Zielebenen antwortet funktion_aus.
+  'schalter_identitaet',
+  // P22-T287 (User-Korrektur 27f9c071): Agenten nach alter Methode OHNE Ausweis setzen Regeln der Ebene agent (Name/Muster; nur Projekt
+  // der Anfrage, Grund Pflicht, Audit herkunft ohne_ausweis; agent-profil-schalter-ziel.ts); je Projekt/global, Standard AUS, nur ausdruecklich.
+  'schalter_setzen_ohne_ausweis',
+  // P22-T287 S2: Produktquelle fuer w1b_antwortanpassung (leseAntwortanpassungSchalter; Hinweise/Kontextstufe aus dem Agentenprofil,
+  // P22-T13 Paket C); ziel-faehig (identitaet > typ > projekt > global), Standard AUS, nur ausdruecklich. intern-Override behaelt Vorrang.
+  'profil_antwortanpassung',
+  // P22-T287 S2: kontextprofil_* mit ziel identity:<id> schreiben ins Agentenprofil (kontextprofil-bruecke.ts, profil_aendern-Weg) statt
+  // coming_soon; je Projekt/global, Standard AUS, nur ausdruecklich. AUS = Altverhalten.
+  'kontextprofil_bruecke',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-export const NUR_AUSDRUECKLICH: readonly string[] = ['zwangs_pin', 'koordinator_projektverwaltung', 'web_ui_agententeam_suche', 'editor_modul', 'editor_plan_strom', 'editor_plan_leinwand', 'editor_syntax', 'web_ui_live_artefakte', 'asset_tombstone_zustellung', 'web_ui_netzwerk_details', 'web_ui_channel_suche', 'web_ui_arbeitsbereich', 'team_ausweis_zeigen', 'shell_ausgabe_voll', 'warteschlangen_stau', 'warteschlangen_altbestand', 'asset_intern_aufraeumen', 'asset_publish_recovery', 'asset_pc_zustellung', 'asset_transfer_generisch', 'index_live_vorrang', 'log_strom', 'uebersicht_netzwerk', 'netzwerk_visum_sonnen', 'api_agenten_auswahl', 'api_deepseek_direkt', 'coedit_ohne_gate', 'anker_umrechnung', 'web_ui_neue_oberflaeche', 'seitenleiste_projekt_tasks', 'cache_waechter', 'runtime_synapse_mods', 'artefakt_dateien', 'tool_antwort_ueberlauf', 'runtime_tool_ausgabe', 'user_inbox', 'zeilen_anmerkungen', 'koordinator_mehrfenster', 'reverse_pipeline_halt', 'agentennetzwerk', 'netzwerk_datengrundlage', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_asset_registrierung', 'reverse_parser_adapter', 'reverse_leser', 'reverse_leser_nachzug', 'reverse_leser_hinweise', 'reverse_leser_runtime_verwaltung', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'reverse_global_sichtbar', 'reverse_intel_abruf', 'reverse_fehlerlog', 'ausweis_channels', 'kontingent_delegiert', 'plattform_agent_chat', 'main_agentenverwaltung', 'koordinator_heartbeat', 'agent_start_ort', 'runtime_agenten_uebersicht', 'runtime_agenten_steuerung', 'plattform_agent_modellwechsel', 'main_turn_wake_frist', 'ausweis_zielmodell', 'modell_lauf_bindung', 'wake_echter_absender', 'wake_antwort_identitaet', 'runtime_agenten_panel_neu', 'verlauf_tool_karten', 'agent_kennung_werbung', 'wrapper_status_ursache', 'agent_chat_einheitlich', 'mod_inbox', 'mod_inbox_vorpruefung', 'task_bindung_loesen_bei_done', 'artefakt_bewertung', 'artefakt_bewertung_melden', 'inbox_quittung', 'datei_vertrag', 'artefakt_vorlagen', 'artefakt_vorlagen_live', 'artefakt_ausweis_zeigen', 'artefakt_verweise', 'artefakt_skripte', 'verlauf_einbetten', 'verlauf_suche', 'chat_zitate', 'agent_aktuelle_task', 'agent_lauf_herkunft', 'agent_umbenennung', 'api_agenten', 'wiederkehr_plaene', 'speicher_aehnlichkeit', 'speicher_aehnlichkeit_pruefen', 'task_pins', 'api_agenten_lauf_intern'];
+export const NUR_AUSDRUECKLICH: readonly string[] = ['schalter_identitaet', 'schalter_setzen_ohne_ausweis', 'profil_antwortanpassung', 'kontextprofil_bruecke', 'web_ui_agentfenster', 'web_ui_agentfenster_alle', 'zwangs_pin', 'koordinator_projektverwaltung', 'web_ui_agententeam_suche', 'editor_modul', 'editor_plan_strom', 'editor_plan_leinwand', 'editor_syntax', 'web_ui_live_artefakte', 'asset_tombstone_zustellung', 'web_ui_netzwerk_details', 'web_ui_channel_suche', 'web_ui_arbeitsbereich', 'team_ausweis_zeigen', 'shell_ausgabe_voll', 'warteschlangen_stau', 'warteschlangen_altbestand', 'asset_intern_aufraeumen', 'asset_publish_recovery', 'asset_pc_zustellung', 'asset_transfer_generisch', 'index_live_vorrang', 'log_strom', 'uebersicht_netzwerk', 'netzwerk_visum_sonnen', 'api_agenten_auswahl', 'api_deepseek_direkt', 'coedit_ohne_gate', 'anker_umrechnung', 'web_ui_neue_oberflaeche', 'seitenleiste_projekt_tasks', 'cache_waechter', 'runtime_synapse_mods', 'artefakt_dateien', 'tool_antwort_ueberlauf', 'runtime_tool_ausgabe', 'user_inbox', 'zeilen_anmerkungen', 'koordinator_mehrfenster', 'reverse_pipeline_halt', 'agentennetzwerk', 'netzwerk_datengrundlage', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_asset_registrierung', 'reverse_parser_adapter', 'reverse_leser', 'reverse_leser_nachzug', 'reverse_leser_hinweise', 'reverse_leser_runtime_verwaltung', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'reverse_global_sichtbar', 'reverse_intel_abruf', 'reverse_fehlerlog', 'ausweis_channels', 'kontingent_delegiert', 'plattform_agent_chat', 'main_agentenverwaltung', 'koordinator_heartbeat', 'agent_start_ort', 'runtime_agenten_uebersicht', 'runtime_agenten_steuerung', 'plattform_agent_modellwechsel', 'main_turn_wake_frist', 'ausweis_zielmodell', 'modell_lauf_bindung', 'wake_echter_absender', 'wake_antwort_identitaet', 'runtime_agenten_panel_neu', 'verlauf_tool_karten', 'agent_kennung_werbung', 'wrapper_status_ursache', 'agent_chat_einheitlich', 'mod_inbox', 'mod_inbox_vorpruefung', 'task_bindung_loesen_bei_done', 'artefakt_bewertung', 'artefakt_bewertung_melden', 'inbox_quittung', 'datei_vertrag', 'artefakt_vorlagen', 'artefakt_vorlagen_live', 'artefakt_ausweis_zeigen', 'artefakt_verweise', 'artefakt_skripte', 'verlauf_einbetten', 'verlauf_suche', 'chat_zitate', 'agent_aktuelle_task', 'agent_lauf_herkunft', 'agent_umbenennung', 'api_agenten', 'wiederkehr_plaene', 'speicher_aehnlichkeit', 'speicher_aehnlichkeit_pruefen', 'task_pins', 'api_agenten_lauf_intern', 'api_verlauf_hauptverlauf'];
 /**
  * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
  * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.
@@ -374,6 +420,9 @@ export interface AusweisKernStand {
 const KERN_PUFFER = new Map<string, { bis: number; stand: ProfilProduktSchalterStand }>();
 /** Puffer verwerfen (Tests; automatisch nach jedem Schreiben eines Produkt-Schalters im eigenen Prozess). */
 export function leereAusweisKernCache(): void { KERN_PUFFER.clear(); }
+/** P22-T287 S3 (P5): Puffer-Messung je Prozess (alle gepufferten Produkt-Schalter-Lesungen). */
+const PUFFER_ZAEHLER = { treffer: 0, fehlgriffe: 0 };
+export function produktPufferDiagnose(): { treffer: number; fehlgriffe: number } { return { ...PUFFER_ZAEHLER }; }
 /** Puffer-TTL je Prozess (Env SYNAPSE_W1B_GATE_TTL_MS, Standard 5000, 0 = aus); auch fuer die Ausweis-Fristen (P22-T45). */
 export function kernTtlMs(): number {
   const roh = process.env.SYNAPSE_W1B_GATE_TTL_MS;
@@ -381,19 +430,22 @@ export function kernTtlMs(): number {
   const n = Number(roh);
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 5_000;
 }
-async function leseProduktGepuffert(funktion: ProfilProduktFunktion, project: string | null): Promise<ProfilProduktSchalterStand> {
+async function leseProduktGepuffert(funktion: ProfilProduktFunktion, project: string | null, ziel?: SchalterZiel | null): Promise<ProfilProduktSchalterStand> {
   const ttl = kernTtlMs();
-  const schluessel = funktion + '\u0000' + (project ?? '');
+  // P22-T287 S3: Ziel nur ausdruecklich (kein Aufrufkontext); mit Ziel gehoert es in den Schluessel.
+  const z = ziel ?? null;
+  const schluessel = funktion + '\u0000' + (project ?? '') + (z ? '\u0000' + (z.identity_id ?? '') + '\u0000' + (z.agent_id ?? '') : '');
   const jetzt = Date.now();
   const c = ttl > 0 ? KERN_PUFFER.get(schluessel) : undefined;
-  if (c && c.bis > jetzt) return c.stand;
-  const stand = await leseProfilProduktSchalter(funktion, project);
+  if (c && c.bis > jetzt) { PUFFER_ZAEHLER.treffer++; return c.stand; }
+  PUFFER_ZAEHLER.fehlgriffe++;
+  const stand = await leseProfilProduktSchalter(funktion, project, z);
   if (ttl > 0 && !stand.letzter_fehler) KERN_PUFFER.set(schluessel, { bis: jetzt + ttl, stand });
   return stand;
 }
 /** P22-T199: Produkt-Schalter je Prozess gepuffert (kernTtlMs, wie der Ausweis-Kern) fuer Lesestellen je Tool-Aufruf. */
-export function leseProfilProduktSchalterGepuffert(funktion: ProfilProduktFunktion, project: string | null): Promise<ProfilProduktSchalterStand> {
-  return leseProduktGepuffert(funktion, project);
+export function leseProfilProduktSchalterGepuffert(funktion: ProfilProduktFunktion, project: string | null, ziel?: SchalterZiel | null): Promise<ProfilProduktSchalterStand> {
+  return leseProduktGepuffert(funktion, project, ziel);
 }
 
 interface KernRoh { aktiv: boolean; quelle: AusweisKernQuelle; fehler: string | null }
@@ -526,6 +578,14 @@ export interface ProfilProduktSchalterStand {
   aktiv: boolean;
   quelle: 'standard' | 'produkt-schalter';
   ebene: 'global' | 'projekt' | null;
+  /**
+   * P22-T287: Treffer einer Agent-Regel. ebene bleibt 'projekt' (die Regel gehoert zum Projekt, Vertrag der Verbraucher unveraendert);
+   * ziel_ebene identitaet|agent|typ und ziel (identity_id, agent_id/Muster, typ_id) nennen die Herkunft. ziel_fehler = Zielregeln nicht lesbar.
+   */
+  ziel_ebene?: SchalterZielEbene;
+  ziel?: string;
+  ziel_muster?: boolean;
+  ziel_fehler?: string;
   regel_funktion: ProfilProduktFunktion | 'alle' | null;
   gesetzt_von: string | null;
   gesetzt_am: string | null;
@@ -548,14 +608,42 @@ function istFunktion(f: string): f is ProfilProduktFunktion {
 
 import {leseReversePipelineHalt,setzeReversePipelineHalt} from './reverse-pipeline-halt.js';
 
+/**
+ * P22-T287: Zielstufe vor projekt/global. Nur Positivliste, nur bei schalter_identitaet EIN; Lesefehler -> keine Zielregel
+ * (projekt/global wie bisher) mit fehler fuer das Debugfeld ziel_fehler.
+ */
+async function zielStufe(funktion: string, project: string | null, ziel: SchalterZiel | null | undefined): Promise<{ treffer: SchalterZielTreffer | null; fehler: string | null }> {
+  if (!project || !ziel || !istZielFaehig(funktion)) return { treffer: null, fehler: null };
+  try {
+    if (!(await leseProduktGepuffert(SCHALTER_ZIEL_FUNKTION, project, null)).aktiv) return { treffer: null, fehler: null };
+    const treffer = await leseZielTreffer(funktion, project, ziel);
+    if (treffer) await merkeSchalterQuelle(funktion, project, treffer);
+    return { treffer, fehler: null };
+  } catch {
+    return { treffer: null, fehler: 'schalter_ziel_nicht_lesbar' };
+  }
+}
+
+/**
+ * EINE Lesestelle fuer Produkt-Schalter. ziel (P22-T287 S3): nur ausdruecklich - Objekt = fuer genau diesen Agenten (Aufrufer ueber
+ * zielDesAufrufers, anderer Agent ueber dessen identity_id), undefined/null = ohne Agent-Ebenen (Projektsicht).
+ */
 export async function leseProfilProduktSchalter(
-  funktion: ProfilProduktFunktion, project?: string | null,
+  funktion: ProfilProduktFunktion, project?: string | null, ziel?: SchalterZiel | null,
 ): Promise<ProfilProduktSchalterStand> {
   if(funktion==='reverse_pipeline_halt')return leseReversePipelineHalt(getPool());
   if(funktion==='reverse_pe_ressourcen'||funktion==='reverse_siedler3'||funktion==='reverse_fortschritt_live'||funktion==='reverse_blockuebernahme'||funktion==='reverse_asset_registrierung'||funktion==='reverse_parser_adapter'||funktion==='reverse_leser'||funktion==='reverse_leser_nachzug'||funktion==='reverse_leser_runtime_verwaltung'||funktion==='reverse_leser_hinweise'||funktion==='reverse_entstoerer_auto'||funktion==='reverse_wav_pregap'||funktion==='reverse_global_sichtbar'||funktion==='reverse_intel_abruf'||funktion==='reverse_fehlerlog')project=null; // global library, same value in every project
   const basis: ProfilProduktSchalterStand = { funktion, project: project ?? null, aktiv: STANDARD_EIN.includes(funktion), quelle: 'standard',
     ebene: null, regel_funktion: null, gesetzt_von: null, gesetzt_am: null, grund: null, letzter_fehler: null };
   if (!istFunktion(funktion)) return { ...basis, letzter_fehler: 'funktion_unbekannt' };
+  // P22-T287: identitaet bzw. agent > typ > projekt > global > Standard.
+  const zs = await zielStufe(funktion, project ?? null, ziel);
+  if (zs.treffer) {
+    const t = zs.treffer;
+    return { ...basis, aktiv: t.aktiv, quelle: 'produkt-schalter', ebene: 'projekt', ziel_ebene: t.ebene, ziel: t.ziel, ...(t.muster ? { ziel_muster: true } : {}),
+      regel_funktion: funktion, gesetzt_von: t.gesetzt_von, gesetzt_am: t.gesetzt_am, grund: t.grund };
+  }
+  if (zs.fehler) basis.ziel_fehler = zs.fehler;
   try {
     const r = await getPool().query<SchalterZeile>({
       text: `SELECT ebene, project, funktion, aktiv, grund, gesetzt_von, gesetzt_am FROM agent_profil_schalter
@@ -596,6 +684,10 @@ export interface ProfilSchalterAkteur {
  */
 const schalterGeschriebenHooks = new Set<() => void>();
 export function registriereSchalterGeschrieben(hook: () => void): void { schalterGeschriebenHooks.add(hook); }
+/** P22-T287: nach dem Schreiben eines Ziel-Schalters (agent-profil-schalter-ziel.ts) dieselben Puffer verwerfen. */
+export function meldeSchalterGeschrieben(): void {
+  for (const hook of schalterGeschriebenHooks) { try { hook(); } catch { /* Puffer-Invalidierung darf das Schreiben nie scheitern lassen */ } }
+}
 
 export async function setzeProfilProduktSchalter(
   e: { ebene: 'global' | 'projekt'; project?: string | null; funktion: ProfilProduktFunktion | 'alle'; aktiv: boolean; grund: string },

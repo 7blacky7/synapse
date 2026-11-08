@@ -28,6 +28,10 @@ export const PROFIL_SCHALTER_ZWECK: Readonly<Record<string, string>> = {
   agentennetzwerk: 'Agentennetzwerk (Live-Ansicht der Agenten und Aufrufe) in der Web-UI.',
   netzwerk_datengrundlage: 'Datengrundlage des Agentennetzwerks.',
   profilverwaltung: 'Verwaltung der Agentenprofile (aendern, Historie, Rollback, Lesen).',
+  schalter_identitaet: 'Produkt-Schalter je Agent (Ausweis, Name/Muster ohne Ausweis, Typ) ueber Projekt/global (P22-T287).',
+  schalter_setzen_ohne_ausweis: 'Agenten ohne Ausweis (alte Methode) setzen Regeln je Agentenname (Ebene agent, eigenes Projekt, Grund Pflicht; P22-T287).',
+  profil_antwortanpassung: 'Antworten nach Agentenprofil anpassen (Hinweise, Kontextstufe), je Agent einstellbar (P22-T287).',
+  kontextprofil_bruecke: 'kontextprofil_* mit ziel identity:<id> schreibt ins Agentenprofil statt coming_soon (P22-T287).',
   typkatalog: 'Typkatalog der Agentenprofile.',
   persona: 'Persona-Bibliothek fuer Agenten (nur auf User-Wunsch).',
   task_bindung: 'Task-Bindung an Identitaeten oder Teams.',
@@ -53,6 +57,7 @@ export const PROFIL_SCHALTER_ZWECK: Readonly<Record<string, string>> = {
   runtime_status_stabil: 'Stabile Bewertung des Runtime-Status (haengende Probe kippt den guten Stand nicht).',
   verlauf_token_zaehlung: 'Eigene Token-Zaehlung aus dem Verlauf.',
   verlauf_alle_richtungen: 'Alle Richtungen des Main im Verlauf (Zustellungen, eigene Ausgaben).',
+  api_verlauf_hauptverlauf: 'API-Agenten schreiben ihren Turn in den gemeinsamen Verlauf (Standard AUS bis Abnahme).',
   main_korridor: 'Korridor des Main ueber die API.',
   verlauf_uebergabe: 'Uebergabe aus dem Verlauf beim Wechsel des Main.',
   main_warteschlange: 'Warteschlange des Main-Chats (nur mit hauptagent_verlauf).',
@@ -139,6 +144,8 @@ export const PROFIL_SCHALTER_ZWECK: Readonly<Record<string, string>> = {
   web_ui_arbeitsbereich: 'Web-UI: neu geordneter Arbeitsbereich.',
   web_ui_channel_suche: 'Web-UI: Channel-Suche und gemeinsames Channel-Fenster.',
   web_ui_agententeam_suche: 'Web-UI: Agententeam als Suche mit Ausweis-Fenster.',
+  web_ui_agentfenster: 'Web-UI: Hauptagent- und Koordinatorfenster ueber dem HUD (gemeinsamer Fensterstapel).',
+  web_ui_agentfenster_alle: 'Web-UI: Agentenfenster fuer jeden Agenten (Klick im Channel und in der Agententeam-Suche).',
   web_ui_netzwerk_details: 'Web-UI: Channel-Knoten und Ergebnisdetails im Agentennetzwerk.',
   web_ui_live_artefakte: 'Web-UI: projektuebergreifende Live-Artefaktuebersicht.',
   editor_modul: 'Editor mit Freeze und geprueftem User-Plan.',
@@ -329,7 +336,8 @@ async function leseVorher(action: string, args: Args, project: string | undefine
   switch (action) {
     case 'profil_schalter_setzen': {
       const f = s(args, 'profil_funktion');
-      if (!f) return null;
+      // P22-T287: Zielebene liefert alt/neu selbst (aenderung), die Projektsicht waere hier der falsche Vergleich.
+      if (!f || s(args, 'ziel_ebene')) return null;
       const namen = f === 'alle' ? ALLE_FUNKTIONEN : [f];
       const st = await Promise.all(namen.map((n) => leseUiProduktSchalter(n as ProfilProduktFunktion, project)));
       return Object.fromEntries(st.map((x) => [x.funktion as string, { wert: x.aktiv, ebene: x.ebene, quelle: x.quelle, revision: x.gesetzt_am }]));
