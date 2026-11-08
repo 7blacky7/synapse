@@ -53,6 +53,8 @@ type Auftrag = { auftrag_id: string; art: string; status: string; offen?: boolea
   erstellt_am: string; abgeschlossen_am: string | null; fortschritt?: { schritt?: string; runtime?: string } | null };
 
 const KATALOG_LAEDT = 'Modelle werden gelesen …';
+/** P22-T289: Laufstatus aus api_agent_laeufe fuer die Anzeige (laeuft -> läuft); sonst unveraendert (bereit, pausiert, gestoppt, fehler). */
+const standText = (s: string): string => (s === 'laeuft' ? 'läuft' : s);
 /** P22-T281: Gruppe aus dem CLI-Katalog fuer Identitaeten ausser dem Hauptagenten (gleiche Form wie GET /api/main-agent/modelle). */
 function katalogGruppe(runtime: 'claude' | 'codex', k: ReturnType<typeof useCliModelle>): MainAgentModellRuntime {
   const l = k.liste;
@@ -112,9 +114,13 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige, identity
       istMain ? anfrage<{ auftraege?: Auftrag[] }>('/api/main-agent/auftraege').catch(() => null) : Promise.resolve(null),
       anfrage<ApiAuswahlStand>(API_BASIS + '/auswahl?identity_id=' + encodeURIComponent(identityId)).catch(() => null),
     ]);
-    const l = st?.wahl && st.identity
-      ? (await anfrage<{ laeufe: ApiLauf[] }>(API_BASIS + '?project=' + encodeURIComponent(st.identity.project)).catch(() => null))?.laeufe
-        .find((x) => x.identity_id === st.identity?.identity_id) ?? null
+    // P22-T289 Nachbesserung (User-Befund deepseek-umsetzer): ein API-Lauf (api_agent_laeufe) entsteht auch ohne Laufwahl, z. B. per
+    // specialist spawn. Frueher wurde er nur mit Wahl gelesen -> Chip 'extern · nicht identifizierbar'. Quelle unveraendert GET api/laeufe?project.
+    const laufProjekt = st?.identity?.project ?? (istMain ? null : project ?? null);
+    const laufId = st?.identity?.identity_id ?? (istMain ? null : identityId);
+    const l = laufProjekt && laufId
+      ? (await anfrage<{ laeufe: ApiLauf[] }>(API_BASIS + '?project=' + encodeURIComponent(laufProjekt)).catch(() => null))?.laeufe
+        .find((x) => x.identity_id === laufId) ?? null
       : null;
     if (g !== generation.current) return;
     setModelle(m);
@@ -137,7 +143,7 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige, identity
     } else {
       setAbgelehnt(null);
     }
-  }, [identityId, istMain]);
+  }, [identityId, istMain, project]);
   useEffect(() => {
     void laden();
     // Gewaehlt/laeuft aendert sich auch ohne Klick (Auftrag ausgefuehrt, Failover). Waehrend eines Wechsels alle 2 s (Fortschritt).
@@ -177,7 +183,9 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige, identity
   const aktuellerEffort = istMain && gewaehltEintrag ? effortVon(gewaehltEintrag) : null;
   const wechselOffen = (status?.auftraege_offen ?? []).some((a) => a.art === 'runtime_wechsel' || a.art === 'modellwechsel');
   // P22-T281: aktuelle Laufart; ein API-Lauf bzw. eine API-Wahl geht vor der CLI-Anzeige.
-  const apiAktuell = lauf ? { modell: lauf.modell, anbieter: lauf.anbieter, stand: lauf.status } : api?.wahl ? { modell: api.wahl.modell, anbieter: api.wahl.anbieter, stand: api.wahl.phase } : null;
+  // P22-T289: ein API-Lauf ohne Wahl zaehlt, solange er bereit/laeuft/pausiert ist; gestoppt bzw. mit Fehler nur, wenn kein CLI-Lauf erkennbar ist.
+  const laufZaehlt = !!lauf && (!!api?.wahl || !['gestoppt', 'fehler'].includes(lauf.status) || !rt);
+  const apiAktuell = lauf && laufZaehlt ? { modell: lauf.modell, anbieter: lauf.anbieter, stand: standText(lauf.status) } : api?.wahl ? { modell: api.wahl.modell, anbieter: api.wahl.anbieter, stand: api.wahl.phase } : null;
   const apiText = apiAktuell ? 'API · ' + anbieterName(apiAktuell.anbieter) + ' · ' + apiAktuell.modell : '';
   const laufart = apiAktuell ? 'api' : rt ? rt === 'claude' ? 'cli' : 'codex' : 'extern';
   const cliText = rt ? (CLI_GRUPPE[rt] ?? rt) + ' · ' + (gewaehlt || istMain ? kurz(gewaehlt) : 'Modell unbekannt') + (aktuellerEffort ? ' · ' + aktuellerEffort : '') : '';
@@ -371,7 +379,7 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige, identity
         title={titel + (anzeige?.hinweis ? ' · ' + anzeige.hinweis : '')}
         onClick={umschalten}
         onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); umschalten(); } }}>
-        <i /> {pillText}{anzeige?.hinweis ? ' ⚠' : ''}{wechselOffen ? ' …' : ''} ▾
+        <i /><span className="chip-text">{pillText}{anzeige?.hinweis ? ' ⚠' : ''}{wechselOffen ? ' …' : ''}</span><span className="chip-pfeil" aria-hidden="true">▾</span>
       </div>
       : <button type="button" className={'chip' + (offen ? ' offen' : '') + (wechselOffen ? ' wechselt' : '')} title={titel} disabled={busy} onClick={umschalten}>
         {apiAktuell ? apiText : <>{rt ? (CLI_GRUPPE[rt] ?? rt) : 'Modell'} · {kurz(gewaehlt)}{aktuellerEffort ? ' · ' + aktuellerEffort : ''}{laeuft && laeuft !== gewaehlt ? ' (läuft ' + kurz(laeuft) + ')' : ''}</>}{wechselOffen ? ' …' : ''} ▾

@@ -12,13 +12,15 @@ import { useZitatAnhaenge } from '../../components/ZitatAnhaenge';
 import { type SendeZitat } from '../../components/zitat-logik';
 import { type ChannelAgentWindowState } from '../../components/ChannelAgentChatWindow';
 import { ChannelAgentFensterWeiche } from '../../components/ChannelAgentFensterWeiche';
+// P22-T289: gemeinsames Agentenfenster (Schalter web_ui_agentfenster_alle); AUS bzw. ohne Provider = bisherige Weiche.
+import { useAgentFensterOeffnen } from '../../components/AgentFenster';
 import { RuntimeAgentenPanel } from '../../components/RuntimeAgentenPanel';
 import { AttachmentDrafts, handleAttachmentDrop, type MockChatAttachment } from '../../components/ChatAttachments';
 import { StatusChip } from '../../components/StatusKennzeichnung';
 import { PageHeader } from '../../components/gemeinsam/PageHeader';
 import { ChannelMessageContent } from './ChannelMessageContent';
 import { herkunftText } from '../../api/control-plane-adapter';
-import type { Area, ChannelMemberViewModel, ChannelMessageViewModel, ChannelViewModel } from '../../control-plane/view-model';
+import type { AgentHerkunftViewModel, Area, ChannelMemberViewModel, ChannelMessageViewModel, ChannelViewModel } from '../../control-plane/view-model';
 
 // P22-T170: exportiert fuer die Browserabnahme (tests/lesefenster-herkunft-fixture.tsx), sonst unveraendert intern genutzt.
 export function ChannelsView({
@@ -62,6 +64,7 @@ export function ChannelsView({
   const [channelCollapsed, setChannelCollapsed] = useState(false);
   const [channelHeight, setChannelHeight] = useState(100);
   const [openAgentWindows, setOpenAgentWindows] = useState<ChannelAgentWindowState[]>([]);
+  const agentFenster = useAgentFensterOeffnen();
   const messageListRef = useRef<HTMLDivElement>(null);
   const channel = channels.find((item) => item.name === selectedChannel);
   const meldeUnten = () => {
@@ -95,8 +98,9 @@ export function ChannelsView({
     setSendState(Array.from(files).length + ' Datei(en) nicht angehängt: Die Web-UI kann noch keine Dateien hochladen. Es wird nur Text gesendet.');
   };
 
-  const openChannelAgent = (agent: { name: string; identityId?: string; role: string; status: string }) => {
+  const openChannelAgent = (agent: { name: string; identityId?: string; role: string; status: string; herkunft?: AgentHerkunftViewModel }) => {
     if (!selectedChannel) return;
+    if (agentFenster) { agentFenster({ project, name: agent.name, identityId: agent.identityId, rolle: agent.role, status: agent.status, herkunft: agent.herkunft, quelle: 'channel', channel: selectedChannel }); return; }
     const key = project + '::' + selectedChannel + '::' + (agent.identityId ? 'identity:' + agent.identityId : 'legacy:' + agent.name);
     setOpenAgentWindows((current) => {
       const existing = current.find((item) => item.key === key);
@@ -115,6 +119,13 @@ export function ChannelsView({
 
   const closeChannelAgent = (key: string) => {
     setOpenAgentWindows((current) => current.filter((item) => item.key !== key));
+  };
+
+  // P22-T289: Absender einer Nachricht (Kuerzel, Name) -> Agentenfenster; Identitaet aus der Mitgliederliste, sonst sucht das Fenster sie.
+  const oeffneAbsender = (sender: string) => {
+    if (!agentFenster) return;
+    const m = members.find((item) => item.name === sender);
+    agentFenster({ project, name: sender, identityId: m?.identityId, rolle: m?.role, status: m?.status, herkunft: m?.herkunft, quelle: 'channel-absender', channel: selectedChannel || undefined });
   };
 
   const submit = async (event: FormEvent) => {
@@ -199,9 +210,11 @@ export function ChannelsView({
             {fensterModus && onAeltere && <button type="button" onClick={onAeltere}>↑ Ältere Nachrichten laden</button>}
             {messages.map((message) => (
               <article key={message.id} onContextMenu={(event) => channelZitat.beiKontextmenue(event, 'channel:' + message.id, project)}>
-                <div className="message-avatar">{message.sender.slice(0, 2).toUpperCase()}</div>
+                {agentFenster
+                  ? <button type="button" className="message-avatar" title={'Agentenfenster: ' + message.sender} aria-label={'Agentenfenster ' + message.sender + ' öffnen'} onClick={() => oeffneAbsender(message.sender)}>{message.sender.slice(0, 2).toUpperCase()}</button>
+                  : <div className="message-avatar">{message.sender.slice(0, 2).toUpperCase()}</div>}
                 <div>
-                  <header><strong>{message.senderAnzeige ?? message.sender}</strong><AgentTaskMarke project={project} name={message.sender} /><LaufHerkunftMarke project={project} name={message.sender} /><time>{message.createdAt ? new Date(message.createdAt).toLocaleString('de-DE') : ''}</time></header>
+                  <header className={agentFenster ? 'mit-agentfenster' : undefined} onClick={agentFenster ? (event) => { const ziel = (event.target as HTMLElement).closest('strong'); if (ziel?.parentElement === event.currentTarget) oeffneAbsender(message.sender); } : undefined}><strong>{message.senderAnzeige ?? message.sender}</strong><AgentTaskMarke project={project} name={message.sender} /><LaufHerkunftMarke project={project} name={message.sender} /><time>{message.createdAt ? new Date(message.createdAt).toLocaleString('de-DE') : ''}</time></header>
                   <ChannelMessageContent message={message} project={project} />
                 </div>
               </article>

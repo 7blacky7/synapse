@@ -15,6 +15,8 @@ import '../channel-fenster-p22-t254.css';
 import '../agententeam-suche-p22-t270.css';
 // Abnahme 576de978 B1: gemeinsame Viewport-Begrenzung mit dem Channel-Fenster (P22-T254).
 import { fensterImViewport } from './fenster-grenze';
+// P22-T289: aus einem Agentenfenster geoeffnet liegt das Ausweis-Fenster im gemeinsamen Stapel (sonst unter dem Agentenfenster).
+import { entferneFenster, fensterEbene, holeNachVorne, useAgentFensterStapel } from './agentfenster-stapel';
 
 /*
  * P22-T270 (User thought 9ddef22c + 7b25b0c1): Ausweis-Fenster der Agententeam-Suche. Gleiche Fenster-Bedienung wie das Channel-Fenster
@@ -37,6 +39,8 @@ const Kontext = createContext<{ oeffne: (ziel: AusweisFensterZiel) => void } | n
 export const useAusweisFenster = () => useContext(Kontext);
 
 const fensterId = (z: AusweisFensterZiel) => z.project + '::' + (z.modus === 'anlegen' ? 'anlegen' : teamSchluessel(z.agent));
+/** P22-T289: Stapel-ID; nur wer sie vor dem Oeffnen nach vorne holt (AgentFenster), legt das Fenster in den Stapel. */
+export const ausweisStapelId = (z: AusweisFensterZiel) => 'ausweis:' + fensterId(z);
 const fehlerText = (e: unknown) => (e instanceof AusweisFehler || e instanceof Error ? e.message : String(e));
 
 function Fenster({ eintrag, onClose, onWechsel }: { eintrag: Eintrag; onClose: () => void; onWechsel: (ziel: AusweisFensterZiel) => void }) {
@@ -46,6 +50,12 @@ function Fenster({ eintrag, onClose, onWechsel }: { eintrag: Eintrag; onClose: (
   const [minimiert, setMinimiert] = useState(false);
   const zug = useRef<{ id: number; x: number; y: number; px: number; py: number } | null>(null);
   const fenster = useRef<HTMLElement>(null);
+  // P22-T289: im Stapel nur, wenn ein Agentenfenster es geoeffnet hat; sonst Ebene aus dem CSS wie bisher.
+  const stapel = useAgentFensterStapel();
+  const sid = 'ausweis:' + eintrag.id;
+  const imStapel = stapel.includes(sid);
+  const ebene = imStapel ? fensterEbene(stapel, sid, true) : undefined;
+  useEffect(() => () => entferneFenster(sid), [sid]);
   // B1 (390px): Startposition, Ziehen und Viewport-Aenderung an die Fensterbreite begrenzen (CSS: <=760px Breite 100vw-16px).
   const grenze = (x: number, y: number) => {
     return fensterImViewport(x, y, fenster.current?.getBoundingClientRect().width ?? 0, window.innerWidth, window.innerHeight);
@@ -60,7 +70,8 @@ function Fenster({ eintrag, onClose, onWechsel }: { eintrag: Eintrag; onClose: (
   const move = (e: PointerEvent<HTMLElement>) => { const z = zug.current; if (!z || z.id !== e.pointerId) return; setPosition(grenze(z.px + e.clientX - z.x, z.py + e.clientY - z.y)); };
   const up = (e: PointerEvent<HTMLElement>) => { if (zug.current?.id === e.pointerId) zug.current = null; };
   const titel = ziel.modus === 'anlegen' ? 'Ausweis erstellen' : ziel.agent.name;
-  return <section ref={fenster} className={'channel-eigenfenster ausweis-fenster' + (minimiert ? ' minimiert' : '')} style={{ left: position.x, top: position.y }} role="dialog"
+  return <section ref={fenster} className={'channel-eigenfenster ausweis-fenster' + (minimiert ? ' minimiert' : '')} style={{ left: position.x, top: position.y, zIndex: ebene }} role="dialog"
+    data-agentfenster-ebene={ebene} onPointerDownCapture={imStapel ? () => holeNachVorne(sid) : undefined}
     aria-label={(ziel.modus === 'anlegen' ? 'Ausweis erstellen' : 'Ausweis ' + titel) + ' · ' + ziel.project} data-modus={ziel.modus}
     data-identitaet={ziel.modus === 'anzeigen' ? ziel.agent.identityId || 'wrapper' : undefined}>
     <header className="channel-eigenfenster-kopf" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}>

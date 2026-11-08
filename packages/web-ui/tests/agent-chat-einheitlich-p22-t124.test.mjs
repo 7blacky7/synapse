@@ -51,7 +51,9 @@ const dock = readFileSync(join(repo, 'packages/web-ui/src/components/ProjectCoor
 const weiche = readFileSync(join(repo, 'packages/web-ui/src/components/ChannelAgentFensterWeiche.tsx'), 'utf8');
 const pac = readFileSync(join(repo, 'packages/web-ui/src/components/PlattformAgentChat.tsx'), 'utf8');
 const ein2 = readFileSync(join(repo, 'packages/web-ui/src/components/EinheitlicherAgentChat.tsx'), 'utf8');
-assert.match(dock, /<PlattformAgentChat [^>]*project=\{open\.project\}/);
+// P22-T289: das Dock rendert AgentFenster, der Chat steckt dort.
+assert.match(dock, /<AgentFenster [^>]*project=\{open\.project\}/);
+assert.match(readFileSync(join(repo, 'packages/web-ui/src/components/AgentFenster.tsx'), 'utf8'), /<PlattformAgentChat [^>]*project=\{p\.project\}/);
 assert.match(weiche, /<PlattformAgentChat [^>]*project=\{props\.project\}/);
 assert.match(pac, /<EinheitlicherAgentChat [^>]*project=\{project\}/);
 // P22-T137: Text als Markdown ueber KlartextText (VerweisText steckt darin, Projektbezug bleibt).

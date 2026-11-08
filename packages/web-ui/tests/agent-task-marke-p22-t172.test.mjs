@@ -155,7 +155,8 @@ ok(/<strong>\{agent\.name\}<AgentTaskMarke project=\{project\} identityId=\{agen
   && /<AktuelleTaskAbsatz project=\{project\} identityId=\{current\.identityId\}[^>]*rueckfall=\{current\.currentTask\} \/>/.test(team), 'P22-T172 ProjectAgentTeamView.tsx: Agententeam Liste, Kopf, Absatz mit Rueckfall');
 const rap = quelle('RuntimeAgentenPanel.tsx');
 ok((rap.match(/\{z\.name\}<AgentTaskMarke project=\{project\} identityId=\{z\.identity_id\} name=\{z\.name\} \/>/g) ?? []).length === 2, 'P22-T172 RuntimeAgentenPanel.tsx: neue und alte Tabelle');
-ok((quelle('ProjectCoordinatorDock.tsx').match(/<AgentTaskMarke /g) ?? []).length === 2, 'P22-T172 ProjectCoordinatorDock.tsx: Leiste und Fensterkopf');
+// P22-T289: der Fensterkopf steckt in AgentFenster.tsx (eine Fensterkomponente fuer alle Agenten).
+ok((quelle('ProjectCoordinatorDock.tsx').match(/<AgentTaskMarke /g) ?? []).length === 1 && /<AgentTaskMarke project=\{p\.project\} identityId=\{p\.identityId \?\? undefined\}/.test(quelle('AgentFenster.tsx')), 'P22-T172 ProjectCoordinatorDock.tsx: Leiste; Fensterkopf in AgentFenster.tsx');
 ok(/\{windowState\.agentName\}<AgentTaskMarke project=\{project\} identityId=\{windowState\.identityId\}/.test(quelle('ChannelAgentChatWindow.tsx')), 'P22-T172 ChannelAgentChatWindow.tsx: Fensterkopf');
 ok(/\{props\.windowState\.agentName\}<AgentTaskMarke project=\{props\.project\} identityId=\{id\}/.test(quelle('ChannelAgentFensterWeiche.tsx')), 'P22-T172 ChannelAgentFensterWeiche.tsx: Direktchat-Kopf');
 ok(/<strong>\{z\.agentId\}<AgentTaskMarke project=\{project\} identityId=\{z\.identityId\}/.test(quelle('AusweisIdentitaetenPanel.tsx')), 'P22-T172 AusweisIdentitaetenPanel.tsx: Identitaetenliste');

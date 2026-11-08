@@ -1,0 +1,17 @@
+/*
+ * P22-T289: Agentenfenster fuer alle Agenten (AgentFenster.tsx). Aufbau und Stil kommen aus dem Koordinatorfenster
+ * (project-coordinator-dock.css, P22-T280); hier nur, was neu ist: Hinweis ohne Identitaet und die Klickziele im Channel.
+ * Nur Theme-Variablen, IBM Plex Mono fuer Labels.
+ */
+.main-assistant-window.coordinator-info-window.koordinator-dock-fenster.ohne-identitaet{width:min(420px,calc(100vw - 32px))}
+.koordinator-dock-fenster>.agentfenster-hinweis{margin:10px 14px 14px;padding:10px 12px;border:1px solid var(--border);border-left:2px solid var(--accent);background:var(--strong);color:var(--muted);font:10px/1.55 "IBM Plex Mono",monospace}
+.koordinator-dock-fenster>.agentfenster-hinweis>strong{display:block;margin-bottom:4px;color:var(--text);font-weight:700;font-size:9px;text-transform:uppercase;letter-spacing:.04em}
+.koordinator-dock-fenster>.agentfenster-hinweis>p{margin:4px 0 0}
+/* Mit Knopf „Ausweis“ sind zwei Knoepfe im Kopf: Chip kuerzt frueher, damit Name und Task lesbar bleiben. */
+.main-assistant-window.koordinator-dock-fenster>header.conversation-head:has(>.agentfenster-ausweis) .hauptagent-modell-chip .chip-status{max-width:200px}
+.main-assistant-window.koordinator-dock-fenster>header.conversation-head:has(>.agentfenster-ausweis)>.hauptagent-modell-chip{flex-shrink:0}
+/* Absender im Channel: Kuerzel und Name oeffnen das Agentenfenster (nur bei Schalter web_ui_agentfenster_alle EIN). */
+.channel-messages button.message-avatar{padding:0;border:1px solid transparent;cursor:pointer}
+.channel-messages button.message-avatar:hover,.channel-messages button.message-avatar:focus-visible{border-color:var(--accent);outline:0}
+.channel-messages article header.mit-agentfenster>strong{cursor:pointer}
+.channel-messages article header.mit-agentfenster>strong:hover{color:var(--accent)}

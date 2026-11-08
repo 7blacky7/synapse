@@ -112,7 +112,8 @@ ok(nach(team, 'name={agent.agentId || agent.name} />', '<LaufHerkunftMarke proje
   && nach(team, 'name={current.agentId || current.name} />', '<LaufHerkunftMarke project={project} identityId={current.identityId} name={current.agentId || current.name} />'),
   'P22-T178 ProjectAgentTeamView.tsx: Agententeam Liste und Kopf');
 ok((quelle('RuntimeAgentenPanel.tsx').match(/<LaufHerkunftMarke project=\{project\} identityId=\{z\.identity_id\} name=\{z\.name\} \/>/g) ?? []).length === 2, 'P22-T178 RuntimeAgentenPanel.tsx: neue und alte Tabelle');
-ok((quelle('ProjectCoordinatorDock.tsx').match(/<LaufHerkunftMarke /g) ?? []).length === 2, 'P22-T178 ProjectCoordinatorDock.tsx: Leiste und Fensterkopf');
+// P22-T289: der Fensterkopf steckt in AgentFenster.tsx (eine Fensterkomponente fuer alle Agenten).
+ok((quelle('ProjectCoordinatorDock.tsx').match(/<LaufHerkunftMarke /g) ?? []).length === 1 && /<LaufHerkunftMarke project=\{p\.project\} identityId=\{p\.identityId \?\? undefined\}/.test(quelle('AgentFenster.tsx')), 'P22-T178 ProjectCoordinatorDock.tsx: Leiste; Fensterkopf in AgentFenster.tsx');
 ok(/<LaufHerkunftMarke project=\{project\} identityId=\{windowState\.identityId\}/.test(quelle('ChannelAgentChatWindow.tsx'))
   && /<LaufHerkunftMarke project=\{props\.project\} identityId=\{id\}/.test(quelle('ChannelAgentFensterWeiche.tsx')), 'P22-T178 ChannelAgentChatWindow/ChannelAgentFensterWeiche: Chat-Koepfe');
 ok(/<LaufHerkunftMarke project=\{project\} identityId=\{z\.identityId\} name=\{z\.agentId\} \/>/.test(quelle('AusweisIdentitaetenPanel.tsx')), 'P22-T178 AusweisIdentitaetenPanel.tsx: Identitaetenliste');

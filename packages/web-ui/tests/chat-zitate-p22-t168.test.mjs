@@ -393,7 +393,8 @@ ok(/\}, controller\.signal, zitate\.length \? zitate : undefined\);/.test(main) 
 const api = lies('packages/web-ui/src/api/agent-runtime.ts');
 ok(/body: JSON\.stringify\(\{ message, \.\.\.\(zitate\?\.length \? \{ zitate \} : \{\}\) \}\)/.test(api) && /body: JSON\.stringify\(\{ identity_id: identityId, text, \.\.\.\(zitate\?\.length \? \{ zitate \} : \{\}\) \}\)/.test(api), 'H API: zitate nur bei Bedarf im Body');
 // F2: Koordinator-Fenster (Dock) und Agenten-/Spezialisten-Fenster (Channel-Weiche) laufen ueber PlattformAgentChat -> EinheitlicherAgentChat.
-ok(/<PlattformAgentChat\b[^>]*identityId=\{open\.id\}/.test(lies('packages/web-ui/src/components/ProjectCoordinatorDock.tsx')), 'H F2 Koordinator-Dock -> PlattformAgentChat');
+ok(/<AgentFenster\b[^>]*identityId=\{open\.id\}/.test(lies('packages/web-ui/src/components/ProjectCoordinatorDock.tsx'))
+  && /<PlattformAgentChat\b[^>]*identityId=\{p\.identityId\}/.test(lies('packages/web-ui/src/components/AgentFenster.tsx')), 'H F2 Koordinator-Dock -> AgentFenster -> PlattformAgentChat (P22-T289)');
 ok(/<PlattformAgentChat\b[^>]*identityId=\{id\}/.test(lies('packages/web-ui/src/components/ChannelAgentFensterWeiche.tsx')), 'H F2 Agenten-/Spezialisten-Fenster (Weiche) -> PlattformAgentChat');
 const pac = lies('packages/web-ui/src/components/PlattformAgentChat.tsx');
 // P22-T194 Plan29284: Cache-Status umschliesst beide Zweige, derselbe Einheitlich-Schalter entscheidet weiterhin F2.
