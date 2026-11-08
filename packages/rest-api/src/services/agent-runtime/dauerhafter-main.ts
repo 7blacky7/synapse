@@ -22,9 +22,32 @@ export function letzterMainWegFehler(): MainWegFehler | null {
 
 /** Wartezeit des Web-UI-Chats auf einen API-Turn des Main; danach steht die Antwort im Verlauf, sobald der Turn endet. */
 const API_MAIN_WARTE_MS = 10 * 60_000;
+/** P22-T278 P2-1: Wartezeit auf den Rueckfall-Modellwechsel des Main (wie der Start in stelleMainLaufSicher: 90 s). */
+const RUECKFALL_WECHSEL_WARTE_MS = 90_000;
+
+/** P22-T278 P2-1: Ausgabe von apiLaufMainTurn an den Aufrufer, wenn der Turn in den Rueckfall ging (null = kein Auftrag offen). */
+export interface ApiMainTurnInfo { rueckfall?: { modell: string | null } }
+
+/**
+ * P22-T278 P2-1: Nach dem Rueckfall startet der Runtime-Daemon den Main ueber den Modellwechsel-Auftrag (stop + spawn). Der Chat-Turn
+ * wartet darauf, statt parallel selbst zu starten (sonst zwei Starts derselben Identitaet bzw. ein Neustart mitten im Turn).
+ * Nach der Wartezeit noch offen -> main_start_dauert (wie ein langsamer Start; die Nachricht wird nicht ausgefuehrt, nie doppelt).
+ */
+export async function warteAufRueckfallWechsel(identityId: string, warteMs = RUECKFALL_WECHSEL_WARTE_MS, taktMs = 1_000): Promise<{ gewartet_ms: number }> {
+  const { RUECKFALL_AUFTRAG_VON } = await import('../api-agent-lauf.js');
+  const start = Date.now();
+  while (true) {
+    const r = await getPool().query<{ id: string }>(
+      "SELECT id FROM agent_runtime_auftraege WHERE identity_id = $1 AND erstellt_von = $2 AND status IN ('pending','claimed','accepted') LIMIT 1",
+      [identityId, RUECKFALL_AUFTRAG_VON]);
+    if (!r.rows[0]) return { gewartet_ms: Date.now() - start };
+    if (Date.now() - start >= warteMs) throw new MainLaufFehler('main_start_dauert', { auftrag_id: r.rows[0].id, grund: 'rueckfall_modellwechsel_offen' });
+    await new Promise(res => setTimeout(res, taktMs));
+  }
+}
 
 export async function apiLaufMainTurn(
-  session: MainAgentSession, message: string, modell: string, emit: (event: RuntimeStreamEvent) => void,
+  session: MainAgentSession, message: string, modell: string, emit: (event: RuntimeStreamEvent) => void, info?: ApiMainTurnInfo,
 ): Promise<RuntimeMessageResult | null> {
   const identityId = session.identityId;
   if (!identityId) return null;
@@ -35,7 +58,7 @@ export async function apiLaufMainTurn(
     return null;
   }
   if (wahl && (wahl.phase!=='aktiv' || wahl.modell!==modell)) throw Object.assign(new Error('api_wechsel_nicht_bereit'),{code:'api_wechsel_nicht_bereit'});
-  const { apiAgentLauf } = await import('../api-agent-lauf.js');
+  const { apiAgentLauf, RUECKFALL_AUFTRAG_VON } = await import('../api-agent-lauf.js');
   const verwaltung = apiAgentLauf();
   if (!verwaltung) {
     throw Object.assign(new Error('Hauptagent per API-Lauf nicht moeglich (api_lauf_aus): Lauf-Verwaltung laeuft nicht (SYNAPSE_API_AGENTEN_LAUF_DISABLED)'),
@@ -54,9 +77,16 @@ export async function apiLaufMainTurn(
   emit({ event: 'runtime', data: { hauptagent: { weg: 'api_lauf', identity_id: identityId, modell, anbieter, schritt: 'arbeitet' } } });
   const eingang = await legeApiEingangAn({ identity_id: identityId, text: message, quelle: 'main_chat', absender: 'user' });
   const r = await verwaltung.warteAufEingang(eingang.id, API_MAIN_WARTE_MS);
-  if (!wahl && r.art === 'nicht_begonnen' && r.code === 'rueckfall_container') {
-    // Tageslimit gerade erschoepft: Rueckfall, diese Nachricht geht ueber den Container-Main (Bestand) des Aufrufers.
-    emit({ event: 'runtime', data: { hauptagent: { weg: 'ruckfall_container', identity_id: identityId, grund: 'budget_erschoepft' } } });
+  if (r.art === 'nicht_begonnen' && r.code === 'rueckfall_container') {
+    // Tageslimit gerade erschoepft: Rueckfall, diese Nachricht geht genau einmal ueber den Container-Main (Bestand) des Aufrufers.
+    // P22-T278 P2-1 (Abnahme 1dbf6af2): auch MIT Laufwahl (T202-Weg der UI); rueckfallContainer hat Lease und Wahl freigegeben und den
+    // main_chat-Eingang ohne API-Turn erledigt. Das Rueckfallmodell (offener Modellwechsel-Auftrag) geht an den Aufrufer.
+    const w = await getPool().query<{ modell: string | null }>(
+      "SELECT gewuenscht->>'modell' AS modell FROM agent_runtime_auftraege WHERE identity_id = $1 AND erstellt_von = $2 AND status IN ('pending','claimed','accepted') LIMIT 1",
+      [identityId, RUECKFALL_AUFTRAG_VON]).catch(() => null);
+    const rueckfallModell = w?.rows[0]?.modell ?? null;
+    if (info) info.rueckfall = { modell: rueckfallModell };
+    emit({ event: 'runtime', data: { hauptagent: { weg: 'ruckfall_container', identity_id: identityId, grund: 'budget_erschoepft', modell: rueckfallModell, mit_wahl: !!wahl } } });
     return null;
   }
   if (r.art === 'nicht_begonnen') {
@@ -84,7 +114,8 @@ export async function dauerhafterMainTurn(
     return null;
   }
   // P22-T183 B7b: API-Modell + Schalter api_agenten_lauf_intern EIN -> Turn IM API-Prozess statt Container-Job; sonst Bestand.
-  const apiTurn = await apiLaufMainTurn(session, message, modell, emit);
+  const info: ApiMainTurnInfo = {};
+  const apiTurn = await apiLaufMainTurn(session, message, modell, emit, info);
   if (apiTurn) return apiTurn;
   const optionen = leseMainLaufOptionen();
   if (!(await runtimeDaemonAngemeldet(runtime))) {
@@ -94,16 +125,27 @@ export async function dauerhafterMainTurn(
   }
   try {
     emit({ event: 'runtime', data: { hauptagent: { weg: 'dauerhaft', identity_id: session.identityId, schritt: 'start_pruefen' } } });
+    // P22-T278 P2-1: nach dem Rueckfall erst den Modellwechsel-Auftrag abwarten (er startet den Main mit dem Rueckfallmodell).
+    if (info.rueckfall) {
+      emit({ event: 'runtime', data: { hauptagent: { weg: 'dauerhaft', schritt: 'rueckfall_wechsel_abwarten', modell: info.rueckfall.modell } } });
+      await warteAufRueckfallWechsel(session.identityId);
+    }
     // P22-T62: Start noetig -> Standard aus core (Schalter hauptagent_cli_modelle EIN: User-Wahl der Runtime bzw. kleinstes
     // Modell der CLI-Liste; AUS: das uebergebene Treiber-Modell). Ein konfiguriertes Profil-Modell geht in stelleMainLaufSicher vor.
     // P22-T70: die User-Wahl ist ausdruecklich und geht vor dem Profil-Modell (modell_bestaetigt) in stelleMainLaufSicher.
     let startModell = modell;
     let modellExplizit = false;
     if ((await leseMainLauf(session.identityId, runtime)).zustand !== 'laeuft') {
-      const w = await standardModellFuerRuntime(runtime, async () => modell);
-      if (!w.modell) throw new MainLaufFehler('standardmodell_unbestimmt', { runtime, grund: w.grund });
-      startModell = w.modell;
-      modellExplizit = w.quelle === 'user_wahl';
+      if (info.rueckfall?.modell) {
+        // P22-T278 P2-1: Main laeuft nach dem Wechsel-Auftrag noch nicht -> mit dem Rueckfallmodell starten, nie mit dem API-Alias.
+        startModell = info.rueckfall.modell;
+        modellExplizit = true;
+      } else {
+        const w = await standardModellFuerRuntime(runtime, async () => modell);
+        if (!w.modell) throw new MainLaufFehler('standardmodell_unbestimmt', { runtime, grund: w.grund });
+        startModell = w.modell;
+        modellExplizit = w.quelle === 'user_wahl';
+      }
     }
     const start = await stelleMainLaufSicher({ identity_id: session.identityId, runtime, modell: startModell, modell_explizit: modellExplizit });
     if (start.zustand !== 'laeuft') throw new MainLaufFehler('main_start_dauert', { spawn_job_id: start.spawn_job_id });

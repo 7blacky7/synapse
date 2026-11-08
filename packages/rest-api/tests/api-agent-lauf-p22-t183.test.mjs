@@ -535,8 +535,8 @@ try{
  await section('I Rueckfall auf Container bei Tageslimit (api-agent-lauf.ts, agent-container.ts spawneRueckfallImContainer)',async()=>{
   const L=await load('packages/rest-api/dist/services/api-agent-lauf.js');
   const warte=ms=>new Promise(r=>setTimeout(r,ms));
-  check(L.containerModellFuer('api-opus',{})==='opus'&&L.containerModellFuer('or-deepseek-chat',{})==='sonnet'
-   &&L.containerModellFuer('api-haiku',{SYNAPSE_API_RUECKFALL_MODELL:'codex'})==='codex','P22-T183 containerModellFuer: api-<cli> -> <cli>, sonst sonnet, Env ueberschreibt');
+  // P22-T278 (User ae449129, 08.11.2026): eine Rueckfall-Kette fuer ALLE API-Anbieter; containerModellFuer (api-<cli> -> <cli>, sonst sonnet) entfaellt.
+  check(L.containerModellFuer===undefined&&L.RUECKFALL_AUFTRAG_VON==='api-tageslimit','P22-T278 containerModellFuer entfaellt, Rueckfall-Kette fuer alle Anbieter');
   const ein=await C.leseApiLaufEinstellungen();
   check(!('auto_turns_max' in ein)&&!C.API_LAUF_EINSTELLUNG_NAMEN.includes('auto_turns_max'),'P22-T183 User-Korrektur: auto_turns_max entfernt (einzige Grenze = Tageslimit)');
   // spawneRueckfallImContainer: serverintern ohne Akteur (public spawneImContainer verlangt User/Koordinator).
@@ -567,11 +567,11 @@ try{
   await C.legeApiEingangAn({identity_id:R.identity_id,text:'Dritte Nachricht',quelle:'inbox',absender:'claude-y',sofort:true});
   await v.takt();await v.warteAufTurns();
   const l1=await lauf(R);const th=werkzeugRufe.find(w=>w.name==='thought');const sp=spawns[0];
-  check(l1.status==='gestoppt'&&/^rueckfall_container: Container-Agent gestartet \(sonnet\)/.test(l1.letzter_fehler??'')&&l1.lease_token===null&&await offen(R)===0,
+  check(l1.status==='gestoppt'&&/^rueckfall_container: Container-Agent gestartet \(haiku\)/.test(l1.letzter_fehler??'')&&l1.lease_token===null&&await offen(R)===0,
    'P22-T183 Rueckfall: budget_erschoepft -> Lauf gestoppt mit Marke rueckfall_container, Eingaenge uebergeben',l1);
   check(th&&th.args.tags.includes('session-uebergabe')&&/Erste Antwort\./.test(th.args.content)&&/Zweite Nachricht/.test(th.args.content)&&/Dritte Nachricht/.test(th.args.content),
    'P22-T183 Rueckfall: Uebergabe-thought (session-uebergabe) aus Verlauf + offenen Eingaengen',th?.args);
-  check(spawns.length===1&&sp.name===R.agent_id&&sp.project===P&&sp.model==='sonnet'&&sp.task.includes(UID)&&/Zweite Nachricht/.test(sp.task)&&/Dritte Nachricht/.test(sp.task),
+  check(spawns.length===1&&sp.name===R.agent_id&&sp.project===P&&sp.model==='haiku'&&sp.task.includes(UID)&&/Zweite Nachricht/.test(sp.task)&&/Dritte Nachricht/.test(sp.task),
    'P22-T183 Rueckfall: Container-Agent mit demselben Namen (= Identitaet/Ausweis), Uebergabe und offenen Eingaengen im Auftrag',sp);
   const z=v.zustand().ruckfall_container;
   check(z.anzahl===1&&z.letzter.ok===true&&z.letzter.thought===UID&&v.zustand().letzte.some(x=>x.ende==='ruckfall_container'),'P22-T183 LaufVerwaltung.zustand: Debug ruckfall_container',z);
@@ -588,7 +588,9 @@ try{
   await C.legeApiEingangAn({identity_id:R.identity_id,text:'Mitten im Turn',quelle:'chat',sofort:true});
   await vF.takt();await vF.warteAufTurns();
   const l2=await lauf(R);
-  check(spawnsF.length===1&&l2.status==='fehler'&&/^rueckfall_container_fehlgeschlagen: kontingent_erreicht/.test(l2.letzter_fehler??'')&&vF.zustand().ruckfall_container.fehlgeschlagen===1,
+  // P22-T278 (User ae449129): Kette fuer alle Anbieter -> jedes verfuegbare Rueckfallmodell genau einmal, erst haiku.
+  check(spawnsF.length>=1&&spawnsF[0].model==='haiku'&&new Set(spawnsF.map(x=>x.model)).size===spawnsF.length
+   &&vF.zustand().ruckfall_container.letzter.versuche.every(x=>x.ergebnis!=='gestartet')&&l2.status==='fehler'&&/^rueckfall_container_fehlgeschlagen: kontingent_erreicht/.test(l2.letzter_fehler??'')&&vF.zustand().ruckfall_container.fehlgeschlagen===1,
    'P22-T183 Rueckfall: budget_erschoepft mitten im Turn -> Rueckfall; Spawn scheitert -> Status fehler mit Grund',l2);
   // 3) Grenze je Agent (agent_budget_erschoepft, Live-Grenztest): Rueckfall statt Status fehler.
   await C.steuereApiLauf(USER,{identity_id:R.identity_id,aktion:'fortsetzen',grund:'Test T183 Agent-Grenze'});

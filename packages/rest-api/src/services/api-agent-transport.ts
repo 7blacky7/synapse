@@ -10,12 +10,15 @@
  *   SYNAPSE_OPENROUTER_API_KEY, Rueckfall NUR lesend auf JEV_OPENROUTER_API_KEY. body usage.include = true -> usage.cost (USD) wird
  *   gebucht (Quelle antwort). Budget/Buchung in api_agent_reservierungen/agent_verbrauch, NIE in jev_budget_stand (Jev-Bremse getrennt).
  *   Basis-URL: SYNAPSE_OPENROUTER_BASE_URL (Tests: lokaler Fake-Server), sonst https://openrouter.ai/api/v1.
+ * DEEPSEEK DIREKT (P22-T278): derselbe OpenAI-Format-Ablauf (rufeOpenAiFormat) gegen <SYNAPSE_DEEPSEEK_BASE_URL|https://api.deepseek.com>
+ *   /chat/completions, Key nur SYNAPSE_DEEPSEEK_API_KEY, nur bei Schalter api_deepseek_direkt EIN. Kosten aus usage (Cache-Treffer/
+ *   -Fehlschuss) mit Tarif-Faktor (core), reasoning_content der laufenden Runde geht zurueck (Thinking-Modus mit Werkzeugen).
  * Der Key steht nie in einer Antwort oder Meldung (Text wird maskiert); die Debugzeile nennt nur die Key-Quelle.
  */
 import Anthropic from '@anthropic-ai/sdk';
 import {
   reserviereApiAufruf, schliesseApiAufrufAb, leseApiModelle, aktuellerApiKey, anthropicKopfzeilen, istWorkspaceFehlt, API_WORKSPACE_HINWEIS,
-  API_ANBIETER, API_ANBIETER_OPENROUTER, nachAnthropic, vonAnthropic, stopAusAnthropic, nachOpenAi, werkzeugeNachOpenAi, antwortAusOpenAi,
+  API_ANBIETER, API_ANBIETER_OPENROUTER, API_ANBIETER_DEEPSEEK, API_DEEPSEEK_FUNKTION, leseDeepseekSchalter, nachAnthropic, vonAnthropic, stopAusAnthropic, nachOpenAi, werkzeugeNachOpenAi, antwortAusOpenAi,
   nutzungAusOpenAi,
   type ApiAnbieter, type ApiNachricht, type ApiWerkzeugDef, type ApiAnbieterAntwort, type ApiUsage, type ApiNutzung,
 } from '@synapse/core';
@@ -67,6 +70,24 @@ export function openRouterBasis(env: NodeJS.ProcessEnv = process.env): string {
   return (env[OPENROUTER_BASIS_ENV]?.trim() || OPENROUTER_BASIS).replace(/\/+$/, '');
 }
 
+/** P22-T278: DeepSeek direkt - Key nur aus der Server-Umgebung: SYNAPSE_DEEPSEEK_API_KEY bevorzugt, sonst DEEPSEEK_API_KEY (Nachauftrag A,
+ *  so steht er in der .env des Users). Basis-URL (Tests: lokaler Fake-Server). Nach aussen nur die Quelle, nie der Wert. */
+export const DEEPSEEK_KEY_ENV = 'SYNAPSE_DEEPSEEK_API_KEY' as const;
+export const DEEPSEEK_KEY_RUECKFALL_ENV = 'DEEPSEEK_API_KEY' as const;
+export const DEEPSEEK_BASIS_ENV = 'SYNAPSE_DEEPSEEK_BASE_URL' as const;
+const DEEPSEEK_BASIS = 'https://api.deepseek.com';
+
+export function deepseekSchluessel(env: NodeJS.ProcessEnv = process.env): { key: string | null; quelle: typeof DEEPSEEK_KEY_ENV | typeof DEEPSEEK_KEY_RUECKFALL_ENV | null } {
+  const k = env[DEEPSEEK_KEY_ENV]?.trim();
+  if (k) return { key: k, quelle: DEEPSEEK_KEY_ENV };
+  const r = env[DEEPSEEK_KEY_RUECKFALL_ENV]?.trim();
+  return r ? { key: r, quelle: DEEPSEEK_KEY_RUECKFALL_ENV } : { key: null, quelle: null };
+}
+
+export function deepseekBasis(env: NodeJS.ProcessEnv = process.env): string {
+  return (env[DEEPSEEK_BASIS_ENV]?.trim() || DEEPSEEK_BASIS).replace(/\/+$/, '');
+}
+
 export interface TransportAnfrage {
   kontext: TransportKontext;
   /** Registry-Alias (api-sonnet, or-deepseek-chat, ...) */
@@ -107,6 +128,7 @@ export async function rufeApiTransport(a: TransportAnfrage): Promise<TransportEr
   const modellZeile = (await leseApiModelle()).find(m => m.alias === a.modell);
   const anbieter: ApiAnbieter = modellZeile?.anbieter ?? API_ANBIETER;
   if (anbieter === API_ANBIETER_OPENROUTER) return rufeOpenRouter(a);
+  if (anbieter === API_ANBIETER_DEEPSEEK) return rufeDeepSeek(a);
   return rufeAnthropic(a);
 }
 
@@ -177,31 +199,85 @@ async function rufeAnthropic(a: TransportAnfrage): Promise<TransportErgebnis> {
   }
 }
 
+/** P22-T278: Ziel eines Aufrufs im OpenAI-Format. OpenRouter und DeepSeek direkt teilen EINEN Ablauf (Reservierung -> Anbieter -> Buchung). */
+interface OpenAiZiel {
+  anbieter: ApiAnbieter;
+  /** Anzeigename in Meldungen (OpenRouter, DeepSeek) */
+  name: string;
+  key: string;
+  url: string;
+  kopf: Record<string, string>;
+  zusatz: Record<string, unknown>;
+  /** DeepSeek Thinking-Modus: reasoning_content der laufenden Runde zuruecksenden (core nachOpenAi). */
+  reasoning_zurueck: boolean;
+  key_abgelehnt: (status: number, meldung: string) => string;
+}
+
 async function rufeOpenRouter(a: TransportAnfrage): Promise<TransportErgebnis> {
   if (a.anthropic) {
     throw new TransportFehler('anbieter_nur_api_lauf', 400, 'OpenRouter-Modelle laufen nur als API-Lauf in der synapse-api (P22-T183), nicht ueber den Worker im Runtime-Container');
   }
   const { key } = openRouterSchluessel();
   if (!key) throw new TransportFehler('api_zugang_fehlt', 503, `Kein OpenRouter-Key in der Umgebung der synapse-api (${OPENROUTER_KEY_ENV}, Rueckfall ${OPENROUTER_KEY_RUECKFALL_ENV})`);
+  return rufeOpenAiFormat(a, {
+    anbieter: API_ANBIETER_OPENROUTER, name: 'OpenRouter', key, url: `${openRouterBasis()}/chat/completions`,
+    kopf: { 'HTTP-Referer': 'https://synapse.local', 'X-Title': 'Synapse' }, zusatz: { usage: { include: true } }, reasoning_zurueck: false,
+    key_abgelehnt: () => 'Der OpenRouter-Key wurde abgelehnt',
+  });
+}
+
+/**
+ * P22-T278: DeepSeek direkt. Schalter api_deepseek_direkt (Standard AUS) -> Key (nur Env SYNAPSE_DEEPSEEK_API_KEY) -> gemeinsamer Ablauf.
+ * 401/403 = api_zugang_ungueltig mit der Anbietermeldung (Lauf: Status fehler, KEINE Wiederholung), 402 = Guthaben fehlt.
+ */
+async function rufeDeepSeek(a: TransportAnfrage): Promise<TransportErgebnis> {
+  if (a.anthropic) {
+    throw new TransportFehler('anbieter_nur_api_lauf', 400, 'DeepSeek-Modelle laufen nur als API-Lauf in der synapse-api (P22-T278), nicht ueber den Worker im Runtime-Container');
+  }
+  const schalter = await leseDeepseekSchalter(a.kontext.project);
+  if (!schalter.aktiv) {
+    throw new TransportFehler('funktion_aus', 503, `DeepSeek direkt ist AUS (Produkt-Schalter ${API_DEEPSEEK_FUNKTION}, Quelle ${schalter.quelle})`);
+  }
+  const { key } = deepseekSchluessel();
+  if (!key) throw new TransportFehler('api_zugang_fehlt', 503, `Kein DeepSeek-Key in der Umgebung der synapse-api (${DEEPSEEK_KEY_ENV}, Rueckfall ${DEEPSEEK_KEY_RUECKFALL_ENV})`);
+  return rufeOpenAiFormat(a, {
+    anbieter: API_ANBIETER_DEEPSEEK, name: 'DeepSeek', key, url: `${deepseekBasis()}/chat/completions`,
+    // D-Befund 08.11.2026: ohne Parameter kam im echten Lauf keine Gedankenkette; daher wie in der Doku ausdruecklich einschalten.
+    kopf: {}, zusatz: { stream: false, thinking: { type: 'enabled' } }, reasoning_zurueck: true,
+    key_abgelehnt: (status, meldung) => `DeepSeek hat den API-Key abgelehnt (HTTP ${status}${meldung ? ': ' + meldung : ''})`,
+  });
+}
+
+/**
+ * P22-T278 P3 a (Abnahme 1dbf6af2, Kanal 37424): Anbietertexte ohne Key UND ohne Key-Reste. DeepSeek nennt bei 401 die Endung
+ * ('Your api key: ****c65c is invalid'); die landete sonst in letzter_fehler, Reservierung.fehler, Laufanzeige und Log.
+ */
+export function maskiereAnbieterText(t: string, key: string | null): string {
+  const ohneKey = key ? t.split(key).join('***') : t;
+  return ohneKey.replace(/(api[\s_-]*key\s*[:=]\s*)\S+/gi, '$1***').replace(/\*{2,}[A-Za-z0-9_-]+/g, '***').replace(/\bsk-[A-Za-z0-9_-]{4,}/g, 'sk-***');
+}
+
+async function rufeOpenAiFormat(a: TransportAnfrage, z: OpenAiZiel): Promise<TransportErgebnis> {
+  const { key } = z;
   const k = a.kontext;
-  const messages = nachOpenAi(a.system ?? '', a.verlauf ?? []);
+  const messages = nachOpenAi(a.system ?? '', a.verlauf ?? [], { reasoning_zurueck: z.reasoning_zurueck });
   const tools = werkzeugeNachOpenAi(a.werkzeuge ?? []);
   let reservierung: Awaited<ReturnType<typeof reserviereApiAufruf>> | null = await reserviereApiAufruf({
     identity_id: k.identity_id, project: k.project, agent_id: k.agent_id, modell: a.modell,
     eingabe_zeichen: eingabeZeichen({ messages, tools }), max_tokens: a.max_tokens, zugang: k.zugang,
   });
-  const maske = (t: string): string => t.split(key).join('***');
+  const maske = (t: string): string => maskiereAnbieterText(t, key);
   const holen = a.holen ?? fetch;
   try {
     let daten: Record<string, unknown>;
     try {
       const signal = a.signal ? AbortSignal.any([a.signal, AbortSignal.timeout(ZEITLIMIT_MS)]) : AbortSignal.timeout(ZEITLIMIT_MS);
-      const antwort = await holen(`${openRouterBasis()}/chat/completions`, {
+      const antwort = await holen(z.url, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json', 'HTTP-Referer': 'https://synapse.local', 'X-Title': 'Synapse' },
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json', ...z.kopf },
         body: JSON.stringify({
           model: reservierung.anbieter_modell, max_tokens: reservierung.max_tokens, messages,
-          ...(tools.length ? { tools } : {}), usage: { include: true },
+          ...(tools.length ? { tools } : {}), ...z.zusatz,
         }),
         signal,
       });
@@ -215,9 +291,9 @@ async function rufeOpenRouter(a: TransportAnfrage): Promise<TransportErgebnis> {
         await schliesseApiAufrufAb({ reservierung_id: reservierung.reservierung_id, agent_id: k.agent_id, usage: null,
           nichts_berechnet: true, fehler: `HTTP ${status}: ${meldung}` }).catch(() => undefined);
         reservierung = null;
-        if (status === 401 || status === 403) throw new TransportFehler('api_zugang_ungueltig', 502, 'Der OpenRouter-Key wurde abgelehnt');
-        if (status === 402) throw new TransportFehler('anbieter_guthaben_fehlt', 402, 'OpenRouter: kein Guthaben fuer diesen Aufruf (HTTP 402)');
-        if (status === 429 || status >= 500) throw new TransportFehler('ueberlastet', 503, `OpenRouter HTTP ${status}`, undefined, retryAfter(antwort.headers));
+        if (status === 401 || status === 403) throw new TransportFehler('api_zugang_ungueltig', 502, z.key_abgelehnt(status, meldung), { status });
+        if (status === 402) throw new TransportFehler('anbieter_guthaben_fehlt', 402, `${z.name}: kein Guthaben fuer diesen Aufruf (HTTP 402)`);
+        if (status === 429 || status >= 500) throw new TransportFehler('ueberlastet', 503, `${z.name} HTTP ${status}`, undefined, retryAfter(antwort.headers));
         throw new TransportFehler('anfrage_abgelehnt', 400, meldung);
       }
       daten = roh;
@@ -243,9 +319,9 @@ async function rufeOpenRouter(a: TransportAnfrage): Promise<TransportErgebnis> {
     });
     const rest = Math.max(0, Math.round((reservierung.rest_usd_vorher - abschluss.usd) * 1e8) / 1e8);
     reservierung = null;
-    if (!choice) throw new TransportFehler('anbieter_antwort_ungueltig', 502, 'OpenRouter-Antwort ohne choices');
+    if (!choice) throw new TransportFehler('anbieter_antwort_ungueltig', 502, `${z.name}-Antwort ohne choices`);
     return {
-      anbieter: API_ANBIETER_OPENROUTER,
+      anbieter: z.anbieter,
       anthropic_nachricht: null,
       antwort: { inhalt: teil.inhalt, stop: teil.stop, stop_roh: teil.stop_roh, nutzung, kosten_usd: abschluss.usd, rest_usd: rest },
       kosten: { usd: abschluss.usd, usd_quelle: abschluss.usd_quelle },

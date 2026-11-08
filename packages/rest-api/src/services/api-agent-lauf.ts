@@ -22,8 +22,9 @@
  *   mit DERSELBEN Identitaet/demselben Ausweis; die offenen Eingaenge gehen im Auftrag mit. Main: kein Spawn, der naechste Chat-Turn
  *   laeuft ueber den Container-Main (Bestand). Lauf -> gestoppt mit letzter_fehler 'rueckfall_container: ...'; KEIN automatischer
  *   Rueckwechsel bei neuem Budget (User: fortsetzen). Scheitert der Spawn: Status fehler 'rueckfall_container_fehlgeschlagen: ...',
- *   Eingaenge bleiben offen. Debug: zustand().ruckfall_container. Modell des Container-Agenten: api-<opus|sonnet|haiku|fable> -> derselbe
- *   CLI-Alias, sonst sonnet; Env SYNAPSE_API_RUECKFALL_MODELL ueberschreibt.
+ *   Eingaenge bleiben offen. Debug: zustand().ruckfall_container. Modell des Container-Agenten: Rueckfall-Kette (core api-rueckfall.ts,
+ *   Standard haiku -> codex/gpt-6.1-terra -> codex/gpt-6.1-luna, einstellbar nur durch den User) fuer ALLE API-Anbieter (User ae449129,
+ *   P22-T278); Main: Modellwechsel-Auftrag (erstellt_von RUECKFALL_AUFTRAG_VON) auf das erste verfuegbare Modell seiner Runtime.
  * DEBUG: intern(status) quellen.api_agenten_lauf (Takte, aktive Turns, letzte Ergebnisse, Fehler, Projekte mit Schalter AUS,
  *   Preisabgleich beim Start). Notbremse: Env SYNAPSE_API_AGENTEN_LAUF_DISABLED=1 (Worker startet nicht), pausierbar per intern(worker_*).
  */
@@ -34,7 +35,7 @@ import {
   type ApiLaufEinstellungen, type ApiNachricht, type ApiVerlaufSpeicher, type ApiWerkzeugAufruf, type ApiWerkzeugErgebnis, type ApiWerkzeugDef,
   type ApiAnbieterAdapter, type ApiNachrichtErgebnis,
 } from '@synapse/core';
-import { spawneRueckfallImContainer } from '@synapse/core';
+import { spawneRueckfallImContainer, leseApiRueckfall, pruefeRueckfallModell, rueckfallLimitName } from '@synapse/core';
 import { AnbieterDirekt, WerkzeugeDirekt, WERKZEUG_PRAEFIX } from './api-agent-direkt.js';
 import type { rufeApiTransport } from './api-agent-transport.js';
 import type { apiLaufWerkzeugListe, apiLaufWerkzeugAufruf } from '../routes/mcp.js';
@@ -51,14 +52,10 @@ const LETZTE_MAX = 20;
 /** Tageslimit global (budget_erschoepft) bzw. je Agent (agent_budget_erschoepft, Freigabe-Grenze) -> Rueckfall auf Container. */
 export const RUECKFALL_CODES: ReadonlySet<string> = new Set(['budget_erschoepft', 'agent_budget_erschoepft']);
 export const RUECKFALL_MARKE = 'rueckfall_container:' as const;
-const RUECKFALL_MODELL_ENV = 'SYNAPSE_API_RUECKFALL_MODELL';
-
-/** Container-Modell fuer den Rueckfall: api-<cli> -> <cli>, sonst sonnet; Env ueberschreibt. */
-export function containerModellFuer(alias: string, env: NodeJS.ProcessEnv = process.env): string {
-  const vorgabe = env[RUECKFALL_MODELL_ENV]?.trim();
-  if (vorgabe) return vorgabe;
-  return /^api-(opus|sonnet|haiku|fable)$/.exec(alias)?.[1] ?? 'sonnet';
-}
+/** Herkunft des Main-Modellwechsels nach erreichtem Tageslimit (keine User-Wahl); der Main-Chat wartet auf ihn (dauerhafter-main.ts). */
+export const RUECKFALL_AUFTRAG_VON = 'api-tageslimit' as const;
+// P22-T278 (User ae449129): containerModellFuer (api-<cli> -> <cli>, sonst sonnet; Env SYNAPSE_API_RUECKFALL_MODELL) entfaellt,
+// alle Anbieter nutzen die Rueckfall-Kette (core leseApiRueckfall).
 
 export const NACH_NEUSTART_UNBEKANNT = 'Ergebnis nach Neustart der synapse-api unbekannt - der Aufruf wurde NICHT wiederholt. '
   + 'Vor einem erneuten Aufruf den Zustand pruefen (z. B. files history, plan, thought), damit nichts doppelt geschrieben wird.';
@@ -213,16 +210,23 @@ export class LaufVerwaltung {
     const bis = Date.now() + warteMs;
     while (true) {
       await this.takt();
-      const r = await this.db.query<{ erledigt: boolean; ende: string | null; antwort: string | null; kosten: number | null; i: string | null; o: string | null;
+      const r = await this.db.query<{ identity_id: string; erledigt: boolean; ende: string | null; antwort: string | null; kosten: number | null; i: string | null; o: string | null;
         status: string | null; letzter_fehler: string | null; turn: string | null }>(
-        `SELECT e.erledigt_am IS NOT NULL AS erledigt, e.turn_id AS turn, t.ende, t.antwort, t.kosten_usd::float8 AS kosten, t.input_tokens AS i, t.output_tokens AS o,
+        `SELECT e.identity_id, e.erledigt_am IS NOT NULL AS erledigt, e.turn_id AS turn, t.ende, t.antwort, t.kosten_usd::float8 AS kosten, t.input_tokens AS i, t.output_tokens AS o,
                 l.status, l.letzter_fehler
            FROM api_agent_eingang e LEFT JOIN api_agent_turns t ON t.id = e.turn_id LEFT JOIN api_agent_laeufe l ON l.identity_id = e.identity_id
           WHERE e.id = $1`, [eingangId]);
       const z = r.rows[0];
       if (!z) return { art: 'nicht_begonnen', code: 'eingang_unbekannt' };
-      // Rueckfall: der Eingang ging an den Container-Agenten (Main: der Aufrufer nimmt den Bestand-Weg).
-      if (z.turn === null && (z.letzter_fehler ?? '').startsWith(RUECKFALL_MARKE)) return { art: 'nicht_begonnen', code: 'rueckfall_container' };
+      // Rueckfall: der Eingang ging an den Container-Agenten (Main: der Aufrufer nimmt den Bestand-Weg). P22-T278 P2-1: erst wenn der
+      // Rueckfall fertig ist (Turn beendet: Eingaenge erledigt, Modellwechsel-Auftrag angelegt), sonst startet der Aufrufer zu frueh.
+      const imRueckfall = z.turn === null && (z.letzter_fehler ?? '').startsWith(RUECKFALL_MARKE);
+      if (imRueckfall && !this.aktiv.has(z.identity_id)) return { art: 'nicht_begonnen', code: 'rueckfall_container' };
+      if (imRueckfall) {
+        if (Date.now() >= bis) return { art: 'zeit' };
+        await new Promise(r2 => setTimeout(r2, 200));
+        continue;
+      }
       if (z.erledigt) {
         return { art: 'fertig', text: z.antwort ?? '', ende: z.ende ?? 'fertig', kosten_usd: z.kosten ?? 0, input_tokens: Number(z.i ?? 0), output_tokens: Number(z.o ?? 0) };
       }
@@ -385,53 +389,113 @@ export class LaufVerwaltung {
       return t ? `${n.rolle}: ${t}` : '';
     }).filter(Boolean).join('\n').slice(-6000) || '(kein Verlauf)';
     const offenText = offen.length ? eingangText(offen) : '(keine offenen Eingaenge)';
+    // P22-T278 P3 c (Kanal 37424): Grenze nach Budget-Zeitraum (Tages-/Wochen-/Monatslimit) statt immer 'Tageslimit'.
+    const limit = await rueckfallLimitName();
+    // P22-T278 P2-1: Main-Chatnachrichten stellt der wartende Chat-Turn selbst dem Container-Main zu (genau einmal); die Uebergabe
+    // nennt sie nur zur Information, sonst fuehrte der neue Main sie ein zweites Mal aus.
+    const chatOffen = l.rolle === 'main' ? offen.filter(z => z.quelle === 'main_chat').length : 0;
+    const offenKopf = chatOffen
+      ? `Offene Eingaenge (gehen mit; ${chatOffen} Chatnachricht(en) [main_chat] stellt der Chat direkt zu - NICHT aus dieser Uebergabe ausfuehren)`
+      : 'Offene Eingaenge (gehen mit)';
     let thoughtId: string | null = null;
     try {
       const r = await s.ausfuehrer.rufe(WERKZEUG_PRAEFIX + 'thought', {
         action: 'add', project: l.project, tags: ['session-uebergabe', 'api-lauf-rueckfall'],
-        content: `UEBERGABE ${l.agent_id}: Rueckfall vom API-Lauf (${l.modell}) auf einen Container-Agenten, Tageslimit erschoepft (${code}). `
-          + `Sitzung ${l.sitzung}.\nLetzter Stand (Verlauf):\n${stand}\n\nOffene Eingaenge (gehen mit):\n${offenText}`,
+        content: `UEBERGABE ${l.agent_id}: Rueckfall vom API-Lauf (${l.modell}) auf einen Container-Agenten, ${limit} erschoepft (${code}). `
+          + `Sitzung ${l.sitzung}.\nLetzter Stand (Verlauf):\n${stand}\n\n${offenKopf}:\n${offenText}`,
       });
       thoughtId = /"id"\s*:\s*"([0-9a-f-]{36})"/.exec(text(r.inhalt))?.[1] ?? null;
     } catch { /* Uebergabe steht trotzdem im Auftrag des Container-Agenten */ }
-    // P22-T202: Anbieterturn ist beendet, Uebergabe vorbereitet. Erst die eigene Lease
-    // abgeben und die explizite API-Wahl loesen, dann darf der vorhandene CLI-Start greifen.
-    let uebergabeMarke: string | null = null;
-    if (await leseApiLaufWahl(l.identity_id)) {
-      uebergabeMarke = RUECKFALL_MARKE + ' gesicherte Uebergabe an CLI (P22-T202)';
-      await mitApiWahlSperre([l.identity_id], async db => {
-        const r = await db.query(
-          "UPDATE api_agent_laeufe SET status='gestoppt',lease_token=NULL,lease_bis=NULL,letzter_fehler=$3 WHERE identity_id=$1 AND lease_token=$2",
-          [l.identity_id, l.lease_token, uebergabeMarke]);
-        if (!r.rowCount) throw new Error('api_lauf_lease_verloren');
-        await schreibeApiLaufWahl(db, l.identity_id, null);
-      });
-    }
-    const model = l.rolle === 'main' ? null : containerModellFuer(l.modell);
+    // P22-T202 + P22-T278 P2-2: Anbieterturn ist beendet, Uebergabe vorbereitet. Erst die eigene Lease abgeben (und eine explizite
+    // API-Wahl loesen), dann darf der vorhandene CLI-Start greifen. Jetzt fuer JEDEN Lauf: die CLI-Sperre (mitCliStartSperre) lehnt
+    // CLI-Starts neben einem aktiven API-Lauf derselben Identitaet ab.
+    const uebergabeMarke = RUECKFALL_MARKE + ' gesicherte Uebergabe an CLI (P22-T202)';
+    const mitWahl = !!(await leseApiLaufWahl(l.identity_id));
+    await mitApiWahlSperre([l.identity_id], async db => {
+      const r = await db.query(
+        "UPDATE api_agent_laeufe SET status='gestoppt',lease_token=NULL,lease_bis=NULL,letzter_fehler=$3 WHERE identity_id=$1 AND lease_token=$2",
+        [l.identity_id, l.lease_token, uebergabeMarke]);
+      if (!r.rowCount) throw new Error('api_lauf_lease_verloren');
+      if (mitWahl) await schreibeApiLaufWahl(db, l.identity_id, null);
+    });
+    // P22-T278 C (User 08.11.2026, Kanal 37397/37398) + User ae449129: ALLE API-Anbieter (anthropic-api, openrouter-api, deepseek-api)
+    // fallen auf die einstellbare Kette zurueck (Standard haiku -> codex/gpt-6.1-terra -> nur wenn terra nicht verfuegbar
+    // codex/gpt-6.1-luna; Codex-Effort Standard low).
+    const auftragText = `Du setzt die Arbeit deines API-Laufs fort (${limit} des API-Budgets erschoepft). Lies zuerst deine Uebergabe`
+      + `${thoughtId ? ': thought(action:"get", id:"' + thoughtId + '")' : ' (thought mit Tag session-uebergabe)'}.\n\nOffene Eingaenge:\n${offenText}`;
+    const spawne = (m: string, effort: string | null): Promise<Record<string, unknown>> => (this.o.rueckfall ?? spawneRueckfallImContainer)({
+      project: l.project, name: l.agent_id, model: m, expertise: 'Fortsetzung des API-Laufs', task: auftragText, ...(effort ? { effort } : {}),
+    }).catch((err: unknown) => ({ success: false, error: 'rueckfall_spawn_fehler', message: err instanceof Error ? err.message.slice(0, 300) : String(err) }));
+    const versuche: Array<Record<string, unknown>> = [];
+    let model: string | null = null;
     let spawn: Record<string, unknown> | null = null;
-    if (model) {
-      spawn = await (this.o.rueckfall ?? spawneRueckfallImContainer)({
-        project: l.project, name: l.agent_id, model, expertise: 'Fortsetzung des API-Laufs',
-        task: `Du setzt die Arbeit deines API-Laufs fort (Tageslimit des API-Budgets erschoepft). Lies zuerst deine Uebergabe`
-          + `${thoughtId ? ': thought(action:"get", id:"' + thoughtId + '")' : ' (thought mit Tag session-uebergabe)'}.\n\nOffene Eingaenge:\n${offenText}`,
-      }).catch((err: unknown) => ({ success: false, error: 'rueckfall_spawn_fehler', message: err instanceof Error ? err.message.slice(0, 300) : String(err) }));
+    if (l.rolle !== 'main') {
+      const kette = await leseApiRueckfall();
+      for (const kandidat of kette.modelle) {
+        const p = await pruefeRueckfallModell(kandidat);
+        if (!p.verfuegbar) { versuche.push({ modell: kandidat, ergebnis: 'nicht_verfuegbar', grund: p.grund }); continue; }
+        const sp = await spawne(kandidat, p.runtime === 'codex' ? kette.effort : null);
+        versuche.push({ modell: kandidat, ergebnis: sp.success === true ? 'gestartet' : 'fehlgeschlagen', fehler: sp.error ?? null });
+        spawn = sp;
+        if (sp.success === true) { model = kandidat; break; }
+      }
+      if (!spawn) spawn = { success: false, error: 'kein_rueckfall_modell_verfuegbar' };
     }
     const ok = l.rolle === 'main' || spawn?.success === true;
     if (ok && offen.length) await this.db.query('UPDATE api_agent_eingang SET erledigt_am = NOW() WHERE id = ANY($1::bigint[])', [offen.map(z => z.id)]);
-    const hinweis = ok
-      ? `${RUECKFALL_MARKE} ${l.rolle === 'main' ? 'Main laeuft im Container weiter' : 'Container-Agent gestartet (' + model + ')'}, Tageslimit erschoepft (${code})`
+    let hinweis = ok
+      ? `${RUECKFALL_MARKE} ${l.rolle === 'main' ? 'Main laeuft im Container weiter' : 'Container-Agent gestartet (' + model + ')'}, ${limit} erschoepft (${code})`
         + `${thoughtId ? ', Uebergabe ' + thoughtId : ''}. Kein automatischer Rueckwechsel; der User entscheidet (fortsetzen).`
-      : `rueckfall_container_fehlgeschlagen: ${String(spawn?.error ?? 'unbekannt')} (Tageslimit erschoepft, ${code}). Eingaenge bleiben offen.`;
+      : `rueckfall_container_fehlgeschlagen: ${String(spawn?.error ?? 'unbekannt')} (${limit} erschoepft, ${code}). Eingaenge bleiben offen.`;
     await this.db.query(
       `UPDATE api_agent_laeufe SET status = $3, letzter_fehler = $4, lease_token = NULL, lease_bis = NULL, letzte_aktivitaet = NOW(), aktualisiert_am = NOW()
         WHERE identity_id = $1 AND (lease_token = $2 OR ($5::text IS NOT NULL AND lease_token IS NULL AND letzter_fehler = $5))`, [l.identity_id, l.lease_token, ok ? 'gestoppt' : 'fehler', hinweis, uebergabeMarke]);
     this.sitzungen.delete(l.identity_id);
+    // Main: nach Freigabe von Wahl und Lease (P1-Sperre) Modellwechsel-Auftrag auf das erste verfuegbare Rueckfallmodell seiner Runtime.
+    const mainWechsel = ok && l.rolle === 'main' ? await this.mainRueckfallWechsel(l, code) : null;
+    if (mainWechsel?.modell) {
+      // Befund c (Sichtpruefung 710c8711): auch beim Main nennt die Marke das Rueckfallmodell.
+      const neu = hinweis.replace('Main laeuft im Container weiter', `Main laeuft im Container weiter (Modellwechsel auf ${String(mainWechsel.modell)})`);
+      await this.db.query("UPDATE api_agent_laeufe SET letzter_fehler = $2 WHERE identity_id = $1 AND letzter_fehler = $3", [l.identity_id, neu, hinweis]);
+      hinweis = neu;
+    }
+    // Wechsel im Chat der Identitaet sichtbar (alle Anbieter).
+    const chatZiel = l.rolle === 'main' ? (mainWechsel?.modell ? String(mainWechsel.modell) : 'dem Container-Main') : model;
+    const chatText = ok ? `${limit} erreicht: API-Lauf ${l.modell} beendet, weiter mit ${chatZiel} (CLI-Abo).${thoughtId ? ' Uebergabe ' + thoughtId + '.' : ''}`
+      : `${limit} erreicht: Rueckfall fehlgeschlagen (${String(spawn?.error ?? 'unbekannt')}). Offene Auftraege bleiben liegen.`;
+    await importiereSitzungsEintraege(l.identity_id, [{ ref: 'rueckfall:' + l.sitzung + ':' + Date.now(), art: 'text', inhalt: chatText, modell: l.modell }],
+      { runtime: l.anbieter, herkunft: 'api' }).catch(() => undefined);
     const eintrag = { identity_id: l.identity_id, rolle: l.rolle, ok, code, thought: thoughtId, eingaenge: offen.length, model,
-      spawn: spawn ? { success: spawn.success === true, error: spawn.error ?? null, runtime: spawn.runtime ?? null } : null, zeit: new Date().toISOString() };
+      spawn: spawn ? { success: spawn.success === true, error: spawn.error ?? null, runtime: spawn.runtime ?? null } : null,
+      versuche, main_wechsel: mainWechsel, zeit: new Date().toISOString() };
     this.stat.ruckfall_container.anzahl += 1;
     if (!ok) this.stat.ruckfall_container.fehlgeschlagen += 1;
     this.stat.ruckfall_container.letzter = eintrag;
     this.merke({ ...eintrag, ende: 'ruckfall_container', hinweis });
+  }
+
+  /**
+   * P22-T278 C: Main nach erreichtem Tageslimit eines API-Laufs (alle Anbieter, User ae449129). Modellwechsel-Auftrag (Weg der
+   * Ueberwachung, erstellt_von RUECKFALL_AUFTRAG_VON = keine User-Wahl) auf das erste verfuegbare Rueckfallmodell der Runtime des Main; der Runtime-Daemon fuehrt ihn aus.
+   */
+  private async mainRueckfallWechsel(l: LaufZeile, code: string): Promise<Record<string, unknown>> {
+    const kette = await leseApiRueckfall();
+    const rt = (await this.db.query<{ rt: string | null }>("SELECT startrezept->>'runtime' AS rt FROM agent_identitaeten WHERE id = $1", [l.identity_id])).rows[0]?.rt ?? 'claude';
+    for (const kandidat of kette.modelle) {
+      const p = await pruefeRueckfallModell(kandidat);
+      if (!p.verfuegbar || p.runtime !== rt) continue;
+      const gewuenscht = { modell: kandidat, ...(rt === 'codex' && kette.effort ? { effort: kette.effort } : {}) };
+      try {
+        await this.db.query(
+          `INSERT INTO agent_runtime_auftraege (id, identity_id, art, status, gewuenscht, grund, erstellt_von)
+           VALUES ($1,$2,'modellwechsel','pending',$3::jsonb,$4,$5)`,
+          [randomUUID(), l.identity_id, JSON.stringify(gewuenscht), `Tageslimit erreicht (${code}): Rueckfall von ${l.modell} auf ${kandidat}`, RUECKFALL_AUFTRAG_VON]);
+        return { modell: kandidat, runtime: rt, auftrag: 'modellwechsel' };
+      } catch (err) {
+        return { modell: kandidat, runtime: rt, fehler: (err as { code?: string }).code === '23505' ? 'auftrag_offen_vorhanden' : String((err as Error)?.message ?? err).slice(0, 200) };
+      }
+    }
+    return { modell: null, runtime: rt, fehler: 'kein_rueckfall_modell_fuer_runtime' };
   }
 
   private async neuerTurn(l: LaufZeile): Promise<number> {
@@ -478,7 +542,7 @@ export class LaufVerwaltung {
           WHERE id = ANY($1::bigint[])`, [ids, voruebergehend, WIEDERHOL_SEKUNDEN]);
       await this.schliesseTurn(turnId, a, 'nicht_begonnen');
       await this.gibFrei(l, { status: voruebergehend ? 'bereit' : 'fehler', fehler: code });
-      this.merke({ identity_id: l.identity_id, ende: 'nicht_begonnen', code, eingaenge: ids.length, ms: Date.now() - start });
+      this.merke({ identity_id: l.identity_id, ende: 'nicht_begonnen', code, meldung: a.ergebnis.meldung?.slice(0, 300) ?? null, eingaenge: ids.length, ms: Date.now() - start });
       return;
     }
 

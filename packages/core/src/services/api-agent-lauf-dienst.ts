@@ -150,13 +150,25 @@ async function pruefeLaufRecht(akteur: AusweisAkteur | null, project: string | n
   return fehler('recht_fehlt', { grund: 'API-Laeufe sehen und steuern User, Main oder der Koordinator des Projekts' });
 }
 
+/** P22-T278 B: gebuchte Aufrufe (api_agent_reservierungen): Cache-Treffer, Cache-Fehlschuss (input ohne Cache), Ausgabe, USD (inkl. Tarif). */
+const VERBRAUCH_JSON = `json_build_object('aufrufe', count(*), 'treffer', COALESCE(sum(r.cache_read_tokens),0), 'fehlschuss', COALESCE(sum(r.input_tokens),0),
+      'ausgabe', COALESCE(sum(r.output_tokens),0), 'usd', COALESCE(sum(r.usd),0)::float8)`;
 const STAND_SQL = `SELECT l.identity_id, l.project, l.agent_id, l.rolle, l.modell, l.anbieter, l.status, l.sitzung::text AS sitzung, l.turns,
     l.kontext_tokens, l.kontext_fenster, l.kontext_anteil::float8 AS kontext_anteil, l.neustarts, l.letzter_fehler, l.letzte_aktivitaet,
     l.gestartet_von, l.gestartet_am, (l.lease_token IS NOT NULL AND l.lease_bis > NOW()) AS turn_aktiv,
     (SELECT count(*)::int FROM api_agent_eingang e WHERE e.identity_id = l.identity_id AND e.erledigt_am IS NULL) AS offene_eingaenge,
     v.kosten_usd, v.input_tokens, v.output_tokens, v.kosten_usd_sitzung,
     (SELECT json_build_object('ende', t.ende, 'meldung', t.meldung, 'kosten_usd', t.kosten_usd::float8, 'beendet_am', t.beendet_am)
-       FROM api_agent_turns t WHERE t.identity_id = l.identity_id ORDER BY t.id DESC LIMIT 1) AS letzter_turn
+       FROM api_agent_turns t WHERE t.identity_id = l.identity_id ORDER BY t.id DESC LIMIT 1) AS letzter_turn,
+    (SELECT ${VERBRAUCH_JSON} FROM api_agent_reservierungen r
+      WHERE r.identity_id = l.identity_id AND r.status = 'gebucht' AND r.erstellt_am >= date_trunc('day', NOW())) AS verbrauch_heute,
+    (SELECT ${VERBRAUCH_JSON} FROM api_agent_reservierungen r
+      WHERE r.identity_id = l.identity_id AND r.status = 'gebucht'
+        AND r.erstellt_am >= (SELECT min(t.gestartet_am) FROM api_agent_turns t WHERE t.identity_id = l.identity_id AND t.sitzung = l.sitzung)) AS verbrauch_sitzung,
+    (SELECT ${VERBRAUCH_JSON} FROM api_agent_reservierungen r,
+        (SELECT t.gestartet_am, t.beendet_am FROM api_agent_turns t WHERE t.identity_id = l.identity_id ORDER BY t.id DESC LIMIT 1) lt
+      WHERE r.identity_id = l.identity_id AND r.status = 'gebucht' AND r.erstellt_am >= lt.gestartet_am
+        AND r.erstellt_am <= COALESCE(lt.beendet_am, NOW())) AS verbrauch_letzter_turn
   FROM api_agent_laeufe l
   LEFT JOIN LATERAL (SELECT COALESCE(sum(t.kosten_usd),0)::float8 AS kosten_usd, COALESCE(sum(t.input_tokens),0)::float8 AS input_tokens,
       COALESCE(sum(t.output_tokens),0)::float8 AS output_tokens,
@@ -172,7 +184,9 @@ export async function apiLaeufeStand(akteur: AusweisAkteur | null, project: stri
   ]);
   // Zustellung inbox/chat -> Eingang (api-agent-einstieg.ts), Zaehler seit Prozessstart; dynamisch, um keinen Importzyklus zu bauen.
   const zustellung = (await import('./api-agent-einstieg.js')).apiLaufZustellungStand();
-  return { schalter, einstellungen, laeufe: r.rows, project: sicht, zustellung };
+  // P22-T278 B: DeepSeek-Tarif jetzt (Spitze/Nebenzeit) fuer die Anzeige; die Kosten in verbrauch_* enthalten den Tarif schon.
+  const { deepseekTarif } = await import('./api-deepseek.js');
+  return { schalter, einstellungen, laeufe: r.rows, project: sicht, zustellung, deepseek_tarif: deepseekTarif() };
 }
 
 export const API_LAUF_STEUERUNG = ['pausieren', 'fortsetzen', 'stoppen', 'neustart'] as const;
@@ -189,6 +203,27 @@ const STEUER_SQL: Record<ApiLaufSteuerung, string> = {
     WHERE identity_id=$1 AND (lease_token IS NULL OR lease_bis IS NULL OR lease_bis < NOW())`,
 };
 
+/**
+ * P22-T278 (Kanal 37439, Restpunkt aus 3a26088e): 'fortsetzen' unter DERSELBEN CLI/API-Sperre wie Laufwahl, CLI-Starts und
+ * spawneAlsApiLauf. Laeuft die Identitaet als CLI (z. B. Container-Agent nach dem Rueckfall) oder ist ein CLI-Start/Runtime-Auftrag
+ * offen -> Fachfehler cli_laeuft bzw. cli_start_offen/wechsel_offen, der Lauf bleibt unveraendert. Kontrolliert wechseln (CLI stoppen
+ * mit Uebergabe) geht ueber die Laufwahl (rest-api starteApiAuswahl).
+ */
+async function fortsetzenUnterSperre(id: string) {
+  const { mitApiWahlSperre, offeneCliStarts, laufendeCliWrapper } = await import('./api-wahl-sperre.js');
+  return mitApiWahlSperre([id], async db => {
+    const z = (await db.query<{ project: string; agent_id: string }>('SELECT project, agent_id FROM api_agent_laeufe WHERE identity_id = $1', [id])).rows[0];
+    if (z) {
+      const offen = await offeneCliStarts(db, id, z.project, z.agent_id);
+      if (offen) fehler(offen, { identity_id: id, hinweis: 'Erst den offenen CLI-Start bzw. Runtime-Auftrag abwarten.' });
+      const cli = await laufendeCliWrapper(z.project, id, z.agent_id);
+      if (cli) fehler('cli_laeuft', { identity_id: id, wrapper: cli,
+        hinweis: 'Der Agent laeuft als CLI (z. B. nach dem Rueckfall). Erst den CLI-Agenten stoppen oder ueber die Laufwahl kontrolliert auf API wechseln.' });
+    }
+    return db.query(STEUER_SQL.fortsetzen, [id]);
+  });
+}
+
 export async function steuereApiLauf(
   akteur: AusweisAkteur | null, e: { identity_id: unknown; aktion: unknown; grund: unknown },
 ): Promise<Record<string, unknown>> {
@@ -200,7 +235,7 @@ export async function steuereApiLauf(
   await pruefeLaufRecht(akteur, vor.rows[0].project);
   const grund = pflichtText(e.grund, 'grund_fehlt');
   const aktion = e.aktion as ApiLaufSteuerung;
-  const r = await getPool().query(STEUER_SQL[aktion], [id]);
+  const r = aktion === 'fortsetzen' ? await fortsetzenUnterSperre(id) : await getPool().query(STEUER_SQL[aktion], [id]);
   if (!r.rowCount) fehler(aktion === 'neustart' ? 'lauf_turn_aktiv' : 'lauf_status_unpassend', { status: vor.rows[0].status, aktion });
   const nach = await getPool().query(`${STAND_SQL} WHERE l.identity_id = $1`, [id]);
   return { aktion, grund, vorher: vor.rows[0].status, lauf: nach.rows[0],

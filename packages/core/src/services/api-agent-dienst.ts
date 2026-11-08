@@ -39,14 +39,17 @@ import {
 import type { AusweisAkteur, W1bAkteur } from './agent-profil-vertrag.js';
 import { apiLaeufeStand, steuereApiLauf, setzeApiLaufEinstellungen, API_LAUF_EINSTELLUNG_NAMEN, API_LAUF_STEUERUNG } from './api-agent-lauf-dienst.js';
 import { rolleFuerAgent } from './agent-rollen.js';
+import { deepseekTarif } from './api-deepseek.js';
 
 export const HAUPTAGENT_API_FUNKTION = 'hauptagent_api' as const;
 /** Provider der API-Modelle in model_registry (getrennt von den Abo-CLIs 'anthropic', User 88f80455 Punkt 2). */
 export const API_ANBIETER = 'anthropic-api' as const;
 /** P22-T183: OpenRouter (OpenAI-Format, z. B. DeepSeek). Budget/Buchung wie Anthropic hier, strikt getrennt von der Jev-Bremse. */
 export const API_ANBIETER_OPENROUTER = 'openrouter-api' as const;
+/** P22-T278: DeepSeek direkt (OpenAI-Format, eigener Key). Registry-Preise = Spitzentarif, Nebenzeit halber Preis (api-deepseek.ts). */
+export const API_ANBIETER_DEEPSEEK = 'deepseek-api' as const;
 /** P22-T183: alle Provider mit Budget, Freigabe und Reservierung (model_registry.provider). */
-export const API_ANBIETER_ALLE = [API_ANBIETER, API_ANBIETER_OPENROUTER] as const;
+export const API_ANBIETER_ALLE = [API_ANBIETER, API_ANBIETER_OPENROUTER, API_ANBIETER_DEEPSEEK] as const;
 export type ApiAnbieter = typeof API_ANBIETER_ALLE[number];
 export const API_ZEITRAEUME = ['tag', 'woche', 'monat'] as const;
 export type ApiZeitraum = typeof API_ZEITRAEUME[number];
@@ -454,8 +457,8 @@ export async function schliesseApiAufrufAb(e: ApiAbschlussEingabe): Promise<ApiA
   const c = await getPool().connect();
   try {
     await c.query('BEGIN');
-    const r = (await c.query<{ id: string; identity_id: string | null; project: string | null; modell: string; anbieter_modell: string; reserviert_usd: string; status: string; usd: string | null; usd_quelle: string | null }>(
-      'SELECT id, identity_id, project, modell, anbieter_modell, reserviert_usd, status, usd, usd_quelle FROM api_agent_reservierungen WHERE id = $1 FOR UPDATE', [e.reservierung_id])).rows[0];
+    const r = (await c.query<{ id: string; identity_id: string | null; project: string | null; modell: string; anbieter_modell: string; reserviert_usd: string; status: string; usd: string | null; usd_quelle: string | null; erstellt_am: Date }>(
+      'SELECT id, identity_id, project, modell, anbieter_modell, reserviert_usd, status, usd, usd_quelle, erstellt_am FROM api_agent_reservierungen WHERE id = $1 FOR UPDATE', [e.reservierung_id])).rows[0];
     if (!r) fehler('reservierung_unbekannt');
     if (r.status !== 'offen' && r.status !== 'verfallen') {
       await c.query('COMMIT');
@@ -478,6 +481,9 @@ export async function schliesseApiAufrufAb(e: ApiAbschlussEingabe): Promise<ApiA
       quelle = 'antwort';
     } else if (e.usage && preisBekannt(modell)) {
       usd = apiKostenAusUsage(e.usage, modell, einst.cache_schreib_faktor.wert);
+      // P22-T278: DeepSeek direkt meldet keine Kosten; Registry = Spitzentarif, Nebenzeit halber Preis. P3 d (Kanal 37424): Tarif nach
+      // ANFRAGEBEGINN (Reservierung erstellt_am, unmittelbar vor dem Anbieteraufruf), nicht nach dem Abschluss.
+      if (modell.anbieter === API_ANBIETER_DEEPSEEK) usd = rund(usd * deepseekTarif(r.erstellt_am).faktor);
       quelle = 'antwort';
     } else {
       usd = Number(r.reserviert_usd);
@@ -491,7 +497,7 @@ export async function schliesseApiAufrufAb(e: ApiAbschlussEingabe): Promise<ApiA
         e.stop_reason ? String(e.stop_reason).slice(0, 64) : null, e.fehler ? e.fehler.slice(0, 500) : null]);
     await bucheAgentVerbrauch({
       project: r.project ?? HAUPTAGENT_PROJEKT, identity_id: r.identity_id, agent_id: e.agent_id,
-      runtime: modell?.anbieter === API_ANBIETER_OPENROUTER ? 'openrouter-api' : 'claude-api', zugang: 'api',
+      runtime: modell?.anbieter === API_ANBIETER_OPENROUTER ? 'openrouter-api' : modell?.anbieter === API_ANBIETER_DEEPSEEK ? 'deepseek-api' : 'claude-api', zugang: 'api',
       modell: r.anbieter_modell, input_tokens: tok(u.input_tokens), output_tokens: tok(u.output_tokens),
       cache_read_tokens: tok(u.cache_read_input_tokens), cache_creation_tokens: tok(u.cache_creation_input_tokens),
       usd, usd_quelle: quelle, quelle: 'api_worker', referenz: 'api-reservierung:' + r.id,

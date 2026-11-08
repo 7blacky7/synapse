@@ -8,9 +8,11 @@ import type { ToolCallViewModel } from '../control-plane/view-model';
 
 export type ToolLauf = { calls: ToolCallViewModel[]; phases: string[] };
 
+// P22-T278 Befund d (Sichtpruefung 710c8711): der KI-Browser laeuft in UTC-6 und zeigte 06:27 statt 13:27. Die Daten waren richtig
+// (timestamptz); die Anzeige folgt jetzt fest der Ortszeit Europe/Berlin (MEZ/MESZ) wie die Server-Formate (agent-anmeldungen u. a.).
 const zeitText = (iso: string): string => {
   const zeit = new Date(iso);
-  return Number.isNaN(zeit.getTime()) ? '' : zeit.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return Number.isNaN(zeit.getTime()) ? '' : zeit.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 };
 
 export function verlaufInfo(eintrag: MainAgentVerlaufEintrag): string {

@@ -5,6 +5,9 @@
  *   a) spawneAlsApiLauf: specialist spawn mit einem Modell der Provider anthropic-api | openrouter-api (egal welcher ort). Identitaet
  *      wie beim Container-Spawn (vorhandene unter dem Namen, sonst agent_vorbereiten), Lauf anlegen, Auftrag als erster Eingang
  *      (sofort faellig). Rechte wie agent_vorbereiten: User oder Koordinator DESSELBEN Projekts (auch Legacy-Koordinator).
+ *      P22-T278 P2-2 (Abnahme 1dbf6af2): Lauf + Eingang unter der CLI/API-Sperre (mitApiWahlSperre, P1-Muster 5a060e98). Bestehende
+ *      Identitaet mit Laufwahl (api_lauf_gewaehlt), offenem CLI-Start/Runtime-Auftrag (cli_start_offen/wechsel_offen) oder laufendem
+ *      CLI-Wrapper (cli_laeuft) -> Fachfehler, kein Parallellauf. Rueckrichtung: mitCliStartSperre (api_lauf_aktiv).
  *   c) stelleApiLaufZu: Inbox-Nachricht (postToInbox) bzw. Chat-DM (sendMessage) an eine Identitaet mit API-Lauf -> Eingang mit
  *      Buendelfenster (O3). Wirft nie; die eigentliche Zustellung (Inbox/Chat) bleibt unveraendert. Eigene Nachrichten des Agenten
  *      an sich selbst zaehlen nicht.
@@ -17,9 +20,11 @@ import { ProfilVerwaltungFehler, aktuellerW1bAkteur, pflichtText, pruefeProfilVe
 import type { AusweisAkteur, W1bAkteur } from './agent-profil-vertrag.js';
 import { rolleFuerAgent } from './agent-rollen.js';
 import { istVirtuellesProjekt } from './virtuelle-projekte.js';
+import { API_DEEPSEEK_FUNKTION, leseDeepseekSchalter } from './api-deepseek.js';
 import { leseApiLaufSchalter, legeApiLaufAn, legeApiEingangAn, RUECKFALL_MARKE_SQL, type ApiEingangQuelle } from './api-agent-lauf-dienst.js';
+import { mitApiWahlSperre, offeneCliStarts, laufendeCliWrapper } from './api-wahl-sperre.js';
 
-const API_PROVIDER = ['anthropic-api', 'openrouter-api'] as const;
+const API_PROVIDER = ['anthropic-api', 'openrouter-api', 'deepseek-api'] as const;
 const TASK_MAX_ZEICHEN = 200_000;
 
 function fehler(code: string, details?: Record<string, unknown>): never { throw new ProfilVerwaltungFehler(code, details); }
@@ -59,6 +64,9 @@ export async function spawneAlsApiLauf(e: ApiSpawnEingabe): Promise<Record<strin
     const akteur = akteurAus(e.agent_id);
     if (!akteur) fehler('recht_fehlt', { grund: 'API-Lauf starten nur der User oder ein Koordinator des Projekts' });
     await pruefeProfilVerwalter(akteur, e.project);
+    if (anbieter === 'deepseek-api' && !(await leseDeepseekSchalter(e.project)).aktiv) {
+      fehler('funktion_aus', { funktion: API_DEEPSEEK_FUNKTION, hinweis: 'DeepSeek direkt ist AUS (Standard); nur ausdruecklich einschalten.' });
+    }
     const name = pflichtText(e.name, 'name_fehlt', 1, 128);
     if (typeof e.task !== 'string' || !e.task.trim()) fehler('task_fehlt');
     const model = String(e.model).trim();
@@ -78,10 +86,23 @@ export async function spawneAlsApiLauf(e: ApiSpawnEingabe): Promise<Record<strin
     const channel = typeof e.channel === 'string' && e.channel.trim() ? e.channel.trim() : null;
     const system = `Du bist ${name}${expertise ? ', Spezialist fuer ' + expertise : ''} im Projekt ${e.project}.`
       + (channel ? ` Ergebnisse und Fragen kurz in den Channel ${channel}, Inhalte als thought.` : '');
-    const lauf = await legeApiLaufAn({ identity_id, project: e.project, agent_id: name, rolle, modell: model, anbieter, system_prompt: system,
-      gestartet_von: akteurName(akteur) });
     const task = e.task.length > TASK_MAX_ZEICHEN ? e.task.slice(0, TASK_MAX_ZEICHEN) : e.task;
-    const eingang = await legeApiEingangAn({ identity_id, text: task, quelle: 'auftrag', absender: akteurName(akteur) });
+    const wer = akteurName(akteur);
+    const project = e.project;
+    // P22-T278 P2-2: unter DERSELBEN Sperre wie CLI-Starts, Laufwahl und Runtime-Auftraege; Fehler rollt Lauf und Eingang zurueck.
+    const { lauf, eingang } = await mitApiWahlSperre([identity_id], async db => {
+      if (!neu) {
+        const w = await db.query<{ api: boolean }>("SELECT startrezept->'api_lauf_wahl'->>'laufart' = 'api' AS api FROM agent_identitaeten WHERE id = $1", [identity_id]);
+        if (w.rows[0]?.api) fehler('api_lauf_gewaehlt', { identity_id, hinweis: 'Laeuft per Laufwahl als API: Auftraege per chat/inbox, Wechsel nur ueber die Laufwahl.' });
+        const offen = await offeneCliStarts(db, identity_id, project, name);
+        if (offen) fehler(offen, { identity_id, hinweis: 'Erst den offenen CLI-Start bzw. Runtime-Auftrag abwarten.' });
+        const cli = await laufendeCliWrapper(project, identity_id, name);
+        if (cli) fehler('cli_laeuft', { identity_id, wrapper: cli, hinweis: 'Der Agent laeuft als CLI. Erst stoppen (specialist stop), dann als API-Lauf starten.' });
+      }
+      const l = await legeApiLaufAn({ identity_id, project, agent_id: name, rolle, modell: model, anbieter, system_prompt: system, gestartet_von: wer }, db);
+      const ein = await legeApiEingangAn({ identity_id, text: task, quelle: 'auftrag', absender: wer }, db);
+      return { lauf: l, eingang: ein };
+    });
     const freigabe = rolle === 'main' ? null : await getPool().query<{ aktiv: boolean; modelle: string[] }>(
       'SELECT aktiv, modelle FROM api_agent_freigaben WHERE identity_id = $1', [identity_id]).then(r => r.rows[0] ?? null).catch(() => null);
     const freigegeben = rolle === 'main' || (!!freigabe?.aktiv && (freigabe.modelle ?? []).includes(model));

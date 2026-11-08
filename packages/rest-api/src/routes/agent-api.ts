@@ -50,7 +50,7 @@ export async function apiAuswahlAgentAkteur(request: FastifyRequest): Promise<St
 import Anthropic from '@anthropic-ai/sdk';
 import {
   HAUPTAGENT_PROJEKT, agentPrincipalAusAnmeldung, leseAgentBezugModus, pruefeAgentToken, w1bFehlerStatus,
-  apiRahmenFuerAgent, apiAgentStatus, setzeApiSchalter, setzeApiBudget, entferneApiBudget,
+  apiRahmenFuerAgent, apiAgentStatus, setzeApiSchalter, setzeApiBudget, entferneApiBudget, leseApiRueckfall, setzeApiRueckfall,
   setzeApiEinstellungen, apiKostenUebersicht, aktuellerApiKey, leseApiKeyStand, setzeApiKey, entferneApiKey, setzeApiKeySchalter,
   API_AGENT_ROLLEN, leseApiAgentenSchalter, apiAgentenStand, setzeApiFreigabe, entferneApiFreigabe, apiRahmenFuerIdentitaet,
   anthropicKopfzeilen, istWorkspaceFehlt, apiLaeufeStand, steuereApiLauf, setzeApiLaufEinstellungen, aktualisiereOpenRouterPreise,
@@ -206,6 +206,14 @@ export async function agentApiRoutes(fastify: FastifyInstance, verwaltungsAkteur
   fastify.put<{ Body: { werte?: unknown; entfernen?: unknown; grund?: unknown } }>('/api/main-agent/api/einstellungen', async (request, reply) => {
     const b = request.body ?? {};
     try { return { success: true, einstellungen: await setzeApiEinstellungen(USER, { werte: b.werte, entfernen: b.entfernen, grund: b.grund }) }; } catch (error) { return sendeFehler(reply, error); }
+  });
+  // P22-T278 C: Rueckfall-Kette bei erreichtem Tageslimit (alle API-Anbieter, User ae449129); setzen nur User, leere Liste = Standard.
+  fastify.get('/api/main-agent/api/rueckfall', async (_request, reply) => {
+    try { return { success: true, rueckfall: await leseApiRueckfall() }; } catch (error) { return sendeFehler(reply, error); }
+  });
+  fastify.put<{ Body: { modelle?: unknown; effort?: unknown; grund?: unknown } }>('/api/main-agent/api/rueckfall', async (request, reply) => {
+    const b = request.body ?? {};
+    try { return { success: true, rueckfall: await setzeApiRueckfall(USER, { modelle: b.modelle, effort: b.effort, grund: b.grund }) }; } catch (error) { return sendeFehler(reply, error); }
   });
   fastify.get<{ Querystring: { seit?: string; bis?: string } }>('/api/main-agent/api/kosten', async (request, reply) => {
     try { return { success: true, ...(await apiKostenUebersicht({ seit: request.query?.seit, bis: request.query?.bis })) }; } catch (error) { return sendeFehler(reply, error); }

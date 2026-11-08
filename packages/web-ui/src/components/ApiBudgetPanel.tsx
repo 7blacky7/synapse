@@ -54,6 +54,10 @@ export function ApiBudgetPanel() {
   const [modelle, setModelle] = useState<string[]>([]);
   const [vorschlag, setVorschlag] = useState(false);
   const [werte, setWerte] = useState<Record<string, string>>({});
+  // P22-T278 C: Rueckfall-Kette bei Tageslimit (GET/PUT /api/main-agent/api/rueckfall).
+  const [rueckfall, setRueckfall] = useState<{ modelle: string[]; effort: string | null; quelle: string; standard: { modelle: string[]; effort: string } } | null>(null);
+  const [rueckfallText, setRueckfallText] = useState('');
+  const [rueckfallEffort, setRueckfallEffort] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -74,6 +78,8 @@ export function ApiBudgetPanel() {
       setWerte(Object.fromEntries(Object.entries(s.einstellungen).map(([n, v]) => [n, String(v.wert)])));
       const kd = await k.json().catch(() => null);
       setKosten(k.ok ? (kd as Kosten) : null);
+      const rf = await apiFetch('/api/main-agent/api/rueckfall').then(x => x.ok ? x.json() : null).catch(() => null);
+      if (rf?.rueckfall) { setRueckfall(rf.rueckfall); setRueckfallText(rf.rueckfall.modelle.join(', ')); setRueckfallEffort(rf.rueckfall.effort ?? ''); }
       setError('');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -106,7 +112,7 @@ export function ApiBudgetPanel() {
   const key = s ? (s.api_key ? apiKeyStandZeile(s.api_key) : apiKeyAnzeige(s.api_key_vorhanden)) : null;
   const geaenderteWerte = s ? Object.fromEntries(Object.entries(werte).filter(([n, v]) => Number(v) !== s.einstellungen[n]?.wert).map(([n, v]) => [n, Number(v)])) : {};
   return <section aria-label="API-Zugang des Hauptagenten">
-    <h3>API-Agenten · Claude API und OpenRouter · kostenpflichtig</h3>
+    <h3>API-Agenten · Claude API, OpenRouter und DeepSeek · kostenpflichtig</h3>
     <ApiAgentLaeufe />
     <p>Getrennt vom CLI-Abo. Ohne gesetztes Budget gibt es keine kostenpflichtigen Aufrufe und keinen bezahlten Ersatz. Werte setzt nur der User.</p>
     <div className="cp-fields">
@@ -144,6 +150,15 @@ export function ApiBudgetPanel() {
         <input type="number" value={werte[name] ?? ''} onChange={(event) => setWerte({ ...werte, [name]: event.target.value })} /></label>)}
       <div className="wide"><button type="button" disabled={busy || !grundOk || !Object.keys(geaenderteWerte).length} onClick={() => void senden('/api/main-agent/api/einstellungen', 'PUT', { werte: geaenderteWerte }, 'Einstellwerte gespeichert.')}>Einstellwerte speichern</button></div>
       {s && <ApiFreigabenFeld modelle={s.modelle.filter(m => (m.eingabe ?? 0) > 0 && (m.ausgabe ?? 0) > 0).map(m => m.alias)} grundOk={grundOk} busy={busy} senden={senden} />}
+      <label className="cp-setting-field wide" data-api-rueckfall={rueckfall?.quelle ?? ''}><span><b>Rückfall bei Tageslimit (alle API-Anbieter)</b>
+        <small>CLI-Modelle in Reihenfolge, Komma-getrennt; das erste verfügbare startet. Quelle {rueckfall?.quelle ?? '…'} · Standard {rueckfall?.standard.modelle.join(' → ') ?? '…'}, Codex-Effort {rueckfall?.standard.effort ?? '…'}. Tageslimit = Budget mit Zeitraum „tag“ und Grenze je Agent.</small></span>
+        <input value={rueckfallText} onChange={(event) => setRueckfallText(event.target.value)} placeholder="haiku, codex/gpt-6.1-terra, codex/gpt-6.1-luna" /></label>
+      <label className="cp-setting-field"><span><b>Codex-Effort im Rückfall</b><small>nur für Codex-Modelle</small></span>
+        <select value={rueckfallEffort} onChange={(event) => setRueckfallEffort(event.target.value)}><option value="">CLI-Standard</option>
+          {['minimal', 'low', 'medium', 'high', 'xhigh'].map(x => <option key={x} value={x}>{x}</option>)}</select></label>
+      <div className="wide"><button type="button" disabled={busy || !grundOk || !rueckfallText.trim()} onClick={() => void senden('/api/main-agent/api/rueckfall', 'PUT',
+        { modelle: rueckfallText.split(',').map(x => x.trim()).filter(Boolean), effort: rueckfallEffort }, 'Rückfall-Kette gespeichert.')}>Rückfall speichern</button>
+        {' '}<button type="button" disabled={busy || !grundOk || rueckfall?.quelle !== 'einstellung'} onClick={() => void senden('/api/main-agent/api/rueckfall', 'PUT', { modelle: [] }, 'Rückfall-Kette auf Standard.')}>Standard</button></div>
       <div className="scope-warning wide"><b>Kosten</b><span>{kosten
         ? 'Gesamt ' + usd(kosten.gesamt.usd) + ' in ' + kosten.gesamt.aufrufe + ' Aufrufen · je Monat: ' + (kosten.je_monat.map(z => z.monat + ' ' + usd(z.usd)).join(', ') || '–')
           + ' · je Agent: ' + (kosten.je_agent.map(z => (z.agent_id ?? '?') + ' ' + usd(z.usd)).join(', ') || '–')

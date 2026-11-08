@@ -851,7 +851,7 @@ export type { VerbrauchSchalterStand, VerbrauchBuchung, VerbrauchBuchungsErgebni
 export { AGENT_VERBRAUCH_SCHEMA_SQL } from './db/agent-verbrauch-schema.js';
 // P22-T8: kostenpflichtiger API-Agent (Schalter hauptagent Funktion api, globales Budget, Reservierung, Kosten), Schema 120.
 export {
-  HAUPTAGENT_API_FUNKTION, API_ANBIETER, API_ANBIETER_OPENROUTER, API_ANBIETER_ALLE, API_ZEITRAEUME, API_EINSTELLUNG_NAMEN, API_EINSTELLUNG_STANDARD, API_AGENT_ADMIN_ACTIONS, API_AGENT_ADMIN_PARAMETER,
+  HAUPTAGENT_API_FUNKTION, API_ANBIETER, API_ANBIETER_OPENROUTER, API_ANBIETER_DEEPSEEK, API_ANBIETER_ALLE, API_ZEITRAEUME, API_EINSTELLUNG_NAMEN, API_EINSTELLUNG_STANDARD, API_AGENT_ADMIN_ACTIONS, API_AGENT_ADMIN_PARAMETER,
   leseApiFunktion, leseApiSchalter, setzeApiSchalter, leseApiEinstellungen, setzeApiEinstellungen, leseApiModelle, leseApiBudget, setzeApiBudget,
   entferneApiBudget, apiZeitraumBeginn, reserviereApiAufruf, schliesseApiAufrufAb, apiKostenAusUsage, apiKostenUebersicht, apiRahmenFuerAgent,
   apiAgentStatus, istApiAgentAdminAction, fuehreApiAgentAdminAus,
@@ -860,6 +860,10 @@ export type {
   ApiZeitraum, ApiFunktionStand, ApiSchalterStand, ApiEinstellungName, ApiEinstellungen, ApiModellPreis, ApiBudgetStand, ApiReservierungEingabe,
   ApiReservierung, ApiUsage, ApiAbschlussEingabe, ApiAbschluss, ApiAgentAdminAction, ApiAnbieter,
 } from './services/api-agent-dienst.js';
+// P22-T278: DeepSeek-API direkt (Schalter api_deepseek_direkt, Standard AUS; Tarif Spitze/Nebenzeit).
+export { API_RUECKFALL_STANDARD_MODELLE, API_RUECKFALL_STANDARD_EFFORT, API_RUECKFALL_EFFORTS, leseApiRueckfall, setzeApiRueckfall, pruefeRueckfallModell, RUECKFALL_LIMIT_NAMEN, rueckfallLimitName } from './services/api-rueckfall.js';
+export type { ApiRueckfall } from './services/api-rueckfall.js';
+export { API_DEEPSEEK_FUNKTION, DEEPSEEK_SPITZE_UTC, DEEPSEEK_NEBENZEIT_FAKTOR, deepseekSpitzenzeit, deepseekTarif, leseDeepseekSchalter } from './services/api-deepseek.js';
 // P22-T183 B2: OpenRouter-Preise aus dem Free-Pool-Katalog (Entscheid O2), Stand in api_modell_preisstand.
 export { aktualisiereOpenRouterPreise, leseOpenRouterPreisstand, ladeOpenRouterKatalog, OPENROUTER_KATALOG_URL } from './services/api-anbieter-preise.js';
 export type { PreisAbgleich, PreisAbgleichZeile, PreisKatalogEintrag } from './services/api-anbieter-preise.js';

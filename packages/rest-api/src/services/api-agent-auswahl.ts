@@ -9,10 +9,11 @@ import {
   leseApiModelle, leseApiBudget, leseApiSchalter, apiAgentenStand, leseApiAgentenSchalter,
   leseApiLaufSchalter, leseApiLaufEinstellungen, legeApiLaufAn, legeApiEingangAn, steuereApiLauf,
   ladeSteuerZiel, pruefeSteuerRecht, listWrapperStatus, enqueueSpecialistJob, waitForSpecialistJob, jobErfolgreich,
-  runtimeProjektPfad, leseRuntimeAgentenGrenzen, erzeugeVerlaufUebergabe, aktuellerApiKey, ProfilVerwaltungFehler,
+  runtimeProjektPfad, leseRuntimeAgentenGrenzen, erzeugeVerlaufUebergabe, aktuellerApiKey, ProfilVerwaltungFehler, offeneCliStarts,
   type SteuerAkteur, type ApiFreigabe,
 } from '@synapse/core';
-import { openRouterSchluessel } from './api-agent-transport.js';
+import { openRouterSchluessel, deepseekSchluessel, deepseekBasis } from './api-agent-transport.js';
+import { leseDeepseekSchalter, deepseekTarif, API_DEEPSEEK_FUNKTION, DEEPSEEK_SPITZE_UTC } from '@synapse/core';
 
 function fehler(code: string, details?: Record<string, unknown>): never { throw new ProfilVerwaltungFehler(code, details); }
 async function ziel(id: string, akteur: SteuerAkteur | null) {
@@ -23,10 +24,13 @@ async function ziel(id: string, akteur: SteuerAkteur | null) {
   if (z.status !== 'aktiv' || !['main','koordinator','subagent'].includes(z.rolle)) fehler('identitaet_nicht_aktiv');
   return z;
 }
-export async function apiAnbieterStand() {
-  const a = await aktuellerApiKey(), o = openRouterSchluessel();
+export async function apiAnbieterStand(project: string | null = null) {
+  const a = await aktuellerApiKey(), o = openRouterSchluessel(), d = deepseekSchluessel();
+  const ds = await leseDeepseekSchalter(project);
   return { 'anthropic-api': { vorhanden: !!a.key, quelle: a.quelle },
-    'openrouter-api': { vorhanden: !!o.key, quelle: o.quelle } };
+    'openrouter-api': { vorhanden: !!o.key, quelle: o.quelle },
+    // P22-T278: Key-Status (vorhanden/fehlt, nur Env-Name) getrennt vom Schalter; der Key selbst geht nie an die UI.
+    'deepseek-api': { vorhanden: !!d.key, quelle: d.quelle, schalter_aktiv: ds.aktiv, schalter_quelle: ds.quelle } };
 }
 type FreigabeStand = ApiFreigabe & { rest_usd: number | null; api_agenten_aktiv: boolean };
 export async function apiAuswahlStand(id: string, akteur: SteuerAkteur | null) {
@@ -37,7 +41,7 @@ export async function apiAuswahlStand(id: string, akteur: SteuerAkteur | null) {
   if (!schalter.aktiv) return { schalter, identity: z, modelle: [] as Awaited<ReturnType<typeof leseApiModelle>>, wahl: z ? await leseApiLaufWahl(z.identity_id) : null,
     budget:null,freigabe:null,anbieter:null,blocker:['funktion_aus'],lauf_schalter:null,api_schalter:null,agent_schalter:null,debug:null };
   const [modelle,budget,api,lauf,anbieter,wahl,grenzen] = await Promise.all([
-    leseApiModelle(),leseApiBudget(),leseApiSchalter(),leseApiLaufSchalter(project),apiAnbieterStand(),
+    leseApiModelle(),leseApiBudget(),leseApiSchalter(),leseApiLaufSchalter(project),apiAnbieterStand(project),
     z ? leseApiLaufWahl(z.identity_id) : null,leseApiLaufEinstellungen()]);
   const main = !z || z.rolle === 'main';
   const agenten = main ? null : await apiAgentenStand(project);
@@ -55,7 +59,11 @@ export async function apiAuswahlStand(id: string, akteur: SteuerAkteur | null) {
   ];
   return { schalter, identity: z, modelle, budget, freigabe, anbieter, wahl,
     lauf_schalter: lauf, api_schalter: api, agent_schalter: agentSchalter, blocker,
-    debug: { plaetze: plaetze.rows[0].n, maximum: grenzen.api_laeufe_max, einstellungen_fehler: grenzen.letzter_fehler } };
+    debug: { plaetze: plaetze.rows[0].n, maximum: grenzen.api_laeufe_max, einstellungen_fehler: grenzen.letzter_fehler,
+      deepseek: { funktion: API_DEEPSEEK_FUNKTION, schalter: anbieter['deepseek-api'].schalter_aktiv, schalter_quelle: anbieter['deepseek-api'].schalter_quelle,
+        key: anbieter['deepseek-api'].vorhanden ? 'vorhanden' : 'fehlt', key_quelle: anbieter['deepseek-api'].quelle, basis: deepseekBasis(), tarif_jetzt: deepseekTarif(),
+        // P22-T278 P3 b: UTC-Fenster der Spitzenzeit; die UI rechnet sie in Ortszeit Europe/Berlin um (Sommer/Winter).
+        spitze_utc: DEEPSEEK_SPITZE_UTC } } };
 }
 function pruefeModell(s: Awaited<ReturnType<typeof apiAuswahlStand>>, alias: string) {
   if (!s.schalter.aktiv) fehler('funktion_aus',{funktion:'api_agenten_auswahl'});
@@ -65,17 +73,14 @@ function pruefeModell(s: Awaited<ReturnType<typeof apiAuswahlStand>>, alias: str
   if (!(m.eingabe !== null && m.ausgabe !== null && m.eingabe > 0 && m.ausgabe > 0)) fehler('preis_unbekannt');
   if (!s.budget?.erlaubte_modelle.includes(alias)) fehler('modell_nicht_erlaubt');
   if (s.identity?.rolle !== 'main' && s.identity && !s.freigabe?.modelle.includes(alias)) fehler('modell_nicht_freigegeben');
-  if (!s.anbieter?.[m.anbieter as 'anthropic-api'|'openrouter-api']?.vorhanden) fehler('api_zugang_fehlt',{anbieter:m.anbieter});
+  if (m.anbieter === 'deepseek-api' && !s.anbieter?.['deepseek-api']?.schalter_aktiv) fehler('deepseek_aus',{funktion:API_DEEPSEEK_FUNKTION});
+  if (!s.anbieter?.[m.anbieter as 'anthropic-api'|'openrouter-api'|'deepseek-api']?.vorhanden) fehler('api_zugang_fehlt',{anbieter:m.anbieter});
   return m;
 }
 async function keineOffenenStarts(db: import('pg').PoolClient, id: string, project: string, name: string) {
-  const r = await db.query(`SELECT id FROM specialist_jobs WHERE project=$2 AND status IN ('pending','running')
-    AND action IN ('spawn','spawn_batch') AND (target_identity_id=$1 OR args->>'identity_id'=$1 OR args->>'name' IN ($3,'identity:' || $1)
-      OR action='spawn_batch' AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(args->'specialists','[]'::jsonb)) s
-        WHERE s->>'identity_id'=$1 OR s->>'name' IN ($3,'identity:' || $1))) LIMIT 1`,[id,project,name]);
-  if (r.rows.length) fehler('cli_start_offen');
-  const main = await db.query("SELECT id FROM agent_runtime_auftraege WHERE identity_id=$1 AND status IN ('pending','claimed','accepted') LIMIT 1",[id]);
-  if (main.rows.length) fehler('wechsel_offen');
+  // P22-T278 P2-2: dieselbe Pruefung nutzt spawneAlsApiLauf (core offeneCliStarts), keine zweite Kopie.
+  const offen = await offeneCliStarts(db, id, project, name);
+  if (offen) fehler(offen);
 }
 export async function starteApiAuswahl(e: { identity_id?: unknown; modell?: unknown; auftrag?: unknown; grund?: unknown; kosten_bestaetigt?: unknown; wechsel_bestaetigt?: unknown; idempotenz_schluessel?: unknown }, akteur: SteuerAkteur | null) {
   const id = typeof e.identity_id === 'string' ? e.identity_id : '';

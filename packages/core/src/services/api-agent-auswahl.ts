@@ -7,7 +7,7 @@ import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
 import { ProfilVerwaltungFehler } from './agent-profil-verwalter.js';
-import { mitApiWahlSperre } from './api-wahl-sperre.js';
+import { mitApiWahlSperre, aktiveApiLaeufe } from './api-wahl-sperre.js';
 
 export const API_AUSWAHL_FUNKTION = 'api_agenten_auswahl' as const;
 export interface ApiLaufWahl {
@@ -32,7 +32,7 @@ export async function leseApiLaufWahl(identityId: string): Promise<ApiLaufWahl |
   return r.rows[0]?.w ?? null;
 }
 // P22-T202 P1 (d317829a): Sperre und API-Belegung liegen im Blattmodul; Runtime-Auftraege nutzen dieselbe Grenze.
-export { mitApiWahlSperre, versucheApiWahlSperre, apiBelegteIdentitaeten, OHNE_API_SPERRE_ARTEN, type ApiBelegung } from './api-wahl-sperre.js';
+export { mitApiWahlSperre, versucheApiWahlSperre, apiBelegteIdentitaeten, OHNE_API_SPERRE_ARTEN, offeneCliStarts, aktiveApiLaeufe, laufendeCliWrapper, type ApiBelegung } from './api-wahl-sperre.js';
 export async function schreibeApiLaufWahl(db: PoolClient, id: string, w: ApiLaufWahl | null): Promise<void> {
   await db.query(`UPDATE agent_identitaeten SET startrezept = CASE WHEN $2::jsonb IS NULL
     THEN COALESCE(startrezept,'{}'::jsonb) - 'api_lauf_wahl'
@@ -54,6 +54,11 @@ export async function mitCliStartSperre<T>(project: string, action: string, args
       AND startrezept->'api_lauf_wahl'->>'laufart'='api'`, [r.rows.map(z => z.id)]);
     if (aktiv.rows.length) throw new ProfilVerwaltungFehler('api_lauf_gewaehlt', {
       identity_ids: aktiv.rows.map(z => z.id), hinweis: 'API-Lauf erst kontrolliert ueber die Laufwahl beenden.' });
+    // P22-T278 P2-2 (Abnahme 1dbf6af2): auch OHNE Wahl kein CLI-Start neben einem aktiven API-Lauf derselben Identitaet
+    // (z. B. per MCP spawneAlsApiLauf angelegt). Der Rueckfall gibt Lease und Lauf vor seinem CLI-Start frei.
+    const laeufe = await aktiveApiLaeufe(db, r.rows.map(z => z.id));
+    if (laeufe.length) throw new ProfilVerwaltungFehler('api_lauf_aktiv', {
+      identity_ids: laeufe, hinweis: 'Die Identitaet laeuft als API-Lauf. Erst stoppen (specialist stop bzw. admin api_lauf stoppen), dann als CLI starten.' });
     return arbeit();
   });
 }

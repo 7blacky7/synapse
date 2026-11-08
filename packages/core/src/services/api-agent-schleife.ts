@@ -237,7 +237,7 @@ export type OpenAiWerkzeugAufruf = { id: string; type: 'function'; function: { n
 export type OpenAiNachricht =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string | OpenAiTeil[] }
-  | { role: 'assistant'; content: string | null; tool_calls?: OpenAiWerkzeugAufruf[] }
+  | { role: 'assistant'; content: string | null; reasoning_content?: string; tool_calls?: OpenAiWerkzeugAufruf[] }
   | { role: 'tool'; tool_call_id: string; content: string }
 
 const bildUrl = (b: BildBlock): string => `data:${b.media_type};base64,${b.daten}`
@@ -247,16 +247,31 @@ function userInhaltOpenAi(bloecke: Array<TextBlock | BildBlock>): string | OpenA
   return bloecke.map(b => b.typ === 'text' ? { type: 'text' as const, text: b.text } : { type: 'image_url' as const, image_url: { url: bildUrl(b) } })
 }
 
-export function nachOpenAi(system: string, verlauf: Nachricht[]): OpenAiNachricht[] {
+export interface OpenAiFormatOptionen {
+  /**
+   * P22-T278 DeepSeek (Thinking-Modus, Standard): Doku guides/thinking_mode (KI-Browser 08.11.2026) - traegt die Anfrage tools, MUSS
+   * reasoning_content ALLER vorherigen assistant-Nachrichten zurueck (auch Runden ohne Werkzeugaufruf), sonst HTTP 400; ohne tools wird
+   * es ignoriert. Daher jede assistant-Nachricht mit reasoning_content; ohne gespeicherte Gedankenkette (Uebergabe, anderes Modell) leer.
+   */
+  reasoning_zurueck?: boolean
+}
+
+const begruendungAus = (n: Nachricht): string => n.inhalt
+  .filter((b): b is RohBlock => b.typ === 'roh' && b.anbieter === 'openai' && b.block.type === 'reasoning' && typeof b.block.text === 'string')
+  .map(b => b.block.text as string).join('\n')
+
+export function nachOpenAi(system: string, verlauf: Nachricht[], opt: OpenAiFormatOptionen = {}): OpenAiNachricht[] {
   const aus: OpenAiNachricht[] = []
   if (system.trim()) aus.push({ role: 'system', content: system })
   for (const n of verlauf) {
     if (n.rolle === 'assistant') {
       const text = n.inhalt.filter((b): b is TextBlock => b.typ === 'text').map(b => b.text).join('\n\n')
       const aufrufe = n.inhalt.filter((b): b is WerkzeugAufruf => b.typ === 'werkzeug_aufruf')
-      if (!text && aufrufe.length === 0) continue
+      const begruendung = opt.reasoning_zurueck ? begruendungAus(n) : ''
+      if (!text && aufrufe.length === 0 && !begruendung) continue
       aus.push({
         role: 'assistant', content: text || null,
+        ...(opt.reasoning_zurueck ? { reasoning_content: begruendung } : {}),
         ...(aufrufe.length ? { tool_calls: aufrufe.map(a => ({ id: a.id, type: 'function' as const, function: { name: a.name, arguments: JSON.stringify(a.eingabe ?? {}) } })) } : {}),
       })
       continue
@@ -327,7 +342,8 @@ export function nutzungAusOpenAi(usage: unknown): Nutzung | null {
   const u = usage as Record<string, unknown>
   const n = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? x : 0)
   const details = (u.prompt_tokens_details && typeof u.prompt_tokens_details === 'object' ? u.prompt_tokens_details : {}) as Record<string, unknown>
-  const cache = n(details.cached_tokens)
+  // P22-T278: DeepSeek meldet Cache-Treffer als prompt_cache_hit_tokens (prompt_tokens = Treffer + Fehlschuss).
+  const cache = typeof u.prompt_cache_hit_tokens === 'number' ? n(u.prompt_cache_hit_tokens) : n(details.cached_tokens)
   return { input: Math.max(0, n(u.prompt_tokens) - cache), output: n(u.completion_tokens), cache_read: cache, cache_creation: 0 }
 }
 
