@@ -7,7 +7,7 @@ import { useLaufHerkunft } from './LaufHerkunftMarke';
 import { findeLaufHerkunft } from './lauf-herkunft-logik';
 import { oeffneAusweisVerwaltung } from '../ausweis-deeplink';
 import {
-  API_BASIS, API_GRUPPEN, AUTO_AUFTRAG, AUTO_GRUND, anbieterName, fehlerText, kurzGrund, laufZeile, neuerStartSchluessel, preisEtikett, preisTitel, sperrCode, sperrGrund,
+  API_BASIS, API_GRUPPEN, AUTO_AUFTRAG, AUTO_GRUND, anbieterName, externerLauf, fehlerText, kurzGrund, modellwechselFehler, uebernahmeFrage, laufZeile, neuerStartSchluessel, preisEtikett, preisTitel, sperrCode, sperrGrund,
   type ApiAuswahlStand, type ApiLauf, type ApiModell,
 } from './api-laufwahl-logik';
 import '../hauptagent-modell-chip.css';
@@ -214,7 +214,17 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige, identity
     try {
       if (apiAktuell) await anfrage(API_BASIS + '/cli', { identity_id: identityId, grund: AUTO_GRUND });
       if (istMain) await anfrage('/api/main-agent/wechsel', { runtime, modell, ...(effort ? { effort } : {}), grund: 'Modellwahl im Hauptagent-Chat' });
-      else await wechsleAgentModellUi(identityId, runtime as 'claude' | 'codex', modell, AUTO_GRUND);
+      else {
+        // P22-T326 F4: externer Lauf -> Rueckfrage, danach mit uebernahme_bestaetigt; fachlicher Fehler (auch Rueckfall) als Meldung.
+        let r = await wechsleAgentModellUi(identityId, runtime as 'claude' | 'codex', modell, AUTO_GRUND);
+        const ext = externerLauf(r);
+        if (ext) {
+          if (!window.confirm(uebernahmeFrage(ext))) { setMeldung({ text: 'Wechsel abgebrochen, der Lauf auf ' + ext.herkunftsort + ' bleibt.', fehler: false }); return; }
+          r = await wechsleAgentModellUi(identityId, runtime as 'claude' | 'codex', modell, AUTO_GRUND, true);
+        }
+        const f = modellwechselFehler(r);
+        if (f) throw new Error(f);
+      }
       fertig('Wechsel zu ' + (CLI_GRUPPE[runtime] ?? runtime) + ' · ' + kurz(modell) + (effort ? ' · ' + effort : '') + ' beauftragt.');
       await laden();
     } catch (reason) {

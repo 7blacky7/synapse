@@ -101,6 +101,11 @@ const HINWEIS: Record<string, string> = {
   api_lauf_aktiv: 'Der Agent läuft als API-Lauf. Ein CLI-Modell im Modell-Chip wählen, um zu wechseln.',
   lauf_turn_aktiv: 'Der API-Lauf arbeitet gerade; nach dem Turn erneut wählen.', wechsel_laeuft: 'Ein Wechsel läuft bereits.',
   api_eingaenge_offen: 'API gestoppt; offene API-Aufträge erst erledigen.', main_chat_turn_aktiv: 'Der Hauptagent antwortet gerade; danach erneut wählen.',
+  // P22-T326: Plattform-Modellwechsel (runtime-agenten/modellwechsel).
+  kein_startrezept: 'Für diese Identität gibt es kein Startrezept (nie auf der Plattform gestartet). Schalter modellwechsel_rezept_erzeugen erzeugt eines aus der Identität.',
+  externer_lauf_aktiv: 'Die Identität läuft gerade außerhalb der Plattform; der Wechsel braucht eine Bestätigung.',
+  spawn_fehlgeschlagen: 'Start mit dem neuen Modell fehlgeschlagen.', start_nicht_bestaetigt: 'Start mit dem neuen Modell nicht bestätigt.',
+  stop_fehlgeschlagen: 'Der laufende Agent ließ sich nicht stoppen; nichts geändert.', anderer_lauf_aktiv: 'Ein anderer Lauf dieser Identität ist aktiv; nichts geändert.',
 };
 const limitName = (code: string): string => /((?:Tages|Wochen|Monats|Budget)limit) erschoepft/.exec(code)?.[1] ?? 'Tageslimit';
 export const istRueckfall = (code: string): boolean => code.startsWith('rueckfall_container');
@@ -114,4 +119,27 @@ export function fehlerText(code: string): string {
   if (code.startsWith('rueckfall_container_fehlgeschlagen:')) return limitName(code) + ' erreicht, Rückfall auf das CLI-Abo fehlgeschlagen. Offene Aufträge bleiben liegen.';
   const kern = code.replace(/ \(HTTP \d+\)$/, '');
   return HINWEIS[kern] ?? code;
+}
+
+/** P22-T326 F4: externer aktiver Lauf aus der Antwort des Plattform-Modellwechsels, sonst null. Rein. */
+export function externerLauf(r: Record<string, unknown> | null | undefined): { herkunftsort: string; zuletzt_aktiv: string | null } | null {
+  if (!r || r.success !== false || r.error !== 'externer_lauf_aktiv') return null;
+  const e = (r.extern ?? {}) as Record<string, unknown>;
+  return { herkunftsort: typeof e.herkunftsort === 'string' ? e.herkunftsort : 'extern', zuletzt_aktiv: typeof e.zuletzt_aktiv === 'string' ? e.zuletzt_aktiv : null };
+}
+/** P22-T326 F4: Rueckfrage vor dem Abloesen eines externen Laufs. Rein. */
+export function uebernahmeFrage(e: { herkunftsort: string; zuletzt_aktiv: string | null }): string {
+  const zeit = e.zuletzt_aktiv ? new Date(e.zuletzt_aktiv) : null;
+  return 'Diese Identität läuft gerade außerhalb der Plattform (' + e.herkunftsort
+    + (zeit && !Number.isNaN(zeit.getTime()) ? ', zuletzt aktiv ' + zeit.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '') + ').\n'
+    + 'Der Lauf dort wird beim Start abgelöst. Trotzdem im Container starten?';
+}
+/** P22-T326 F4: Antwort des Plattform-Modellwechsels als Klartext; null = Erfolg. Nennt einen Rückfall auf das bisherige Modell. Rein. */
+export function modellwechselFehler(r: Record<string, unknown> | null | undefined): string | null {
+  if (!r || r.success !== false) return null;
+  const basis = fehlerText(typeof r.error === 'string' ? r.error : 'fehler');
+  const rf = (r.rueckfall ?? null) as Record<string, unknown> | null;
+  if (rf?.status === 'gestartet') return basis + ' Das bisherige Modell ' + String(rf.modell ?? '') + ' läuft wieder.';
+  if (rf?.status === 'fehlgeschlagen') return basis + ' Auch der Neustart mit dem bisherigen Modell ist fehlgeschlagen; der Agent ist gerade nicht ansprechbar.';
+  return basis;
 }

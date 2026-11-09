@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getRuntimeAgenten, getRuntimeAgentLog, getRuntimeProzesse, steuereRuntimeAgentUi, wechsleAgentModellUi, PLATTFORM_AGENT_RUNTIMES, type RuntimeAgentenStand } from '../api/agent-runtime';
+import { externerLauf, uebernahmeFrage } from './api-laufwahl-logik';
 import { useCliModelle } from './CliModellAuswahl';
 import { PANEL_RUNTIMES, panelSichtbarAn, modellOptionen, pruefeModellWechsel, modellRequestErlaubt, katalogFuerRuntime, type PanelRuntime } from './runtime-agenten-panel-logik';
 import '../runtime-agenten-panel.css';
@@ -114,6 +115,12 @@ export function RuntimeAgentenPanel({ project, ort = 'channel' }: { project: str
       if (gilt(g)) { setAusgabe(JSON.stringify(r, null, 2)); void laden(); }
     } catch (e) { if (gilt(g)) setAusgabe(e instanceof Error ? e.message : String(e)); }
   };
+  // P22-T326 F4: Antwort externer_lauf_aktiv -> Rueckfrage, bei Ja erneut mit uebernahme_bestaetigt.
+  const wechsleMitRueckfrage = async (id: string, rt: typeof PLATTFORM_AGENT_RUNTIMES[number], modell: string, grund: string) => {
+    const r = await wechsleAgentModellUi(id, rt, modell, grund);
+    const ext = externerLauf(r);
+    return ext && window.confirm(uebernahmeFrage(ext)) ? wechsleAgentModellUi(id, rt, modell, grund, true) : r;
+  };
   const modellWechseln = async (id: string, modellBisher: string | null) => {
     const g = generation.current;
     const rt = (window.prompt('CLI-Anbieter (' + PLATTFORM_AGENT_RUNTIMES.join(' | ') + '):', 'claude') ?? '').trim();
@@ -123,7 +130,7 @@ export function RuntimeAgentenPanel({ project, ort = 'channel' }: { project: str
     const grund = (window.prompt('Grund für den Modellwechsel (mind. 10 Zeichen, steht im Audit):') ?? '').trim();
     if (grund.length < 10 || !gilt(g)) return;
     try {
-      const r = await wechsleAgentModellUi(id, rt as typeof PLATTFORM_AGENT_RUNTIMES[number], modell, grund);
+      const r = await wechsleMitRueckfrage(id, rt as typeof PLATTFORM_AGENT_RUNTIMES[number], modell, grund);
       if (gilt(g)) { setAusgabe(JSON.stringify(r, null, 2)); void laden(); }
     } catch (e) { if (gilt(g)) setAusgabe(e instanceof Error ? e.message : String(e)); }
   };
@@ -134,7 +141,7 @@ export function RuntimeAgentenPanel({ project, ort = 'channel' }: { project: str
     if (!modellRequestErlaubt(aktiv.current, d.g, generation.current, d.project, project)) return;
     const g = d.g, id = d.id;
     try {
-      const r = await wechsleAgentModellUi(id, rt, modell, grund);
+      const r = await wechsleMitRueckfrage(id, rt, modell, grund);
       if (gilt(g)) { setAusgabe(JSON.stringify(r, null, 2)); setDialog(null); void laden(); }
     } catch (e) { if (gilt(g)) setAusgabe(e instanceof Error ? e.message : String(e)); }
   };

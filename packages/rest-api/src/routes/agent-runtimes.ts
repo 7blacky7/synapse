@@ -578,10 +578,12 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     } catch (error) { return sendFachFehler(reply, error); }
   });
   // P22-T117 (R5): Modell/CLI-Anbieter eines Plattform-Agenten wechseln. Unter /api/agent-runtimes (Guard), Akteur geprueft; nur Abo-Runtimes (R3).
-  fastify.post<{ Body: { identity_id?: unknown; runtime?: unknown; modell?: unknown; effort?: unknown; grund?: unknown } }>('/api/agent-runtimes/runtime-agenten/modellwechsel', async (request, reply) => {
+  // P22-T326: uebernahme_bestaetigt (F2, Schalter modellwechsel_rezept_erzeugen) loest einen extern aktiven Lauf bewusst ab.
+  fastify.post<{ Body: { identity_id?: unknown; runtime?: unknown; modell?: unknown; effort?: unknown; grund?: unknown; uebernahme_bestaetigt?: unknown } }>('/api/agent-runtimes/runtime-agenten/modellwechsel', async (request, reply) => {
     try {
       const b = request.body ?? {};
-      return await wechslePlattformAgentModell({ identity_id: b.identity_id, runtime: b.runtime, modell: b.modell, effort: b.effort, grund: b.grund }, await userAkteur(request));
+      return await wechslePlattformAgentModell({ identity_id: b.identity_id, runtime: b.runtime, modell: b.modell, effort: b.effort, grund: b.grund,
+        uebernahme_bestaetigt: b.uebernahme_bestaetigt }, await userAkteur(request));
     } catch (error) { return sendFachFehler(reply, error); }
   });
   // P22-T194 Stufe2: reiner Cache-Status im vorhandenen authentifizierten Chatfenster.

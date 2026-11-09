@@ -550,8 +550,9 @@ export async function getRuntimeProzesse(project: string): Promise<Record<string
 /** P22-T117: Abo-Runtimes, auf die ein Plattform-Agent wechseln kann (API-Runtimes gibt es dafuer nicht, User-Entscheidung). */
 export const PLATTFORM_AGENT_RUNTIMES = ['claude', 'codex'] as const;
 /** P22-T117: Modell/CLI-Anbieter eines Plattform-Agenten wechseln (Schalter plattform_agent_modellwechsel). */
-export async function wechsleAgentModellUi(identityId: string, runtime: typeof PLATTFORM_AGENT_RUNTIMES[number], modell: string, grund: string): Promise<Record<string, unknown>> {
-  return jsonRequest<Record<string, unknown>>('/api/agent-runtimes/runtime-agenten/modellwechsel', { method: 'POST', body: JSON.stringify({ identity_id: identityId, runtime, modell, grund }) });
+/** P22-T326: uebernahmeBestaetigt=true loest einen extern aktiven Lauf bewusst ab (Antwort externer_lauf_aktiv zuvor). */
+export async function wechsleAgentModellUi(identityId: string, runtime: typeof PLATTFORM_AGENT_RUNTIMES[number], modell: string, grund: string, uebernahmeBestaetigt = false): Promise<Record<string, unknown>> {
+  return jsonRequest<Record<string, unknown>>('/api/agent-runtimes/runtime-agenten/modellwechsel', { method: 'POST', body: JSON.stringify({ identity_id: identityId, runtime, modell, grund, ...(uebernahmeBestaetigt ? { uebernahme_bestaetigt: true } : {}) }) });
 }
 /** P22-T116: zweistufig - ohne bestaetigung nur Vorschau + bestaetigung_id; mit {id, grund} Ausfuehrung. */
 export async function steuereRuntimeAgentUi(identityId: string, aktion: 'stop' | 'start' | 'restart' | 'wake', grund: string, bestaetigung?: { id: string; grund: string; project: string; identity_id: string }): Promise<Record<string, unknown>> {

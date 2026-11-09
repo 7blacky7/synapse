@@ -15,6 +15,7 @@
  *   NUR, wenn die Anmeldung diesen Nachweis traegt UND der Wrapper dieser Generation lebt (Socket unter .synapse/agent-runs/<id>/).
  *   Ausweis extern uebernommen (chatgpt.com, Desktop-CLI) -> kein Nachweis -> ausgeblendet, ohne Hinweistext.
  * SCHALTER: plattform_agent_modellwechsel (Produkt, je Projekt/global, Standard AUS, nur ausdruecklich).
+ * P22-T326: modellwechsel_rezept_erzeugen (Std AUS) - Rezept erzeugen, externen Lauf nur mit Bestaetigung abloesen, Rueckfall.
  * AUDIT: agent_identitaet_audit aktion plattform_modellwechsel. DEBUG: jede Antwort traegt debug.
  */
 import { createHash } from 'node:crypto';
@@ -278,7 +279,103 @@ async function fuehreJob(project: string, action: 'stop' | 'spawn', args: Record
   return { job_id: job.id, status: r.status, result: r.result ?? null, error: r.error ?? null, message: r.message ?? null };
 }
 
-export interface ModellwechselEingabe { identity_id: unknown; runtime?: unknown; modell: unknown; effort?: unknown; grund: unknown }
+export interface ModellwechselEingabe { identity_id: unknown; runtime?: unknown; modell: unknown; effort?: unknown; grund: unknown;
+  /** P22-T326 F2: true = einen extern aktiven Lauf (PC-CLI, Desktop, chatgpt.com) beim Container-Start bewusst abloesen. */
+  uebernahme_bestaetigt?: unknown }
+
+/**
+ * P22-T326 (User 09.11.2026, Befund 1994b888): Schalter modellwechsel_rezept_erzeugen (Produkt, je Projekt/global, Standard AUS, nur
+ * ausdruecklich). EIN: F1 Startrezept waehlen bzw. aus der Identitaet erzeugen (auch ohne frueheren Plattform-Spawn), F2 externer aktiver
+ * Lauf nur mit uebernahme_bestaetigt abloesen, F3 Rueckfall auf das bisherige Rezept bzw. Profilstand vor dem Wechsel. AUS = Bestand.
+ * DEBUG: debug.rezept_quelle (spawn_ok | spawn_letzter | erzeugt), debug.rueckfall, debug.profil_zurueckgesetzt, debug.abgeloest_extern.
+ */
+export const MODELLWECHSEL_REZEPT_FUNKTION = 'modellwechsel_rezept_erzeugen' as const;
+export async function modellwechselRezeptAktiv(project: string): Promise<boolean> {
+  try { return (await leseProfilProduktSchalter(MODELLWECHSEL_REZEPT_FUNKTION, project)).aktiv; } catch { return false; }
+}
+
+export type RezeptQuelle = 'spawn_ok' | 'spawn_letzter' | 'erzeugt';
+export interface SpawnJobZeile { args: Record<string, unknown> | null; status?: string | null; result?: unknown }
+/** Auftrag eines erzeugten Startrezepts (wie die Koordinator-Starts der Plattform). */
+export const ERZEUGTER_AUFTRAG = 'Anmelden, Posteingang lesen, auf Auftraege warten.';
+
+/**
+ * Rein, testbar (F1). jobs = Spawn-Jobs der Identitaet, juengste zuerst. erzeugen=false -> Bestand: juengster Spawn-Job oder null.
+ * erzeugen=true -> juengster FACHLICH erfolgreicher Spawn (jobErfolgreich), sonst juengster beliebiger, sonst ein aus der Identitaet
+ * erzeugtes Rezept (Container-Ziel und Modell setzt der Wechsel).
+ */
+export function waehleStartrezept(jobs: SpawnJobZeile[], i: { identity_id: string; agent_id: string; project: string; rolle: string }, erzeugen: boolean):
+  { rezept: Record<string, unknown>; quelle: RezeptQuelle } | null {
+  const mitArgs = jobs.filter(j => !!j.args && typeof j.args === 'object' && !Array.isArray(j.args));
+  if (!erzeugen) return mitArgs[0] ? { rezept: mitArgs[0].args!, quelle: 'spawn_letzter' } : null;
+  const ok = mitArgs.find(j => jobErfolgreich({ status: j.status ?? null, result: j.result }));
+  if (ok) return { rezept: ok.args!, quelle: 'spawn_ok' };
+  if (mitArgs[0]) return { rezept: mitArgs[0].args!, quelle: 'spawn_letzter' };
+  return { quelle: 'erzeugt', rezept: { name: 'identity:' + i.identity_id, identity_id: i.identity_id, project: i.project, task: ERZEUGTER_AUFTRAG,
+    expertise: (i.rolle === 'koordinator' ? 'Koordinator ' + i.project : i.agent_id + ' (' + i.rolle + ')').slice(0, 200), keep_alive: true } };
+}
+
+export interface AktiverLauf { herkunftsort: string | null; beginn_art: string | null; erstellt_am: string | Date | null; context_epoch: number | null; zuletzt_aktiv: string | Date | null }
+export interface ExternerLauf { herkunftsort: string; beginn_art: string | null; context_epoch: number | null; zuletzt_aktiv: string; seit_ms: number }
+
+/** Rein, testbar (F2): aktiver Lauf ohne Plattform-Wrapper, zuletzt aktiv innerhalb der Frist (runtime_veraltet_minuten)? null = nein. */
+export function externerLaufAktiv(lauf: AktiverLauf | null, wrapperLaeuft: boolean, jetztMs: number, fristMs: number): ExternerLauf | null {
+  if (wrapperLaeuft || !lauf) return null;
+  const ms = (v: unknown): number => v instanceof Date ? v.getTime() : typeof v === 'string' ? Date.parse(v) : NaN;
+  const zeiten = [ms(lauf.zuletzt_aktiv), ms(lauf.erstellt_am)].filter(Number.isFinite);
+  if (!zeiten.length) return null;
+  const zuletzt = Math.max(...zeiten);
+  if (jetztMs - zuletzt > fristMs) return null;
+  return { herkunftsort: lauf.herkunftsort ?? (lauf.beginn_art === 'uebernahme' ? 'uebernommen' : 'extern (Ort unbekannt)'), beginn_art: lauf.beginn_art,
+    context_epoch: lauf.context_epoch ?? null, zuletzt_aktiv: new Date(zuletzt).toISOString(), seit_ms: Math.max(0, jetztMs - zuletzt) };
+}
+
+async function leseAktivenLauf(identity_id: string): Promise<AktiverLauf | null> {
+  try {
+    const r = await getPool().query<AktiverLauf>(
+      `SELECT l.herkunftsort, l.beginn_art, l.erstellt_am, l.context_epoch, i.zuletzt_aktiv FROM agent_identitaet_laeufe l
+         JOIN agent_identitaeten i ON i.id::text = l.identity_id WHERE l.identity_id = $1 AND l.status = 'aktiv' LIMIT 1`, [identity_id]);
+    return r.rows[0] ?? null;
+  } catch { return null; }
+}
+
+/** Rein, testbar (F3): warum kein Rueckfall-Start? null = Rueckfall starten. */
+export function rueckfallHindernis(x: { stopOk: boolean; altModell: string | null; rezeptQuelle: RezeptQuelle; lebend: number }): string | null {
+  if (!x.stopOk) return 'kein_stop';
+  if (x.rezeptQuelle === 'erzeugt') return 'kein_altes_rezept';
+  if (!x.altModell) return 'kein_altes_modell';
+  if (x.lebend > 0) return 'anderer_lauf_aktiv';
+  return null;
+}
+
+export interface ProfilStand { modell_bestaetigt: string | null; plattform_modell: unknown; plattform_modell_absicht: unknown }
+
+async function leseProfilStand(identity_id: string): Promise<ProfilStand | null> {
+  try {
+    const r = await getPool().query<ProfilStand>(
+      `SELECT modell_bestaetigt, startrezept->'plattform_modell' AS plattform_modell, startrezept->'plattform_modell_absicht' AS plattform_modell_absicht
+         FROM agent_identitaeten WHERE id::text = $1`, [identity_id]);
+    return r.rows[0] ?? null;
+  } catch { return null; }
+}
+
+/** F3: Profilstand vor dem Wechsel wiederherstellen (modell_bestaetigt, startrezept.plattform_modell[_absicht]). query injizierbar. Wirft nie. */
+export async function stelleProfilStandHer(identity_id: string, stand: ProfilStand,
+  query: LaufQuery = (sql, p) => getPool().query(sql, p)): Promise<boolean> {
+  const j = (v: unknown): string | null => v === null || v === undefined ? null : JSON.stringify(v);
+  try {
+    const r = await query(`UPDATE agent_identitaeten SET modell_bestaetigt = $2,
+        startrezept = (COALESCE(startrezept, '{}'::jsonb) - 'plattform_modell' - 'plattform_modell_absicht')
+          || CASE WHEN $3::jsonb IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('plattform_modell', $3::jsonb) END
+          || CASE WHEN $4::jsonb IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('plattform_modell_absicht', $4::jsonb) END,
+        profil_revision = profil_revision + 1
+      WHERE id::text = $1 AND rolle <> 'main'`, [identity_id, stand.modell_bestaetigt ?? null, j(stand.plattform_modell), j(stand.plattform_modell_absicht)]);
+    return (r.rowCount ?? 0) > 0;
+  } catch (err) {
+    console.error('[modellwechsel-rezept] Profilstand nicht wiederhergestellt:', (err as Error)?.message ?? err);
+    return false;
+  }
+}
 
 const LAUFENDE_WECHSEL = new Set<string>();
 
@@ -302,16 +399,20 @@ export async function wechslePlattformAgentModell(e: ModellwechselEingabe, akteu
   if (z.rolle === 'main') fehler('ziel_ist_main', { hinweis: 'Main wechselt ueber /api/main-agent/wechsel bzw. Runtime-Auftrag' });
   let modell = text(e.modell);
   if (!modell) fehler('modell_fehlt');
-  const rezeptRow = await getPool().query<{ args: Record<string, unknown> }>(
-    "SELECT args FROM specialist_jobs WHERE target_identity_id = $1 AND action = 'spawn' ORDER BY created_at DESC LIMIT 1", [z.identity_id]);
-  const rezept = rezeptRow.rows[0]?.args;
-  if (!rezept) fehler('kein_startrezept', { hinweis: 'kein frueherer Spawn-Job dieser Identitaet (nur Plattform-Agenten)' });
+  // P22-T326 F1: Schalter modellwechsel_rezept_erzeugen EIN -> juengster erfolgreicher Spawn, sonst juengster, sonst erzeugt. AUS = Bestand.
+  const rezeptAn = await modellwechselRezeptAktiv(z.project);
+  const rezeptRows = await getPool().query<SpawnJobZeile>(
+    "SELECT args, status::text AS status, result FROM specialist_jobs WHERE target_identity_id = $1 AND action = 'spawn' ORDER BY created_at DESC LIMIT $2", [z.identity_id, rezeptAn ? 20 : 1]);
+  const wahl = waehleStartrezept(rezeptRows.rows, z, rezeptAn);
+  if (!wahl) fehler('kein_startrezept', { hinweis: 'kein frueherer Spawn-Job dieser Identitaet (nur Plattform-Agenten)', schalter: MODELLWECHSEL_REZEPT_FUNKTION, schalter_aktiv: rezeptAn });
+  const rezept = wahl.rezept;
+  const erzeugt = wahl.quelle === 'erzeugt';
   const bisherRt = text(rezept.target_runtime, 32) ?? z.runtime;
   const runtime = text(e.runtime, 32) ?? bisherRt ?? 'claude';
   if (z.ort !== 'container' && !rezept.target_runtime && text(e.runtime, 32) && runtime !== (z.runtime ?? runtime)) fehler('runtime_wechsel_nur_container', { ort: z.ort });
   const kosten = kostenEntscheidung(runtime);
   if (kosten) fehler(kosten, { runtime, kosten_art: kostenArt(runtime), erlaubt: ABO_RUNTIMES, hinweis: 'Plattform-Agenten laufen nur auf Abo-Runtimes (User-Entscheidung)' });
-  const imContainer = !!rezept.target_runtime || z.ort === 'container';
+  const imContainer = erzeugt || !!rezept.target_runtime || z.ort === 'container';
   if (imContainer && !(SPECIALIST_ZIEL_RUNTIMES as readonly string[]).includes(runtime)) fehler('runtime_ungueltig', { erlaubt: SPECIALIST_ZIEL_RUNTIMES });
   const hm = await import('./hauptagent-modelle.js');
   const p = await hm.pruefeModellFuerRuntime(modell, runtime);
@@ -326,27 +427,46 @@ export async function wechslePlattformAgentModell(e: ModellwechselEingabe, akteu
   if (LAUFENDE_WECHSEL.has(z.identity_id)) fehler('wechsel_laeuft', { identity_id: z.identity_id });
   LAUFENDE_WECHSEL.add(z.identity_id);
   try {
-    return await fuehreWechselAus({ z, rezept, wer, grund, modell: modell!, runtime, effort, bisherRt, imContainer, pruefQuelle: p.quelle });
+    return await fuehreWechselAus({ z, rezept, wer, grund, modell: modell!, runtime, effort, bisherRt, imContainer, pruefQuelle: p.quelle,
+      rezeptAn, rezeptQuelle: wahl.quelle, uebernahme: e.uebernahme_bestaetigt === true });
   } finally { LAUFENDE_WECHSEL.delete(z.identity_id); }
 }
 
 async function fuehreWechselAus(w: { z: Awaited<ReturnType<typeof ladeSteuerZiel>>; rezept: Record<string, unknown>; wer: string; grund: string; modell: string; runtime: string;
-  effort: string | null; bisherRt: string | null; imContainer: boolean; pruefQuelle: unknown }): Promise<Record<string, unknown>> {
-  const { z, rezept, wer, grund, modell, runtime, effort, imContainer } = w;
+  effort: string | null; bisherRt: string | null; imContainer: boolean; pruefQuelle: unknown; rezeptAn: boolean; rezeptQuelle: RezeptQuelle; uebernahme: boolean }): Promise<Record<string, unknown>> {
+  const { z, rezept, wer, grund, modell, runtime, effort, imContainer, rezeptAn } = w;
   const grenzen = await leseRuntimeAgentenGrenzen();
-  const audit = { wer, grund, am: new Date().toISOString(), von: { modell: rezept.model ?? null, runtime: w.bisherRt }, nach: { modell, runtime, effort }, ort: z.ort, kosten_art: kostenArt(runtime) };
+  const audit: Record<string, unknown> = { wer, grund, am: new Date().toISOString(), von: { modell: rezept.model ?? null, runtime: w.bisherRt }, nach: { modell, runtime, effort }, ort: z.ort, kosten_art: kostenArt(runtime),
+    ...(rezeptAn ? { rezept_quelle: w.rezeptQuelle } : {}) };
   const name = 'identity:' + z.identity_id;
   const schritte: Array<Record<string, unknown>> = [];
   let abbruch: string | null = null;
   const altPid = z.wrapper?.wrapperPid ?? null;
   const laeuft = z.wrapper?.status === 'running' || z.wrapper?.status === 'idle';
+  const debugRezept = { rezept_schalter: MODELLWECHSEL_REZEPT_FUNKTION, rezept_schalter_aktiv: rezeptAn, rezept_quelle: w.rezeptQuelle };
+  // P22-T326 F2 (Schalter modellwechsel_rezept_erzeugen): ein extern laufender Lauf (PC-CLI, Desktop, chatgpt.com) wird nicht mehr
+  // stillschweigend abgeloest. Ohne uebernahme_bestaetigt:true -> externer_lauf_aktiv (nichts gestoppt, nichts gestartet).
+  let extern: ReturnType<typeof externerLaufAktiv> = null;
+  if (rezeptAn && !laeuft) {
+    extern = externerLaufAktiv(await leseAktivenLauf(z.identity_id), laeuft, Date.now(), grenzen.veraltet_ms);
+    if (extern && !w.uebernahme) {
+      return { success: false, error: 'externer_lauf_aktiv', identity_id: z.identity_id, agent: z.agent_id, project: z.project, modell, runtime, effort, extern,
+        bestaetigung_noetig: 'uebernahme_bestaetigt',
+        hinweis: 'Ein Lauf dieser Identitaet ist ausserhalb der Plattform aktiv (' + extern.herkunftsort + '). Mit uebernahme_bestaetigt:true wird er beim Container-Start abgeloest.',
+        debug: { schalter: PLATTFORM_MODELLWECHSEL_FUNKTION, ...debugRezept, ort: z.ort, wrapper_status: z.wrapper?.status ?? null, frist_ms: grenzen.veraltet_ms, grenzen_quelle: grenzen.quelle } };
+    }
+    if (extern) audit.abgeloest_extern = extern;
+  }
+  // P22-T326 F3: Profilstand vor dem Wechsel (fuer die Wiederherstellung, wenn der Start scheitert und kein Rueckfall laeuft).
+  const profilVorher = rezeptAn ? await leseProfilStand(z.identity_id) : null;
+  let stopOk = false;
   if (laeuft) {
     const stopZiel = z.ort === 'container' && z.runtime ? { target_runtime: z.runtime, project_path: runtimeProjektPfad(z.project) }
       : rezept.target_hostname ? { target_hostname: rezept.target_hostname } : {};
     const j = await fuehreJob(z.project, 'stop', { name, ...stopZiel, ...(altPid ? { wrapper_pid: altPid } : {}), audit }, grenzen.job_warte_ms);
     schritte.push({ schritt: 'stop', ...j });
     if (!jobErfolgreich(j)) abbruch = 'stop_fehlgeschlagen';
-    else await wartenBisGestoppt(z.identity_id, z.project);
+    else { stopOk = true; await wartenBisGestoppt(z.identity_id, z.project); }
   } else schritte.push({ schritt: 'stop', uebersprungen: 'laeuft_nicht' });
   // Generationsbindung: unmittelbar vor dem Spawn alle Wrapper-Zeilen der Identitaet frisch lesen (alte PID oder fremder Lauf -> Abbruch).
   let vorSpawn: Array<{ status: string | null; wrapperPid: number | null }> = [];
@@ -372,6 +492,34 @@ async function fuehreWechselAus(w: { z: Awaited<ReturnType<typeof ladeSteuerZiel
       else { neuPid = pid; neuLauf = { job_id: j.job_id ?? null, wrapper_pid: pid, lauf_hash: text(s.plattform_lauf_hash, 128) }; }
     }
   }
+  // P22-T326 F3: Start gescheitert -> nach erfolgreichem Stop EINMAL mit dem bisherigen Rezept (altes Modell/Ort) neu starten, damit der
+  // Agent ansprechbar bleibt. Ohne Rueckfall-Lauf: Profilstand vor dem Wechsel wiederherstellen (modell_bestaetigt, plattform_modell[_absicht]).
+  let rueckfall: Record<string, unknown> | null = null;
+  let profilZurueck: boolean | null = null;
+  if (rezeptAn && (abbruch === 'spawn_fehlgeschlagen' || abbruch === 'start_nicht_bestaetigt')) {
+    let rueckLauf: { job_id: string | null; wrapper_pid: number | null; lauf_hash: string | null } | null = null;
+    const altModell = text(rezept.model);
+    const lebend = (await listWrapperStatus(z.project)).filter(r => r.identityId === z.identity_id && (r.status === 'running' || r.status === 'idle'));
+    const hindernis = rueckfallHindernis({ stopOk, altModell, rezeptQuelle: w.rezeptQuelle, lebend: lebend.length });
+    if (hindernis) rueckfall = { status: 'uebersprungen', grund: hindernis };
+    else {
+      const { audit: _a, ...rest } = rezept as Record<string, unknown>;
+      const altArgs: Record<string, unknown> = { ...rest, name, identity_id: z.identity_id, model: altModell, audit: { ...audit, rueckfall: true } };
+      if (z.ort === 'container' && z.runtime) { altArgs.target_runtime = z.runtime; altArgs.project_path = runtimeProjektPfad(z.project); delete altArgs.target_hostname; }
+      else if (text(rezept.target_runtime, 32)) altArgs.project_path = runtimeProjektPfad(z.project);
+      const j = await fuehreJob(z.project, 'spawn', altArgs, grenzen.modellwechsel_spawn_warte_ms);
+      schritte.push({ schritt: 'rueckfall', ...j });
+      const s = (jobInhalt(j.result)?.specialist ?? {}) as Record<string, unknown>;
+      const pid = Number(s.wrapperPid);
+      const lebt = jobErfolgreich(j) && Number.isSafeInteger(pid) && pid > 0
+        && (await listWrapperStatus(z.project)).some(r => r.identityId === z.identity_id && r.wrapperPid === pid && (r.status === 'running' || r.status === 'idle'));
+      rueckfall = { status: lebt ? 'gestartet' : 'fehlgeschlagen', modell: altModell, runtime: altArgs.target_runtime ?? null, wrapper_pid: lebt ? pid : null };
+      if (lebt) rueckLauf = { job_id: j.job_id ?? null, wrapper_pid: pid, lauf_hash: text(s.plattform_lauf_hash, 128) };
+    }
+    if (rueckLauf && altModell) rueckfall.modell_bindung = await bestaetigeWechselModell(await modellLaufBindungAktiv(z.project), z.identity_id, altModell, rueckLauf);
+    else if (profilVorher && hindernis !== 'anderer_lauf_aktiv') profilZurueck = await stelleProfilStandHer(z.identity_id, profilVorher);
+    console.debug('[modellwechsel-rezept] Rueckfall', { identity_id: z.identity_id, abbruch, rueckfall, profil_zurueckgesetzt: profilZurueck });
+  }
   const ok = !abbruch;
   // Erst nach bestaetigtem Start: modell_bestaetigt (plattform_modell schreibt completeSpecialistJob an die Laufgeneration).
   // P22-T119 R1c: bei Schalter modell_lauf_bindung EIN nur lauf-gebunden (CAS), sonst Bestand.
@@ -379,9 +527,13 @@ async function fuehreWechselAus(w: { z: Awaited<ReturnType<typeof ladeSteuerZiel
   let auditiert = false;
   try {
     await getPool().query('INSERT INTO agent_identitaet_audit (identity_id, wer, aktion, neu, grund) VALUES ($1,$2,$3,$4::jsonb,$5)',
-      [z.identity_id, wer, 'plattform_modellwechsel', JSON.stringify({ ...audit, ok, abbruch, neu_wrapper_pid: neuPid, schritte: schritte.map(s => ({ schritt: s.schritt, status: s.status ?? null, job_id: s.job_id ?? null, uebersprungen: s.uebersprungen ?? null })) }), grund.slice(0, 500)]);
+      [z.identity_id, wer, 'plattform_modellwechsel', JSON.stringify({ ...audit, ok, abbruch, neu_wrapper_pid: neuPid, ...(rezeptAn ? { rueckfall, profil_zurueckgesetzt: profilZurueck } : {}),
+        schritte: schritte.map(s => ({ schritt: s.schritt, status: s.status ?? null, job_id: s.job_id ?? null, uebersprungen: s.uebersprungen ?? null })) }), grund.slice(0, 500)]);
     auditiert = true;
   } catch { auditiert = false; }
   return { success: ok, ...(abbruch ? { error: abbruch } : {}), identity_id: z.identity_id, agent: z.agent_id, project: z.project, modell, runtime, effort, kosten_art: kostenArt(runtime), schritte,
-    debug: { schalter: PLATTFORM_MODELLWECHSEL_FUNKTION, ort: z.ort, bisher: audit.von, wrapper_status: z.wrapper?.status ?? null, alt_wrapper_pid: altPid, neu_wrapper_pid: neuPid, modell_pruefung: w.pruefQuelle, grenzen_quelle: grenzen.quelle, auditiert, modell_bindung: modellBindung } };
+    ...(rueckfall ? { rueckfall } : {}),
+    debug: { schalter: PLATTFORM_MODELLWECHSEL_FUNKTION, ...debugRezept, ort: z.ort, bisher: audit.von, wrapper_status: z.wrapper?.status ?? null, alt_wrapper_pid: altPid, neu_wrapper_pid: neuPid,
+      modell_pruefung: w.pruefQuelle, grenzen_quelle: grenzen.quelle, auditiert, modell_bindung: modellBindung,
+      ...(rezeptAn ? { abgeloest_extern: extern, rueckfall, profil_zurueckgesetzt: profilZurueck } : {}) } };
 }

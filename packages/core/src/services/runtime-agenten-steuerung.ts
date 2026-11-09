@@ -433,7 +433,8 @@ export async function fuehreRuntimeAgentenAktion(args: Record<string, unknown>, 
       // P22-T117: Modell/CLI-Anbieter eines Plattform-Agenten (Schalter plattform_agent_modellwechsel; nur Abo-Runtimes).
       case 'runtime_modellwechsel': {
         const { wechslePlattformAgentModell } = await import('./plattform-agent-modellwechsel.js');
-        return await wechslePlattformAgentModell({ identity_id: args.identity_id, runtime: args.runtime, modell: args.model, effort: args.effort, grund: args.grund }, akteur);
+        return await wechslePlattformAgentModell({ identity_id: args.identity_id, runtime: args.runtime, modell: args.model, effort: args.effort, grund: args.grund,
+          uebernahme_bestaetigt: args.uebernahme_bestaetigt }, akteur);
       }
       default: {
         const b = bestaetigungAus(args.bestaetigung);
