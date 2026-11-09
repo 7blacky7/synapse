@@ -110,6 +110,8 @@ export async function vermerkeWrapperEnde(k: { identity_id?: string | null; proj
       [k.project, k.identity_id ?? k.agent_name, k.wrapper_pid, k.last_activity, erkannt, befund.ursache, JSON.stringify(details)]);
     const geschrieben = (u.rowCount ?? 0) > 0;
     if (!geschrieben) console.error(`[wrapper-ende] nicht vermerkt (${tabelle}, ${k.identity_id ?? k.agent_name}, PID ${k.wrapper_pid}): Zeile nicht mehr crashed/CAS`);
+    // P22-T332 (Schalter lauf_ende_bei_wrapper_ende, Std AUS): Absturz/Container-Neustart beendet den Lauf des Wrappers. Wirft nie.
+    if (k.identity_id) await (await import('./lauf-ende.js')).beendeLaeufeNachWrapperEnde({ project: k.project, identity_id: k.identity_id, quelle: 'wrapper_ende_' + befund.ursache });
     return { geschrieben, befund, debug: { tabelle, ort: o.ort, runtime: o.runtime, grenzen } };
   } catch (err) {
     const fehler = String((err as Error)?.message ?? err).slice(0, 200);

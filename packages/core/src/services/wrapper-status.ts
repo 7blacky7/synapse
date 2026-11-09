@@ -196,6 +196,13 @@ export function baueWrapperStatusUpsert(row: WrapperStatusEingabe, ziel?: AgentZ
 export async function upsertWrapperStatus(row: WrapperStatusEingabe, ziel?: AgentZiel): Promise<void> {
   const { text, values } = baueWrapperStatusUpsert(row, ziel)
   await getPool().query(text, values)
+  // P22-T332 (Schalter lauf_ende_bei_wrapper_ende, Std AUS): Endstatus eines Identitaets-Wrappers (stop/deregister) beendet seinen Lauf.
+  if (row.status === 'stopped' || row.status === 'crashed') {
+    try {
+      const z = wrapperZiel(ziel ?? row.agentName, row.project)
+      if (z.art === 'identity') await (await import('./lauf-ende.js')).beendeLaeufeNachWrapperEnde({ project: row.project, identity_id: z.identity_id, quelle: 'wrapper_status_' + row.status })
+    } catch (err) { console.error('[lauf-ende] Hook upsertWrapperStatus:', (err as Error)?.message ?? err) }
+  }
 }
 
 /**
