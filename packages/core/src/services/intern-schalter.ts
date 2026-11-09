@@ -57,6 +57,8 @@ export const INTERN_SCHALTER = {
   // P22-T191: befristeter EIN/AUS-Override, Produktstandard AUS.
   artefakt_dateien: ['freigegeben'],
   tool_antwort_ueberlauf: ['freigegeben'],
+  // P22-T330: befristeter EIN/AUS-Override von sse_gemeinsamer_listen (Produktstandard AUS); aktiv=true = gemeinsamer LISTEN-Client.
+  sse_gemeinsamer_listen: ['freigegeben'],
   // P18-T76: temporary opt-in to PE resource extraction; production uses product switch.
   reverse_pe_ressourcen: ['freigegeben'],
   reverse_siedler3: ['freigegeben'],

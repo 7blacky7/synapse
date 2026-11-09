@@ -97,6 +97,7 @@ export const PROFIL_SCHALTER_ZWECK: Readonly<Record<string, string>> = {
   koordinator_mehrfenster: 'Unabhaengige Koordinator-Dockfenster in der Web-UI.',
   artefakt_dateien: 'Artefakt-Dateien.',
   tool_antwort_ueberlauf: 'MCP-Ueberlauf grosser Tool-Antworten in Artefakt-Dateien.',
+  sse_gemeinsamer_listen: 'SSE /events ueber einen gemeinsamen LISTEN-Client statt je Stream eine Pool-Verbindung.',
   log_strom: 'Benannte Shell-Log-Stroeme.',
   main_agentenverwaltung: 'Main verwaltet Agenten/Koordinatoren in allen User-Projekten.',
   koordinator_projektverwaltung: 'Koordinatoren verwalten jedes Projekt ausser synapse (Projektschalter, Build-Einstellungen, Ausweise).',

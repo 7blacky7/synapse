@@ -24,6 +24,8 @@ import {
 
 import { agentennetzwerkRoutes } from './agentennetzwerk.js';
 import { leseNetzwerkKonfiguration, hauptagentIdentitaetsId } from '@synapse/core';
+// P22-T330: gemeinsamer LISTEN-Client fuer /events (Schalter sse_gemeinsamer_listen).
+import { abonniereSseKanaele, sseGemeinsamerListenSchalter, zaehleAltStream } from '../services/sse-listen-verteiler.js';
 import { validateToken } from '../services/auth.js';
 // P22-T170: Channel-Fenster als Herkunft des Lesefensters - Zitate/Pins gehen als Block im Channel-Post an den ganzen Channel.
 import { pruefeChatZitateAnfrage, textMitZitaten } from '@synapse/core';
@@ -581,6 +583,8 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
     const netzwerkStand = request.query.netzwerk === '1' ? await leseNetzwerkKonfiguration(request.query.umfang === 'global' ? '' : project) : null;
     const netzwerk = netzwerkStand?.schalter.aktiv === true || netzwerkStand?.daten_schalter.aktiv === true;
     const mainId = netzwerk ? await hauptagentIdentitaetsId() : null;
+    // P22-T330: Schalter EIN = gemeinsamer LISTEN-Client ausserhalb des Hauptpools; AUS (Standard) = Bestand je Stream.
+    const gemeinsam = await sseGemeinsamerListenSchalter();
 
     // Set correct headers for SSE
     reply.raw.writeHead(200, {
@@ -600,9 +604,13 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
     let isClosed = false;
     let netzwerkTimer: ReturnType<typeof setTimeout> | null = null;
     let benachrichtigung: ((msg: { channel: string; payload?: string }) => void) | null = null;
+    let abmelden: (() => void) | null = null;
+    let altGezaehlt = false;
 
     // Periodic heartbeat to keep connection alive
     const heartbeatInterval = setInterval(() => {
+      // P22-T330: Antwort zerstoert/beendet ohne close-Ereignis -> aufraeumen statt die Verbindung weiter zu halten.
+      if (reply.raw.destroyed || reply.raw.writableEnded) { void cleanup(); return; }
       if (!isClosed) {
         reply.raw.write(`data: ${JSON.stringify({ type: 'heartbeat' })}\n\n`);
       }
@@ -613,6 +621,8 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
       isClosed = true;
       clearInterval(heartbeatInterval);
       if (netzwerkTimer) clearTimeout(netzwerkTimer);
+      if (abmelden) { abmelden(); abmelden = null; }
+      if (altGezaehlt) { altGezaehlt = false; zaehleAltStream(-1); }
 
       if (client) {
         if (benachrichtigung) client.removeListener('notification', benachrichtigung);
@@ -631,11 +641,11 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
     reply.raw.on('close', () => {
       cleanup();
     });
+    // P22-T330: auch Fehler der Antwort bzw. Abbruch der Anfrage raeumen auf (cleanup ist idempotent).
+    reply.raw.on('error', () => { void cleanup(); });
+    request.raw.on('aborted', () => { void cleanup(); });
 
     try {
-      client = await getPool().connect();
-      if (isClosed) { client.release(); return; }
-
       benachrichtigung = (msg: { channel: string; payload?: string }) => {
         if (isClosed) return;
 
@@ -660,6 +670,19 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
           })}\n\n`);
         }
       };
+      // P22-T330: Schalter EIN -> gemeinsamer LISTEN-Client (sse-listen-verteiler.ts), kein Platz im Hauptpool je Stream.
+      if (gemeinsam.aktiv) {
+        const kanaele = ['synapse_specialist_status_change', 'synapse_channel', ...(netzwerk ? ['synapse_tool_activity'] : [])];
+        const netzwerkBereit = () => { if (netzwerk && !isClosed) reply.raw.write('data: ' + JSON.stringify({type:'netzwerk_bereit',project}) + '\n\n'); };
+        abmelden = await abonniereSseKanaele({ project, netzwerk, kanaele }, benachrichtigung, netzwerkBereit);
+        if (isClosed) { abmelden(); abmelden = null; return; }
+        netzwerkBereit();
+        return;
+      }
+      client = await getPool().connect();
+      if (isClosed) { client.release(); return; }
+      altGezaehlt = true;
+      zaehleAltStream(1);
       client.on('notification', benachrichtigung);
 
       await client.query('LISTEN synapse_specialist_status_change');
@@ -670,6 +693,8 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
       }
     } catch (error) {
       clearInterval(heartbeatInterval);
+      if (abmelden) { abmelden(); abmelden = null; }
+      if (altGezaehlt) { altGezaehlt = false; zaehleAltStream(-1); }
       if (client) {
         client.release();
       }
