@@ -18,6 +18,31 @@ set +e  # Hooks muessen fehlertolerant sein
 STDIN=$(cat)
 SESSION_ID=$(echo "$STDIN" | jq -r '.session_id // ""' 2>/dev/null || echo "")
 
+# P22-T329: Im Subagent- bzw. Teammate-Kontext traegt der Hook-stdin agent_id (Claude-Code-Doku "Hooks reference", Common input
+# fields: agent_id = "Unique identifier for the subagent or in-process teammate the hook fires in"; agent_type allein reicht NICHT,
+# er steht auch bei --agent in der Hauptsitzung). Die session_id ist dort DIESELBE wie in der Hauptsitzung, die StatusLine-Datei
+# zeigt aber nur den Hauptkontext -> Subagenten lasen bisher den Kontextstand des Koordinators und brachen bei >= 90 % ab.
+# Schalter CONTEXT_COUNTER_SUBAGENT (Env): "aus" (Standard) = im Subagent-Kontext sofort ohne Ausgabe und ohne DB-Event beenden
+# (den eigenen Kontext eines Subagenten misst die Mod subagent-context-watch); "alt" = bisheriges Verhalten nur zum Debuggen,
+# DB-Events dann unter <session_id>:<agent_id>, nie unter der Sitzung des Koordinators.
+# Debug: CONTEXT_COUNTER_DEBUG=1 schreibt je Aufruf eine Zeile nach ~/.claude/context-counter-debug.log (nur IDs, keine Inhalte).
+AGENT_ID=$(echo "$STDIN" | jq -r '.agent_id // ""' 2>/dev/null | tr -cd 'A-Za-z0-9_.:-')
+AGENT_TYPE=$(echo "$STDIN" | jq -r '.agent_type // ""' 2>/dev/null | tr -cd 'A-Za-z0-9_.:-')
+SUBAGENT_MODUS="${CONTEXT_COUNTER_SUBAGENT:-aus}"
+debug_log() {
+  [ "${CONTEXT_COUNTER_DEBUG:-0}" = "1" ] || return 0
+  ( printf '%s session=%s agent_id=%s agent_type=%s modus=%s entscheidung=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${SESSION_ID:-}" "${AGENT_ID:-}" "${AGENT_TYPE:-}" "$SUBAGENT_MODUS" "$1" \
+    >> "${HOME}/.claude/context-counter-debug.log" ) 2>/dev/null
+}
+if [ -n "$AGENT_ID" ] && [ "$SUBAGENT_MODUS" != "alt" ]; then
+  debug_log "subagent_uebersprungen"
+  exit 0
+fi
+# Schluessel der DB-Events: Hauptsitzung = session_id; Subagent (nur Modus alt) = session_id:agent_id.
+EVENT_KEY="$SESSION_ID"
+if [ -n "$AGENT_ID" ]; then EVENT_KEY="${SESSION_ID}:${AGENT_ID}"; fi
+
 # Context-Prozentsatz aus session-spezifischer StatusLine-Datei lesen
 PCT_KEY="${SESSION_ID:-${CLAUDE_WRAPPER_PID:-default}}"
 PCT_FILE="/tmp/.claude-context-pct-${PCT_KEY}"
@@ -53,7 +78,7 @@ event_already_fired() {
   local event_type="$1"
   local count
   count=$(sqlite3 "$DB_PATH" \
-    "SELECT COUNT(*) FROM context_events WHERE session_id='${SESSION_ID}' AND event_type='${event_type}';" \
+    "SELECT COUNT(*) FROM context_events WHERE session_id='${EVENT_KEY}' AND event_type='${event_type}';" \
     2>/dev/null || echo "0")
   [ "${count:-0}" -gt 0 ]
 }
@@ -63,7 +88,7 @@ record_event() {
   local event_type="$1"
   sqlite3 "$DB_PATH" \
     "INSERT INTO context_events(session_id, wrapper_pid, event_type, pct)
-     VALUES('${SESSION_ID}', '${SESSION_PID}', '${event_type}', ${USED_PCT});" \
+     VALUES('${EVENT_KEY}', '${SESSION_PID}', '${event_type}', ${USED_PCT});" \
     2>/dev/null
 }
 
@@ -108,4 +133,5 @@ elif [ "$USED_PCT" -ge "$HANDOFF_PCT" ] 2>/dev/null; then
   # Nach dem ersten Event: stille Wiederholungen unterdrücken (kein Output)
 fi
 
+debug_log "ausgewertet pct=${USED_PCT}"
 exit 0
