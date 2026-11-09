@@ -149,7 +149,8 @@ export const MAIN_VERWALTUNG_HINWEIS = 'Agenten-Verwaltung erledigst du SELBST i
 
 /** Lenkhinweis fuer den Main im internen Bereich bzw. bei der Anmeldung. */
 export function mainHinweisText(projekte: string[], verwaltung = false): string {
-  return `Du bist der Main: du siehst ALLE Projekte des Users lesend ein und arbeitest nicht darin. Im internen Bereich "${HAUPTAGENT_PROJEKT}" `
+  // P22-T325: mit Verwaltung die Ausnahme schon im ersten Satz nennen (Befund a601e32f).
+  return `Du bist der Main: du siehst ALLE Projekte des Users lesend ein und arbeitest nicht darin${verwaltung ? ' (Ausnahme: Agenten-Verwaltung, siehe unten)' : ''}. Im internen Bereich "${HAUPTAGENT_PROJEKT}" `
     + `liegen keine Projektdaten (Tasks, Thoughts, Memories, Code). Gib dafuer project:"<name>" an. Projekte: ${liste(projekte)}.`
     + (verwaltung ? ' ' + MAIN_VERWALTUNG_HINWEIS : '');
 }

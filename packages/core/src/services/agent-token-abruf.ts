@@ -18,7 +18,7 @@ import {
   ausweisZustand, darfAusweisVerwalten,
   type AusweisAbruf, type AusweisAkteur, type AusweisWeg, type TokenAbrufDienst,
 } from './agent-profil-vertrag.js';
-import { leseAusweisKern } from './agent-profil-schalter.js';
+import { AUSWEIS_KERN_FUNKTION, leseAusweisKern, leseProfilProduktSchalter } from './agent-profil-schalter.js';
 import { holeAusweis, schreibeIdentitaetAudit } from './agent-identitaet.js';
 import {
   ProfilVerwaltungFehler, mainVerwaltetProjekt, koordinatorVerwaltetProjekt, pflichtText, pruefeProfilVerwalter, profilTransaktion, type ProfilDb,
@@ -39,8 +39,31 @@ async function schreibeAudit(db: ProfilDb, a: AbrufAudit): Promise<void> {
 export async function pruefeAusweisKernEin(project: string): Promise<void> {
   const k = await leseAusweisKern(project);
   if (k.aktiv) return;
-  throw new ProfilVerwaltungFehler(k.letzter_fehler === 'agent_bezug_modus_nicht_beide' ? 'agent_bezug_modus_nicht_beide' : 'ausweis_kern_aus',
-    { quelle: k.quelle, ...(k.agent_bezug_modus ? { agent_bezug_modus: k.agent_bezug_modus } : {}), ...(k.letzter_fehler ? { letzter_fehler: k.letzter_fehler } : {}) });
+  const code = k.letzter_fehler === 'agent_bezug_modus_nicht_beide' ? 'agent_bezug_modus_nicht_beide' : 'ausweis_kern_aus';
+  // P22-T325 (thought 1fccd316): bei ausweis_kern_aus sagen, WARUM 'Standard EIN im aktiven Projekt' (P22-T311) nicht greift.
+  const sap = code === 'ausweis_kern_aus' ? await standardAktiveProjekteDebug(project) : null;
+  throw new ProfilVerwaltungFehler(code,
+    { quelle: k.quelle, ...(k.agent_bezug_modus ? { agent_bezug_modus: k.agent_bezug_modus } : {}), ...(k.letzter_fehler ? { letzter_fehler: k.letzter_fehler } : {}),
+      ...(sap ?? {}) });
+}
+
+/**
+ * P22-T325: Debug der Mechanik schalter_standard_aktive_projekte fuer agenten_ausweis im Projekt (nur im Fehlerpfad gelesen).
+ * Liefert {standard_aktive_projekte:{mechanik, projekt_aktiv, fehler?}} und bei projekt_aktiv:false einen Hinweis; ohne
+ * Debugstand (z. B. ausdruecklich gesetzte AUS-Zeile) null. Wirft nie.
+ */
+async function standardAktiveProjekteDebug(project: string): Promise<Record<string, unknown> | null> {
+  try {
+    const d = (await leseProfilProduktSchalter(AUSWEIS_KERN_FUNKTION, project)).standard_aktive_projekte;
+    if (!d) return null;
+    return {
+      standard_aktive_projekte: { mechanik: d.mechanik, projekt_aktiv: d.projekt_aktiv, ...(d.fehler ? { fehler: d.fehler } : {}) },
+      ...(d.projekt_aktiv === false
+        ? { hinweis: `Projekt "${project}" nicht registriert oder deaktiviert – erst anlegen bzw. im Tray aktivieren.` } : {}),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** Kennung des Akteurs fuer Audit (kein Tokenwert). */

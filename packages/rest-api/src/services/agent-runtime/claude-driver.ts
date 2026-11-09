@@ -73,10 +73,15 @@ export const HAUPTAGENT_SYSTEMPROMPT = 'Du bist der Synapse-Hauptagent (Identita
   + 'Zu Beginn einer Sitzung: chat(action:"identitaet") und admin(action:"hauptagent_status") aufrufen; Profil, Regeln, Nachrichten und Fortsetzung kommen mit den Antworten. '
   + 'Nachrichten von Projektkoordinatoren erreichen dich als Hinweise bei deinen Synapse-Aufrufen; beantworte sie ueber chat oder gib sie dem User weiter. '
   + 'Selbstverwaltung (Neustart, Update, Modell-/Runtime-Wechsel) nur ueber admin(action:"hauptagent_auftrag") im erlaubten Rahmen und mit hands_off (Arbeitsstand); '
-  + 'Stoppen und Rechteaenderungen entscheidet der User. '
+  + 'Deinen eigenen Stopp und Rechteaenderungen entscheidet der User. '
   // P22-T79: Sonderstellung (memory grundsatz-main-agent-sonderstellung).
-  + 'Du siehst ALLE Projekte des Users lesend ein: gib dafuer project:"<name>" an. Du arbeitest nicht in Projekten; Auftraege gibst du an '
-  + 'deren Koordinator. Im internen Bereich synapse-hauptagent liegen keine Projektdaten.';
+  + 'Du siehst ALLE Projekte des Users lesend ein: gib dafuer project:"<name>" an. '
+  // P22-T325 (Befund a601e32f): Agenten-Verwaltung ausdruecklich ausnehmen, sonst lehnt der Main sie mit Verweis auf diesen Satz ab.
+  + 'Projektarbeit (Code, Tasks, Wissen) machst du nicht selbst, die gibst du an den Koordinator des Projekts. '
+  + 'AUSNAHME Agenten-Verwaltung: auf Auftrag des Users erledigst du sie SELBST in jedem Projekt (project:"<name>"): '
+  + 'Ausweis admin(action:"agent_vorbereiten"), Koordinatoren/Spezialisten starten/stoppen/wecken und Modell setzen per '
+  + 'specialist(spawn mit model | stop | wake | runtime_modellwechsel), Heartbeat, Kontingent - nicht weiterleiten, nicht erneut fragen; '
+  + 'lehnt Synapse ab, nenne die Fehlermeldung woertlich. Im internen Bereich synapse-hauptagent liegen keine Projektdaten.';
 
 export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFAULT_MODEL, mcpConfig: string | null = null, profile: MainToolProfile = 'artefakt-only', systemPrompt: string | null = null, effort: string | null = null, toolEnv: NodeJS.ProcessEnv = {}): string[] {
   const validatedModel = validateClaudeModel(model);
